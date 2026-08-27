@@ -1,27 +1,117 @@
 # Latchway iOS SDK
 
 Latchway lets an untrusted iOS application call AI infrastructure through a
-self-hosted gateway without embedding an upstream provider key. This repository
-will provide the Swift transport and platform-security integration for that
-client boundary.
+self-hosted gateway without embedding an upstream provider key. This package
+provides the Swift transport and platform-security integration for that client
+boundary.
 
-> **Project status:** Governance foundation only. No Swift package or supported
-> release exists yet. Do not add this repository as a dependency.
+> **Project status:** pre-release implementation for contract 0.1.0 and wire
+> protocol 1. The package builds and its fixture suite passes, but it is not a
+> supported release until server conformance and a real App Attest device run
+> are recorded.
 
-## Planned scope
+## Requirements
 
-The SDK will:
+The package uses Swift 6 strict concurrency and supports iOS 15 or newer. A
+production App Attest session requires a supported physical device, the App
+Attest entitlement, a configured Latchway server, and an existing application
+identity token. Simulator tests use explicit test doubles; they never claim
+hardware attestation.
 
-- Use a P-256 installation key backed by Secure Enclave when available and a
+## Package products
+
+- `Latchway`: handwritten public client API, Secure Enclave/Keychain DPoP,
+  sessions, authorization, quota, revocation, and diagnostics
+- `LatchwayAppAttest`: `DCAppAttestService` registration/assertion lifecycle
+- `LatchwayFirebaseAuth`: optional closure adapter; the core target has no
+  Firebase dependency
+- `LatchwayTesting`: deterministic signers, clocks, storage, transports,
+  identity providers, and attestation doubles
+
+Add the repository as a Swift Package dependency, then link `Latchway` and
+`LatchwayAppAttest` to the application target.
+
+Swift Package Manager is the canonical distribution. The production
+`Latchway.podspec` additionally supports React Native autolinking through
+`Latchway/Core`, `Latchway/AppAttest`, and `Latchway/FirebaseAuth` subspecs:
+
+```ruby
+pod 'Latchway/AppAttest', '0.1.0'
+```
+
+CocoaPods compiles selected subspecs into the `Latchway` module; SwiftPM keeps
+`LatchwayAppAttest` and `LatchwayFirebaseAuth` as separate modules.
+
+## Basic usage
+
+```swift
+import Latchway
+import LatchwayAppAttest
+
+let appAttest = LatchwayAppAttestProvider(
+    applicationID: "app_habitify",
+    environment: "production"
+)
+let configuration = LatchwayConfiguration(
+    baseURL: URL(string: "https://gateway.example.com")!,
+    applicationID: "app_habitify",
+    environment: "production",
+    identityProvider: "firebase",
+    appVersion: "1.2.3",
+    softwareKeyFallbackPolicy: .disallow,
+    attestationProvider: appAttest
+)
+let client = LatchwayClient(
+    configuration: configuration,
+    identityTokenProvider: ApplicationIdentityProvider()
+)
+
+var request = URLRequest(
+    url: URL(string: "https://gateway.example.com/v1/responses")!
+)
+request.httpMethod = "POST"
+request.httpBody = requestBody
+request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+try await client.authorize(&request, feature: "habit-assistant")
+
+let (bytes, response) = try await client.makeURLSession().bytes(for: request)
+for try await byte in bytes {
+    consume(byte)
+}
+```
+
+For buffered requests, `client.send(_:feature:)` performs at most one automatic
+retry and only after the stable `session_expired` or `dpop_nonce_required`
+pre-dispatch rejection. It never replays an input stream or an ambiguous
+upstream failure. The built-in buffered transport rejects responses larger
+than 1 MiB. Streaming callers authorize once and receive bytes directly; the
+SDK does not buffer or replay their request.
+
+Caller-owned transports that validate a same-origin rejection may use
+`authorize(_:feature:nonce:)` for `dpop_nonce_required` and `refresh()` for
+`session_expired`, then replay at most once while preserving the request ID.
+The React Native bridge configures `clientRuntime: .reactNativeIOS` and its own
+`clientSDKVersion`. The runtime atomically selects installation platform
+`react_native_ios` and SDK header `react-native`; ordinary Swift clients keep
+the `.iOS` and native package-version defaults.
+
+## Security behavior
+
+The SDK:
+
+- Uses a P-256 installation key backed by Secure Enclave when available and a
   policy-approved Keychain fallback otherwise
-- Produce RFC 9449 DPoP proofs
-- Integrate Apple App Attest registration and assertions
-- Exchange an existing application identity token for short-lived,
+- Produces RFC 9449 DPoP proofs
+- Integrates Apple App Attest registration and assertions
+- Exchanges an existing application identity token for short-lived,
   device-bound Latchway sessions
-- Authorize arbitrary URLRequest values and provide URLSession integration
-- Store refresh state securely and coordinate refresh through Swift actors
-- Expose quota, installation-revocation, and redacted diagnostic APIs
-- Keep Firebase support optional and outside the core target
+- Authorizes arbitrary gateway `URLRequest` values and provides a hardened
+  ephemeral `URLSession`
+- Stores refresh state in a non-synchronizable, this-device-only Keychain item
+  and coordinates refresh through a Swift actor single flight
+- Exposes quota, installation-revocation, and redacted diagnostic APIs
+- Rejects known upstream credential headers before adding Latchway credentials
+- Keeps Firebase support optional and outside the core target
 
 The canonical package identity will be **Latchway**, with iOS 15 as the planned
 minimum deployment target unless an audited requirement changes it. Public APIs
@@ -34,9 +124,10 @@ registry, protocol manifest, canonical attestation binding, DPoP vectors, and
 compatibility rules. This SDK consumes a signed and checksummed contract bundle;
 it does not define an independent wire protocol.
 
-A contract lock is intentionally absent until the core repository publishes the
-first bundle. See [Architecture](docs/architecture.md) for the dependency and
-trust boundaries.
+The exact core revision and bundle SHA-256 are recorded in `contract.lock`.
+Shared DPoP and attestation-binding fixtures are copied into the conformance
+target and checked by `scripts/check-contract.sh`. See
+[Architecture](docs/architecture.md) for dependency and trust boundaries.
 
 ## Security model
 
@@ -47,11 +138,24 @@ accurately rather than silently upgraded or overstated.
 
 Review [Security Policy](SECURITY.md) before reporting a vulnerability.
 
-## Development
+## Development and verification
 
-Build and test commands will be added with the Swift Package manifest. Until
-then, changes in this repository are limited to reviewed governance,
-architecture, and contract-consumption foundations.
+```bash
+swift package dump-package
+swift build
+swift test
+scripts/check-contract.sh ../latchway/api
+tuist generate --path Examples/AppAttestConformance --no-open
+```
+
+Pass the reproducible contract archive as the optional second argument to
+`check-contract.sh` to verify its SHA-256 against `contract.lock` as well as the
+extracted manifest and shared fixtures.
+
+The physical-device runbook is in
+[`docs/real-device-conformance.md`](docs/real-device-conformance.md). Missing
+Apple signing credentials or a supported device blocks only that final gate;
+it never permits a simulated success claim.
 
 Repository-local agent skill installations are developer tooling only. They are
 ignored, are not package inputs, and are not distributed.

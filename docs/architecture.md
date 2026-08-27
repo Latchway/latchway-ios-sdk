@@ -2,10 +2,9 @@
 
 ## Status
 
-This document fixes the ownership and dependency boundaries for the planned
-Swift SDK. It does not describe an existing implementation. Package manifests,
-production targets, generated models, and contract.lock will be introduced only
-after the core repository publishes an authoritative contract bundle.
+This document fixes the ownership and dependency boundaries for the Swift SDK.
+The implementation consumes contract 0.1.0/wire protocol 1 at the exact core
+revision and bundle digest in `contract.lock`.
 
 ## System boundary
 
@@ -36,7 +35,7 @@ bundle checksum, update contract.lock, regenerate internal wire DTOs
 reproducibly, run shared vectors, and pass conformance against the exact core
 image. Generated wire DTOs must not become the public Swift API.
 
-## Planned target boundaries
+## Target boundaries
 
 ~~~text
 Customer application
@@ -56,9 +55,13 @@ Customer application
           storage, transports, and fixtures; never a production dependency
 ~~~
 
-LatchwayAppAttest and LatchwayFirebaseAuth depend inward on stable protocols
+`LatchwayAppAttest` and `LatchwayFirebaseAuth` depend inward on stable protocols
 exposed by Latchway. The core target does not import Firebase. React Native
 depends on this SDK for all Apple security behavior.
+
+The Firebase adapter accepts an async token operation or a small source
+protocol. This avoids pinning Firebase in the package graph while still keeping
+Firebase-specific integration outside the core target.
 
 ## Key and state boundary
 
@@ -68,17 +71,37 @@ Only a public JWK and its RFC thumbprint cross the process boundary. Refresh
 tokens remain in non-synchronizable Keychain storage. Actor isolation protects
 session mutation and refresh single flight.
 
-App Attest has a separate key identity and lifecycle. Registration and later
-assertions bind to the core-defined canonical challenge bytes. Invalid-key
-recovery is bounded and cannot loop indefinitely.
+App Attest has a separate key identity and lifecycle. The server constructs the
+canonical RFC 8785 binding and supplies its 32-byte SHA-256 as
+`client_data_hash`; the SDK validates its exact size and gives those bytes
+directly to App Attest. Registration state changes to assertions only after a
+successful session exchange. Invalid-key recovery performs at most one key
+rotation per operation.
+
+Installation keys, refresh sessions, and App Attest accepted-key state are all
+namespaced by application, environment, and client runtime. This prevents a
+native iOS client and a React Native client in the same host application from
+sharing a platform-bound grant or refresh-token rotation state.
 
 ## Transport boundary
 
-Authorization mutates or produces ordinary URLRequest values so existing HTTP
+Authorization mutates ordinary `URLRequest` values so existing HTTP
 and AI libraries remain usable. URLSession integration may recover from a
 session failure only when Latchway explicitly guarantees that the request was
 rejected before upstream dispatch. Once response bytes exist or dispatch is
 uncertain, the SDK returns the failure without automatic replay.
+
+The buffered `send` integration withholds a rejected response from application
+code and retries once only for the contract's pre-dispatch session-expiry or
+DPoP-nonce errors. It rejects streaming request bodies from retry. The
+`makeURLSession` streaming path never automatically replays.
+
+For caller-owned transports such as React Native fetch, public nonce-aware
+authorization and forced-refresh operations expose no stored credentials. The
+bridge must first validate a same-origin problem response, preserve the request
+identifier, and cap replay to one attempt. A typed runtime configuration pairs
+the React Native iOS installation platform with its protocol SDK identifier so
+the two cannot drift independently.
 
 Cancellation and streaming flow end to end. Errors expose stable safe fields
 and request identifiers, never tokens or raw attestation evidence.

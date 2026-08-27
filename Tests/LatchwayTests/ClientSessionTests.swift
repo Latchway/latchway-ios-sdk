@@ -1,0 +1,779 @@
+import Foundation
+import LatchwayTesting
+@testable import Latchway
+import XCTest
+
+final class ClientSessionTests: XCTestCase {
+    func testConcurrentAuthorizationEstablishesOneSession() async throws {
+        let fixture = try await makeFixture()
+        try await withThrowingTaskGroup(of: URLRequest.self) { group in
+            for _ in 0 ..< 32 {
+                group.addTask {
+                    var request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+                    request.httpMethod = "POST"
+                    try await fixture.client.authorize(&request, feature: "habit-assistant")
+                    return request
+                }
+            }
+            var proofs = Set<String>()
+            for try await request in group {
+                XCTAssertTrue(request.value(forHTTPHeaderField: "Authorization")?.hasPrefix("DPoP ") == true)
+                proofs.insert(try XCTUnwrap(request.value(forHTTPHeaderField: "DPoP")))
+                XCTAssertEqual(request.value(forHTTPHeaderField: "X-Latchway-Feature"), "habit-assistant")
+            }
+            XCTAssertEqual(proofs.count, 32, "Every request requires a unique DPoP jti")
+        }
+        let counts = await fixture.server.counts()
+        let identityCount = await fixture.identity.count()
+        let attestationCount = await fixture.attestation.challenges.count
+        XCTAssertEqual(counts.challenge, 1)
+        XCTAssertEqual(counts.exchange, 1)
+        XCTAssertEqual(identityCount, 1)
+        XCTAssertEqual(attestationCount, 1)
+    }
+
+    func testExpiredAccessTokenRefreshesOnceAcrossConcurrentCallers() async throws {
+        let fixture = try await makeFixture()
+        var first = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        try await fixture.client.authorize(&first, feature: "habit-assistant")
+        await fixture.clock.advance(by: 3_601)
+
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for _ in 0 ..< 24 {
+                group.addTask {
+                    var request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+                    try await fixture.client.authorize(&request, feature: "habit-assistant")
+                }
+            }
+            try await group.waitForAll()
+        }
+        let counts = await fixture.server.counts()
+        let saveCount = await fixture.storage.saveCount
+        XCTAssertEqual(counts.challenge, 1)
+        XCTAssertEqual(counts.exchange, 1)
+        XCTAssertEqual(counts.refresh, 1)
+        XCTAssertEqual(saveCount, 2)
+    }
+
+    func testDPoPNonceChallengeRetriesControlRequestOnlyOnce() async throws {
+        let fixture = try await makeFixture(requireNonce: true)
+        var request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        try await fixture.client.authorize(&request, feature: "habit-assistant")
+        let counts = await fixture.server.counts()
+        XCTAssertEqual(counts.challenge, 2)
+        XCTAssertEqual(counts.exchange, 1)
+        let proofs = await fixture.server.challengeProofs()
+        let requestIDs = await fixture.server.challengeRequestIDs()
+        XCTAssertEqual(proofs.count, 2)
+        XCTAssertNotEqual(proofs[0], proofs[1])
+        XCTAssertEqual(requestIDs[0], requestIDs[1])
+        let secondPayload = try proofPayload(proofs[1])
+        XCTAssertEqual(secondPayload["nonce"] as? String, "nonce-fixture-0123456789abcdef")
+    }
+
+    func testCancellationDoesNotReturnAuthorizedSecretHeaders() async throws {
+        let fixture = try await makeFixture(delayNanoseconds: 250_000_000)
+        let task = Task { () throws -> URLRequest in
+            var request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+            try await fixture.client.authorize(&request, feature: "habit-assistant")
+            return request
+        }
+        try await Task.sleep(nanoseconds: 20_000_000)
+        task.cancel()
+        do {
+            let request = try await task.value
+            XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+            XCTFail("Cancellation must fail before returning an authorized request")
+        } catch let error as LatchwayError {
+            XCTAssertEqual(error, .cancelled)
+        }
+    }
+
+    func testRejectsCredentialLeakAndForeignOrigin() async throws {
+        let fixture = try await makeFixture()
+        var credential = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        credential.setValue("provider-secret", forHTTPHeaderField: "X-Api-Key")
+        await XCTAssertThrowsErrorAsync { try await fixture.client.authorize(&credential, feature: "habit-assistant") }
+
+        var queryCredential = URLRequest(
+            url: URL(string: "https://gateway.example.test/v1/responses?api_key=provider-secret")!
+        )
+        await XCTAssertThrowsErrorAsync {
+            try await fixture.client.authorize(&queryCredential, feature: "habit-assistant")
+        }
+
+        var invalidRequestID = URLRequest(
+            url: URL(string: "https://gateway.example.test/v1/responses")!
+        )
+        invalidRequestID.setValue("bad id", forHTTPHeaderField: "X-Latchway-Request-ID")
+        await XCTAssertThrowsErrorAsync {
+            try await fixture.client.authorize(&invalidRequestID, feature: "habit-assistant")
+        }
+
+        var foreign = URLRequest(url: URL(string: "https://attacker.example/v1/responses")!)
+        await XCTAssertThrowsErrorAsync { try await fixture.client.authorize(&foreign, feature: "habit-assistant") }
+        XCTAssertNil(foreign.value(forHTTPHeaderField: "Authorization"))
+    }
+
+    func testRejectsNormalizedTraversalOutsideConfiguredBasePath() async throws {
+        let fixture = try await makeFixture(
+            baseURL: URL(string: "https://gateway.example.test/gateway")!
+        )
+        var request = URLRequest(
+            url: URL(string: "https://gateway.example.test/gateway/%2e%2e/admin")!
+        )
+        await XCTAssertThrowsErrorAsync {
+            try await fixture.client.authorize(&request, feature: "habit-assistant")
+        }
+        XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+        let counts = await fixture.server.counts()
+        XCTAssertEqual(counts.challenge, 0)
+    }
+
+    func testExpiredChallengeFailsBeforeAttestationOrExchange() async throws {
+        let fixture = try await makeFixture(challengeExpired: true)
+        var request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        do {
+            try await fixture.client.authorize(&request, feature: "habit-assistant")
+            XCTFail("Expired challenge must fail closed")
+        } catch let error as LatchwayError {
+            XCTAssertEqual(error, .invalidAttestationBinding)
+        }
+        let counts = await fixture.server.counts()
+        let attestationCount = await fixture.attestation.challenges.count
+        XCTAssertEqual(counts.exchange, 0)
+        XCTAssertEqual(attestationCount, 0)
+    }
+
+    func testServerClientDataHashIsPassedDirectlyToAttestationProvider() async throws {
+        let fixture = try await makeFixture()
+        var request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+
+        try await fixture.client.authorize(&request, feature: "habit-assistant")
+
+        let challenges = await fixture.attestation.challenges
+        let challenge = try XCTUnwrap(challenges.first)
+        XCTAssertEqual(challenge.clientDataHash, Data(repeating: 7, count: 32))
+        XCTAssertNil(challenge.options["principal_id"])
+    }
+
+    func testChallengeBeyondAllowedClockSkewFailsClosed() async throws {
+        let fixture = try await makeFixture(challengeClockOffset: 301)
+        var request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        do {
+            try await fixture.client.authorize(&request, feature: "habit-assistant")
+            XCTFail("A future-issued challenge beyond the skew allowance must fail")
+        } catch let error as LatchwayError {
+            XCTAssertEqual(error, .invalidAttestationBinding)
+        }
+        let counts = await fixture.server.counts()
+        let attestationCount = await fixture.attestation.challenges.count
+        XCTAssertEqual(counts.exchange, 0)
+        XCTAssertEqual(attestationCount, 0)
+    }
+
+    func testRefreshReauthenticatesExactlyOnceWhenServerRequiresIdentity() async throws {
+        let fixture = try await makeFixture(refreshRejection: "identity_reauthentication_required")
+        var first = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        try await fixture.client.authorize(&first, feature: "habit-assistant")
+        await fixture.clock.advance(by: 3_601)
+        var second = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        try await fixture.client.authorize(&second, feature: "habit-assistant")
+        let counts = await fixture.server.counts()
+        let identityCount = await fixture.identity.count()
+        XCTAssertEqual(counts.refresh, 2)
+        XCTAssertEqual(identityCount, 2)
+    }
+
+    func testRefreshTokenReuseClearsRotatedState() async throws {
+        let fixture = try await makeFixture(refreshRejection: "refresh_token_reused")
+        var first = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        try await fixture.client.authorize(&first, feature: "habit-assistant")
+        await fixture.clock.advance(by: 3_601)
+        var second = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        do {
+            try await fixture.client.authorize(&second, feature: "habit-assistant")
+            XCTFail("Reused refresh token must fail")
+        } catch let LatchwayError.server(problem) {
+            XCTAssertEqual(problem.code, .refreshTokenReused)
+        }
+        let clearCount = await fixture.storage.clearCount
+        XCTAssertEqual(clearCount, 1)
+    }
+
+    func testFailedRotatedTokenPersistenceCannotReplayOldRefreshToken() async throws {
+        let fixture = try await makeFixture(failingSaveCalls: [2])
+        var first = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        try await fixture.client.authorize(&first, feature: "habit-assistant")
+        await fixture.clock.advance(by: 3_601)
+
+        var second = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        do {
+            try await fixture.client.authorize(&second, feature: "habit-assistant")
+            XCTFail("The unsaved rotated session must fail")
+        } catch let error as LatchwayError {
+            XCTAssertEqual(error, .keyStorageFailure)
+        }
+
+        await fixture.clock.set(Date(timeIntervalSince1970: 1_700_000_000))
+        var recovered = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        try await fixture.client.authorize(&recovered, feature: "habit-assistant")
+        let counts = await fixture.server.counts()
+        XCTAssertEqual(counts.refresh, 1, "The consumed refresh token must never be retried")
+        XCTAssertEqual(counts.challenge, 2)
+        XCTAssertEqual(counts.exchange, 2)
+    }
+
+    func testCorruptPersistedRefreshStateIsClearedBeforeNetworkUse() async throws {
+        let fixture = try await makeFixture(storedRefreshToken: "short")
+        var request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+
+        try await fixture.client.authorize(&request, feature: "habit-assistant")
+
+        let counts = await fixture.server.counts()
+        let clearCount = await fixture.storage.clearCount
+        XCTAssertEqual(counts.refresh, 0)
+        XCTAssertEqual(counts.challenge, 1)
+        XCTAssertEqual(counts.exchange, 1)
+        XCTAssertEqual(clearCount, 1)
+    }
+
+    func testServerRevokedInstallationBlocksFurtherSessionUse() async throws {
+        let fixture = try await makeFixture(refreshRejection: "installation_revoked")
+        var first = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        try await fixture.client.authorize(&first, feature: "habit-assistant")
+        await fixture.clock.advance(by: 3_601)
+        var second = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        await XCTAssertThrowsErrorAsync { try await fixture.client.authorize(&second, feature: "habit-assistant") }
+        let before = await fixture.server.counts()
+        var third = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        await XCTAssertThrowsErrorAsync { try await fixture.client.authorize(&third, feature: "habit-assistant") }
+        let after = await fixture.server.counts()
+        let diagnostics = await fixture.client.diagnostics()
+        XCTAssertEqual(before.challenge, after.challenge)
+        XCTAssertEqual(before.refresh, after.refresh)
+        XCTAssertEqual(diagnostics.sessionState, .revoked)
+    }
+
+    func testQuotaAndExplicitRevocationUseProtectedControlEndpoints() async throws {
+        let fixture = try await makeFixture()
+        let quota = try await fixture.client.quota(feature: "habit-assistant")
+        XCTAssertEqual(quota.feature, "habit-assistant")
+        XCTAssertEqual(quota.limits.first?.remaining, 4)
+        try await fixture.client.revokeCurrentInstallation()
+        let counts = await fixture.server.counts()
+        let clearCount = await fixture.storage.clearCount
+        let resetCount = await fixture.attestation.resetCount
+        let diagnostics = await fixture.client.diagnostics()
+        XCTAssertEqual(counts.quota, 1)
+        XCTAssertEqual(counts.revoke, 1)
+        XCTAssertEqual(clearCount, 1)
+        XCTAssertEqual(resetCount, 1)
+        XCTAssertEqual(diagnostics.sessionState, .revoked)
+        await XCTAssertThrowsErrorAsync { try await fixture.client.refresh() }
+        let countsAfterRefresh = await fixture.server.counts()
+        XCTAssertEqual(countsAfterRefresh.challenge, counts.challenge)
+        XCTAssertEqual(countsAfterRefresh.refresh, counts.refresh)
+    }
+
+    func testBufferedSendRetriesSessionExpiryOnceBeforeDispatch() async throws {
+        let fixture = try await makeFixture(dataPlaneRejection: "session_expired")
+        var request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        request.httpMethod = "POST"
+        request.httpBody = Data("{}".utf8)
+        let response = try await fixture.client.send(request, feature: "habit-assistant")
+        XCTAssertEqual(response.statusCode, 200)
+        let counts = await fixture.server.counts()
+        XCTAssertEqual(counts.dataPlane, 2)
+        XCTAssertEqual(counts.refresh, 1)
+    }
+
+    func testBufferedSendDoesNotRetrySessionExpiryWithoutRetryGuidance() async throws {
+        let fixture = try await makeFixture(
+            dataPlaneRejection: "session_expired",
+            dataPlaneRetryable: false
+        )
+        let request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        do {
+            _ = try await fixture.client.send(request, feature: "habit-assistant")
+            XCTFail("A non-retryable problem must not be replayed")
+        } catch let LatchwayError.server(problem) {
+            XCTAssertEqual(problem.code, .sessionExpired)
+            XCTAssertFalse(problem.retryable)
+        }
+        let counts = await fixture.server.counts()
+        XCTAssertEqual(counts.dataPlane, 1)
+        XCTAssertEqual(counts.refresh, 0)
+    }
+
+    func testBufferedSendRetriesDPoPNonceOnceWithoutRefreshing() async throws {
+        let fixture = try await makeFixture(dataPlaneRejection: "dpop_nonce_required")
+        let request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        let response = try await fixture.client.send(request, feature: "habit-assistant")
+        XCTAssertEqual(response.statusCode, 200)
+        let counts = await fixture.server.counts()
+        let proofs = await fixture.server.dataPlaneProofs()
+        let requestIDs = await fixture.server.dataPlaneRequestIDs()
+        XCTAssertEqual(counts.dataPlane, 2)
+        XCTAssertEqual(counts.refresh, 0)
+        XCTAssertEqual(requestIDs[0], requestIDs[1])
+        XCTAssertEqual(try proofPayload(proofs[1])["nonce"] as? String, "nonce-fixture-0123456789abcdef")
+    }
+
+    func testBufferedSendNeverRetriesAmbiguousUpstreamFailure() async throws {
+        let fixture = try await makeFixture(dataPlaneRejection: "upstream_unavailable")
+        let request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        do {
+            _ = try await fixture.client.send(request, feature: "habit-assistant")
+            XCTFail("Ambiguous upstream failure must not be replayed")
+        } catch let LatchwayError.server(problem) {
+            XCTAssertEqual(problem.code, .upstreamUnavailable)
+        }
+        let counts = await fixture.server.counts()
+        let diagnostics = await fixture.client.diagnostics()
+        XCTAssertEqual(counts.dataPlane, 1)
+        XCTAssertEqual(counts.refresh, 0)
+        XCTAssertEqual(diagnostics.sessionState, .active)
+        XCTAssertEqual(diagnostics.lastErrorCode, "upstream_unavailable")
+    }
+
+    func testBufferedSendRejectsMalformedErrorWithoutRetry() async throws {
+        let fixture = try await makeFixture(dataPlaneRejection: "malformed")
+        let request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        do {
+            _ = try await fixture.client.send(request, feature: "habit-assistant")
+            XCTFail("A malformed gateway error must fail closed")
+        } catch let error as LatchwayError {
+            XCTAssertEqual(error, .invalidServerResponse)
+        }
+        let counts = await fixture.server.counts()
+        XCTAssertEqual(counts.dataPlane, 1)
+        XCTAssertEqual(counts.refresh, 0)
+    }
+
+    func testStreamingPathAuthorizesWithoutDispatchOrAutomaticReplay() async throws {
+        let fixture = try await makeFixture(dataPlaneRejection: "upstream_unavailable")
+        var request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        request.httpMethod = "POST"
+        request.httpBody = Data(#"{"stream":true}"#.utf8)
+
+        try await fixture.client.authorize(&request, feature: "habit-assistant")
+
+        let counts = await fixture.server.counts()
+        XCTAssertEqual(counts.dataPlane, 0, "Streaming dispatch belongs to the caller's URLSession")
+        XCTAssertNotNil(request.value(forHTTPHeaderField: "DPoP"))
+        XCTAssertNotNil(request.value(forHTTPHeaderField: "Authorization"))
+    }
+
+    func testReactNativeRuntimeUsesPairedSDKAndPlatformIdentifiers() async throws {
+        let fixture = try await makeFixture(
+            clientRuntime: .reactNativeIOS,
+            clientSDKVersion: "0.1.0-dev.0"
+        )
+        var request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+
+        try await fixture.client.authorize(&request, feature: "habit-assistant")
+
+        let challengeSDKIdentifiers = await fixture.server.challengeSDKIdentifiers()
+        let challengePlatforms = await fixture.server.challengePlatforms()
+        let challengeSDKVersions = await fixture.server.challengeSDKVersions()
+        let diagnostics = await fixture.client.diagnostics()
+        XCTAssertEqual(request.value(forHTTPHeaderField: "X-Latchway-SDK"), "react-native")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "X-Latchway-SDK-Version"), "0.1.0-dev.0")
+        XCTAssertEqual(challengeSDKIdentifiers, ["react-native"])
+        XCTAssertEqual(challengePlatforms, ["react_native_ios"])
+        XCTAssertEqual(challengeSDKVersions, ["0.1.0-dev.0"])
+        XCTAssertEqual(diagnostics.sdkVersion, "0.1.0-dev.0")
+    }
+
+    func testCallerOwnedTransportCanAuthorizeNonceRetry() async throws {
+        let fixture = try await makeFixture()
+        var request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+
+        try await fixture.client.authorize(
+            &request,
+            feature: "habit-assistant",
+            nonce: "nonce-fixture-0123456789abcdef"
+        )
+
+        let proof = try XCTUnwrap(request.value(forHTTPHeaderField: "DPoP"))
+        XCTAssertEqual(
+            try proofPayload(proof)["nonce"] as? String,
+            "nonce-fixture-0123456789abcdef"
+        )
+    }
+
+    func testCallerOwnedTransportCanForceSingleFlightRefresh() async throws {
+        let fixture = try await makeFixture()
+        var request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        try await fixture.client.authorize(&request, feature: "habit-assistant")
+
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for _ in 0 ..< 16 {
+                group.addTask { try await fixture.client.refresh() }
+            }
+            try await group.waitForAll()
+        }
+
+        let counts = await fixture.server.counts()
+        XCTAssertEqual(counts.refresh, 1)
+    }
+
+    func testCallerOwnedTransportRejectsInvalidNonceBeforeSigning() async throws {
+        let fixture = try await makeFixture()
+        var request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+
+        do {
+            try await fixture.client.authorize(&request, feature: "habit-assistant", nonce: "short")
+            XCTFail("An invalid server nonce must fail before authorization")
+        } catch let LatchwayError.invalidRequest(reason) {
+            XCTAssertTrue(reason.contains("nonce"))
+        }
+        let counts = await fixture.server.counts()
+        XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+        XCTAssertEqual(counts.challenge, 0)
+    }
+
+    func testInvalidClientSDKVersionFailsBeforeNetworkUse() async throws {
+        let fixture = try await makeFixture(clientSDKVersion: "development")
+        var request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+
+        do {
+            try await fixture.client.authorize(&request, feature: "habit-assistant")
+            XCTFail("An invalid SDK version must fail before session establishment")
+        } catch let LatchwayError.invalidConfiguration(reason) {
+            XCTAssertTrue(reason.contains("clientSDKVersion"))
+        }
+        let counts = await fixture.server.counts()
+        XCTAssertEqual(counts.challenge, 0)
+        XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+    }
+
+    private struct Fixture {
+        let client: LatchwayClient
+        let server: SessionServerTransport
+        let identity: CountingIdentityProvider
+        let attestation: LatchwayScriptedAttestationProvider
+        let storage: LatchwayInMemorySessionStorage
+        let clock: LatchwayTestClock
+    }
+
+    private func makeFixture(
+        requireNonce: Bool = false,
+        delayNanoseconds: UInt64 = 0,
+        dataPlaneRejection: String? = nil,
+        dataPlaneRetryable: Bool = true,
+        challengeExpired: Bool = false,
+        challengeClockOffset: TimeInterval = 0,
+        refreshRejection: String? = nil,
+        failingSaveCalls: Set<Int> = [],
+        storedRefreshToken: String? = nil,
+        clientRuntime: LatchwayClientRuntime = .iOS,
+        clientSDKVersion: String = LatchwayVersion.sdk,
+        baseURL: URL = URL(string: "https://gateway.example.test")!
+    ) async throws -> Fixture {
+        let raw = try decodeBase64URL("2ZFd1bc5bCB8zu8OEf5l7O9x_SxbsQNQMNn0si4NxxI")
+        let key = try LatchwayDeterministicInstallationKey(rawPrivateKey: raw)
+        let clock = LatchwayTestClock(now: Date(timeIntervalSince1970: 1_700_000_000))
+        let thumbprint = try await LatchwayDPoPProofFactory(key: key, clock: clock).thumbprint()
+        let server = SessionServerTransport(
+            thumbprint: thumbprint,
+            now: Date(timeIntervalSince1970: 1_700_000_000),
+            requireNonce: requireNonce,
+            delayNanoseconds: delayNanoseconds,
+            dataPlaneRejection: dataPlaneRejection,
+            dataPlaneRetryable: dataPlaneRetryable,
+            challengeExpired: challengeExpired,
+            challengeClockOffset: challengeClockOffset,
+            refreshRejection: refreshRejection,
+            platform: clientRuntime.platformIdentifier
+        )
+        let identity = CountingIdentityProvider(token: String(repeating: "i", count: 32))
+        let evidence = LatchwayAttestationEvidence(provider: "app_attest", evidence: [
+            "key_id": .string("fixture-key"),
+            "attestation_object": .string("YXR0ZXN0YXRpb24"),
+        ])
+        let attestation = LatchwayScriptedAttestationProvider(results: Array(repeating: .success(evidence), count: 4))
+        let storedSession = storedRefreshToken.map { token in
+            LatchwayStoredSession(
+                refreshToken: token,
+                refreshExpiresAt: Date(timeIntervalSince1970: 1_700_086_400),
+                installation: LatchwayInstallationSummary(
+                    id: "ins_01J00000000000000000000000",
+                    platform: clientRuntime.platformIdentifier,
+                    dpopJKT: thumbprint,
+                    status: "active"
+                )
+            )
+        }
+        let storage = LatchwayInMemorySessionStorage(
+            session: storedSession,
+            failingSaveCalls: failingSaveCalls
+        )
+        let configuration = LatchwayConfiguration(
+            baseURL: baseURL,
+            applicationID: "app_habitify",
+            environment: "production",
+            clientRuntime: clientRuntime,
+            clientSDKVersion: clientSDKVersion,
+            appVersion: "1.2.3",
+            attestationProvider: attestation
+        )
+        let client = LatchwayClient(
+            configuration: configuration,
+            identityTokenProvider: identity,
+            attestationProvider: attestation,
+            installationKey: key,
+            sessionStorage: storage,
+            transport: server,
+            clock: clock
+        )
+        return Fixture(client: client, server: server, identity: identity, attestation: attestation, storage: storage, clock: clock)
+    }
+
+    private func proofPayload(_ proof: String) throws -> [String: Any] {
+        let parts = proof.split(separator: ".")
+        guard parts.count == 3 else { throw LatchwayError.dpopTestFailure }
+        return try XCTUnwrap(JSONSerialization.jsonObject(with: decodeBase64URL(String(parts[1]))) as? [String: Any])
+    }
+
+    private func decodeBase64URL(_ value: String) throws -> Data {
+        var value = value.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        value += String(repeating: "=", count: (4 - value.count % 4) % 4)
+        return try XCTUnwrap(Data(base64Encoded: value))
+    }
+}
+
+private actor CountingIdentityProvider: LatchwayIdentityTokenProvider {
+    private let token: String
+    private var calls = 0
+    init(token: String) { self.token = token }
+    func identityToken() async throws -> String {
+        calls += 1
+        return token
+    }
+    func count() -> Int { calls }
+}
+
+private actor SessionServerTransport: LatchwayHTTPTransport {
+    private let thumbprint: String
+    private let now: Date
+    private let requireNonce: Bool
+    private let delayNanoseconds: UInt64
+    private var challengeCount = 0
+    private var exchangeCount = 0
+    private var refreshCount = 0
+    private var quotaCount = 0
+    private var revokeCount = 0
+    private var dataPlaneCount = 0
+    private var proofs: [String] = []
+    private var protectedProofs: [String] = []
+    private var challengeIDs: [String] = []
+    private var challengeSDKs: [String] = []
+    private var requestedPlatforms: [String] = []
+    private var requestedSDKVersions: [String] = []
+    private var protectedRequestIDs: [String] = []
+    private let dataPlaneRejection: String?
+    private let dataPlaneRetryable: Bool
+    private let challengeExpired: Bool
+    private let challengeClockOffset: TimeInterval
+    private let refreshRejection: String?
+    private let platform: String
+
+    init(
+        thumbprint: String,
+        now: Date,
+        requireNonce: Bool,
+        delayNanoseconds: UInt64,
+        dataPlaneRejection: String?,
+        dataPlaneRetryable: Bool,
+        challengeExpired: Bool,
+        challengeClockOffset: TimeInterval,
+        refreshRejection: String?,
+        platform: String
+    ) {
+        self.thumbprint = thumbprint
+        self.now = now
+        self.requireNonce = requireNonce
+        self.delayNanoseconds = delayNanoseconds
+        self.dataPlaneRejection = dataPlaneRejection
+        self.dataPlaneRetryable = dataPlaneRetryable
+        self.challengeExpired = challengeExpired
+        self.challengeClockOffset = challengeClockOffset
+        self.refreshRejection = refreshRejection
+        self.platform = platform
+    }
+
+    func send(_ request: URLRequest) async throws -> LatchwayHTTPResponse {
+        if delayNanoseconds > 0 { try await Task.sleep(nanoseconds: delayNanoseconds) }
+        let path = request.url?.path ?? ""
+        switch path {
+        case "/client/v1/session-challenges":
+            challengeCount += 1
+            proofs.append(request.value(forHTTPHeaderField: "DPoP") ?? "")
+            challengeIDs.append(request.value(forHTTPHeaderField: "X-Latchway-Request-ID") ?? "")
+            challengeSDKs.append(request.value(forHTTPHeaderField: "X-Latchway-SDK") ?? "")
+            if let body = request.httpBody,
+               let object = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+               let requestedPlatform = object["platform"] as? String {
+                requestedPlatforms.append(requestedPlatform)
+                if let requestedSDKVersion = object["sdk_version"] as? String {
+                    requestedSDKVersions.append(requestedSDKVersion)
+                }
+            }
+            if requireNonce, challengeCount == 1 {
+                return problem(
+                    status: 401,
+                    code: "dpop_nonce_required",
+                    retryable: true,
+                    headers: ["DPoP-Nonce": "nonce-fixture-0123456789abcdef"]
+                )
+            }
+            return json(status: 201, object: [
+                "challenge_id": "chl_01J00000000000000000000000",
+                "challenge_nonce": String(repeating: "A", count: 43),
+                "binding_version": 1,
+                "issued_at": Int(now.addingTimeInterval(challengeClockOffset).timeIntervalSince1970),
+                "expires_at": iso(now.addingTimeInterval(challengeExpired ? -1 : challengeClockOffset + 300)),
+                "attestation": [
+                    "provider": "app_attest",
+                    "mode": "required",
+                    "client_data_hash": base64URL(Data(repeating: 7, count: 32)),
+                    "provider_options": [:],
+                ],
+            ])
+        case "/client/v1/sessions":
+            exchangeCount += 1
+            return grant(status: 201, sequence: exchangeCount)
+        case "/client/v1/sessions/refresh":
+            refreshCount += 1
+            if let refreshRejection,
+               refreshRejection != "identity_reauthentication_required" || refreshCount == 1 {
+                let status = refreshRejection == "installation_revoked" ? 403 : 401
+                return problem(status: status, code: refreshRejection, retryable: false)
+            }
+            return grant(status: 200, sequence: 100 + refreshCount)
+        case "/client/v1/features/habit-assistant/quota":
+            quotaCount += 1
+            return json(status: 200, object: [
+                "feature": "habit-assistant",
+                "observed_at": iso(now),
+                "limits": [["metric": "logical_requests", "maximum": 5, "used": 1, "reserved": 0, "remaining": 4, "hard": true]],
+            ])
+        case "/client/v1/installations/current":
+            revokeCount += 1
+            return LatchwayHTTPResponse(statusCode: 204, headers: [:], body: Data())
+        case "/client/v1/diagnostics":
+            return json(status: 200, object: [
+                "request_id": "request-12345678",
+                "server_version": "0.1.0",
+                "contract_version": "0.1.0",
+                "protocol_version": 1,
+                "installation": installation,
+                "session": ["expires_at": iso(now.addingTimeInterval(600)), "refresh_available": true],
+                "trust": trust,
+            ])
+        case "/v1/responses":
+            dataPlaneCount += 1
+            protectedProofs.append(request.value(forHTTPHeaderField: "DPoP") ?? "")
+            protectedRequestIDs.append(request.value(forHTTPHeaderField: "X-Latchway-Request-ID") ?? "")
+            if dataPlaneCount == 1, let dataPlaneRejection {
+                if dataPlaneRejection == "malformed" {
+                    return LatchwayHTTPResponse(
+                        statusCode: 500,
+                        headers: ["Content-Type": "text/plain"],
+                        body: Data("unsafe error".utf8)
+                    )
+                }
+                let status = dataPlaneRejection == "upstream_unavailable" ? 503 : 401
+                let headers = dataPlaneRejection == "dpop_nonce_required"
+                    ? ["DPoP-Nonce": "nonce-fixture-0123456789abcdef"]
+                    : [:]
+                return problem(
+                    status: status,
+                    code: dataPlaneRejection,
+                    retryable: dataPlaneRetryable,
+                    headers: headers
+                )
+            }
+            return json(status: 200, object: ["ok": true])
+        default:
+            return problem(status: 404, code: "feature_not_found", retryable: false)
+        }
+    }
+
+    func counts() -> (challenge: Int, exchange: Int, refresh: Int, quota: Int, revoke: Int, dataPlane: Int) {
+        (challengeCount, exchangeCount, refreshCount, quotaCount, revokeCount, dataPlaneCount)
+    }
+
+    func challengeProofs() -> [String] { proofs }
+    func challengeRequestIDs() -> [String] { challengeIDs }
+    func challengeSDKIdentifiers() -> [String] { challengeSDKs }
+    func challengePlatforms() -> [String] { requestedPlatforms }
+    func challengeSDKVersions() -> [String] { requestedSDKVersions }
+    func dataPlaneProofs() -> [String] { protectedProofs }
+    func dataPlaneRequestIDs() -> [String] { protectedRequestIDs }
+
+    private func grant(status: Int, sequence: Int) -> LatchwayHTTPResponse {
+        json(status: status, object: [
+            "access_token": String(repeating: "a", count: 80) + String(sequence),
+            "token_type": "DPoP",
+            "expires_in": 600,
+            "refresh_token": String(repeating: "r", count: 48) + String(sequence),
+            "refresh_expires_in": 86_400,
+            "installation": installation,
+            "trust": trust,
+        ])
+    }
+
+    private var installation: [String: Any] {
+        ["id": "ins_01J00000000000000000000000", "platform": platform, "dpop_jkt": thumbprint, "status": "active"]
+    }
+
+    private var trust: [String: Any] {
+        ["provider": "app_attest", "level": "app_verified", "verified_at": iso(now), "expires_at": iso(now.addingTimeInterval(86_400))]
+    }
+
+    private func problem(status: Int, code: String, retryable: Bool, headers: [String: String] = [:]) -> LatchwayHTTPResponse {
+        json(status: status, object: [
+            "type": "https://latchway.dev/problems/\(code)",
+            "title": "Safe failure",
+            "status": status,
+            "detail": "The request was rejected safely.",
+            "code": code,
+            "request_id": "request-12345678",
+            "retryable": retryable,
+        ], headers: headers)
+    }
+
+    private func json(status: Int, object: Any, headers: [String: String] = [:]) -> LatchwayHTTPResponse {
+        var headers = headers
+        headers["Content-Type"] = status >= 400 ? "application/problem+json" : "application/json"
+        return LatchwayHTTPResponse(statusCode: status, headers: headers, body: try! JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]))
+    }
+
+    private func iso(_ date: Date) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.string(from: date)
+    }
+
+    private func base64URL(_ data: Data) -> String {
+        data.base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
+    }
+}
+
+private extension LatchwayError {
+    static var dpopTestFailure: LatchwayError { .invalidServerResponse }
+}
+
+private func XCTAssertThrowsErrorAsync(
+    _ operation: () async throws -> Void,
+    file: StaticString = #filePath,
+    line: UInt = #line
+) async {
+    do {
+        try await operation()
+        XCTFail("Expected error", file: file, line: line)
+    } catch {}
+}

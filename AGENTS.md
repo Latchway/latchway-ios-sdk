@@ -8,11 +8,12 @@ Build the Swift SDK that lets iOS applications authenticate to Latchway,
 establish device-bound sessions, and authorize ordinary URL requests without
 holding an upstream provider credential.
 
-This repository currently contains governance and architecture foundations
-only. Do not add Package.swift, production SDK source, generated wire models, or
-contract.lock until the core repository has published the corresponding
-contract bundle and the active implementation phase authorizes that work. Never
-invent a temporary wire contract or fake production behavior.
+Phase 10 Swift implementation is active against contract 0.1.0, wire protocol
+1, and the checksummed core revision recorded in contract.lock. Package source,
+tests, examples, and internal handwritten wire DTOs may evolve within that
+locked contract. A contract change must update the lock and shared fixtures in
+the same reviewed change. Never invent a temporary wire contract or fake
+production behavior.
 
 ## Authority and dependency boundaries
 

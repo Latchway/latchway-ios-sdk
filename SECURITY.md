@@ -2,9 +2,10 @@
 
 ## Release status
 
-Latchway iOS SDK is pre-release and does not yet have a supported production
-version. Do not use this repository as a security boundary until a release is
-published and its compatibility entry is recorded.
+Latchway iOS SDK is a pre-release implementation and does not yet have a
+supported production version. Do not use it as a supported security boundary
+until the compatibility entry, server conformance, and physical-device App
+Attest evidence are recorded.
 
 Security fixes will target supported releases once the support matrix is
 established. The unreleased branch may change without compatibility guarantees.

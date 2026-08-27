@@ -7,6 +7,9 @@ xcuserdata/
 # Swift Package Manager local output
 .build/
 .swiftpm/xcode/package.xcworkspace/xcuserdata/
+Examples/AppAttestConformance/AppAttestConformance.xcodeproj/
+Examples/AppAttestConformance/AppAttestConformance.xcworkspace/
+Examples/AppAttestConformance/Derived/
 
 # Local credentials and signing material
 .env
