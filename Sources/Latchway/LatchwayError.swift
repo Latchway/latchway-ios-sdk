@@ -1,0 +1,149 @@
+import Foundation
+
+public enum LatchwayErrorCode: Sendable, Equatable, Hashable, CustomStringConvertible {
+    case requestInvalid
+    case identityTokenMissing
+    case identityTokenInvalid
+    case identityTokenExpired
+    case identityReauthenticationRequired
+    case attestationRequired
+    case attestationUnsupported
+    case attestationInvalid
+    case attestationStale
+    case attestationStepUpRequired
+    case dpopMissing
+    case dpopInvalid
+    case dpopReplayed
+    case dpopNonceRequired
+    case sessionExpired
+    case sessionRevoked
+    case refreshTokenReused
+    case installationRevoked
+    case featureNotFound
+    case featureNotAllowed
+    case modelNotAllowed
+    case quotaExceeded
+    case concurrencyExceeded
+    case outputLimitExceeded
+    case pricingUnavailable
+    case routeNotFound
+    case upstreamUnavailable
+    case upstreamTimeout
+    case upstreamProtocolError
+    case configurationInvalid
+    case serverNotReady
+    case protocolVersionUnsupported
+    case rateLimited
+    case internalError
+    case unknown(String)
+
+    public init(rawValue: String) {
+        self = Self.known[rawValue] ?? .unknown(rawValue)
+    }
+
+    public var description: String {
+        switch self {
+        case let .unknown(value): value
+        default: Self.rawByKnown[self]!
+        }
+    }
+
+    private static let known: [String: Self] = [
+        "request_invalid": .requestInvalid,
+        "identity_token_missing": .identityTokenMissing,
+        "identity_token_invalid": .identityTokenInvalid,
+        "identity_token_expired": .identityTokenExpired,
+        "identity_reauthentication_required": .identityReauthenticationRequired,
+        "attestation_required": .attestationRequired,
+        "attestation_unsupported": .attestationUnsupported,
+        "attestation_invalid": .attestationInvalid,
+        "attestation_stale": .attestationStale,
+        "attestation_step_up_required": .attestationStepUpRequired,
+        "dpop_missing": .dpopMissing,
+        "dpop_invalid": .dpopInvalid,
+        "dpop_replayed": .dpopReplayed,
+        "dpop_nonce_required": .dpopNonceRequired,
+        "session_expired": .sessionExpired,
+        "session_revoked": .sessionRevoked,
+        "refresh_token_reused": .refreshTokenReused,
+        "installation_revoked": .installationRevoked,
+        "feature_not_found": .featureNotFound,
+        "feature_not_allowed": .featureNotAllowed,
+        "model_not_allowed": .modelNotAllowed,
+        "quota_exceeded": .quotaExceeded,
+        "concurrency_exceeded": .concurrencyExceeded,
+        "output_limit_exceeded": .outputLimitExceeded,
+        "pricing_unavailable": .pricingUnavailable,
+        "route_not_found": .routeNotFound,
+        "upstream_unavailable": .upstreamUnavailable,
+        "upstream_timeout": .upstreamTimeout,
+        "upstream_protocol_error": .upstreamProtocolError,
+        "configuration_invalid": .configurationInvalid,
+        "server_not_ready": .serverNotReady,
+        "protocol_version_unsupported": .protocolVersionUnsupported,
+        "rate_limited": .rateLimited,
+        "internal_error": .internalError,
+    ]
+
+    private static let rawByKnown: [Self: String] = Dictionary(uniqueKeysWithValues: known.map { ($0.value, $0.key) })
+}
+
+public struct LatchwayProblem: Sendable, Equatable, Error {
+    public let code: LatchwayErrorCode
+    public let title: String
+    public let detail: String
+    public let status: Int
+    public let requestID: String
+    public let retryable: Bool
+    public let retryAfter: Date?
+
+    public init(
+        code: LatchwayErrorCode,
+        title: String,
+        detail: String,
+        status: Int,
+        requestID: String,
+        retryable: Bool,
+        retryAfter: Date? = nil
+    ) {
+        self.code = code
+        self.title = title
+        self.detail = detail
+        self.status = status
+        self.requestID = requestID
+        self.retryable = retryable
+        self.retryAfter = retryAfter
+    }
+}
+
+public enum LatchwayError: Error, Sendable, Equatable, CustomStringConvertible, LocalizedError {
+    case invalidConfiguration(String)
+    case invalidRequest(String)
+    case secureEnclaveUnavailable
+    case keyStorageFailure
+    case attestationUnavailable
+    case invalidAttestationBinding
+    case sessionUnavailable
+    case transportFailure
+    case invalidServerResponse
+    case server(LatchwayProblem)
+    case cancelled
+
+    public var description: String {
+        switch self {
+        case let .invalidConfiguration(reason): "Latchway configuration is invalid: \(reason)"
+        case let .invalidRequest(reason): "Latchway request is invalid: \(reason)"
+        case .secureEnclaveUnavailable: "Secure Enclave is unavailable and software fallback is disabled."
+        case .keyStorageFailure: "The installation key or session could not be stored securely."
+        case .attestationUnavailable: "The required platform attestation provider is unavailable."
+        case .invalidAttestationBinding: "The server supplied an invalid attestation binding."
+        case .sessionUnavailable: "A Latchway session could not be established."
+        case .transportFailure: "A Latchway transport operation failed."
+        case .invalidServerResponse: "Latchway returned an invalid response."
+        case let .server(problem): "Latchway request failed (\(problem.code), request \(problem.requestID))."
+        case .cancelled: "The Latchway operation was cancelled."
+        }
+    }
+
+    public var errorDescription: String? { description }
+}
