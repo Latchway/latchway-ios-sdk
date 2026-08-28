@@ -49,6 +49,7 @@ fi
 
 cmp "$contract_dir/test-vectors/dpop/v1.json" Tests/ConformanceTests/Fixtures/dpop-v1.json
 cmp "$contract_dir/test-vectors/attestation-binding/v1.json" Tests/ConformanceTests/Fixtures/attestation-binding-v1.json
+cmp "$contract_dir/protocol-version.json" Tests/ConformanceTests/Fixtures/protocol-version.json
 
 if [ -n "$bundle_archive" ]; then
   echo "contract $locked_version / wire $locked_protocol / bundle $locked_bundle_sha verified"

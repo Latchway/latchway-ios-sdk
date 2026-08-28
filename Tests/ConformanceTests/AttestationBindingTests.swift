@@ -1,11 +1,13 @@
 import CryptoKit
 import Foundation
+import Latchway
 import XCTest
 
 final class AttestationBindingTests: XCTestCase {
     func testEveryCanonicalBindingVector() throws {
         let url = try XCTUnwrap(Bundle.module.url(forResource: "attestation-binding-v1", withExtension: "json", subdirectory: "Fixtures"))
         let root = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        XCTAssertEqual(root["contract_version"] as? String, LatchwayVersion.contract)
         XCTAssertEqual(root["canonicalization"] as? String, "RFC 8785 JCS")
         XCTAssertEqual(root["hash"] as? String, "SHA-256")
         let vectors = try XCTUnwrap(root["vectors"] as? [[String: Any]])

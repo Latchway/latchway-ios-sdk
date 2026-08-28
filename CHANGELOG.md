@@ -23,3 +23,11 @@ Versioning once package publication begins.
 - Runtime-isolated native Keychain and App Attest namespaces, independently
   versioned client headers, and a build-linted CocoaPods App Attest subspec for
   React Native autolinking.
+
+### Changed
+
+- Synchronized the SDK with draft core contract 0.3.0 at commit
+  `05f88b41813c210a23a459519abd3f7a9c3e45fa` and deterministic bundle SHA-256
+  `ea265cfa750df8faeeaeac7bc60c04c4d907384205b5bf4d78a22a79dfc4d24c`.
+  Wire protocol remains 1; the minimum server version is 0.3.0 and the maximum
+  tested server series is 0.3.x.

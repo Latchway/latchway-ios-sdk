@@ -5,8 +5,9 @@ self-hosted gateway without embedding an upstream provider key. This package
 provides the Swift transport and platform-security integration for that client
 boundary.
 
-> **Project status:** pre-release implementation for contract 0.2.0 and wire
-> protocol 1. The package builds and its fixture suite passes, but it is not a
+> **Project status:** pre-release implementation for contract 0.3.0 and wire
+> protocol 1, with server 0.3.0 as the minimum and 0.3.x as the maximum tested
+> series. The package builds and its fixture suite passes, but it is not a
 > supported release until server conformance and a real App Attest device run
 > are recorded.
 
@@ -125,8 +126,9 @@ compatibility rules. This SDK consumes a signed and checksummed contract bundle;
 it does not define an independent wire protocol.
 
 The exact core revision and bundle SHA-256 are recorded in `contract.lock`.
-Shared DPoP and attestation-binding fixtures are copied into the conformance
-target and checked by `scripts/check-contract.sh`. See
+The normative protocol manifest and shared DPoP and attestation-binding
+fixtures are copied into the conformance target and checked byte-for-byte by
+`scripts/check-contract.sh`. See
 [Architecture](docs/architecture.md) for dependency and trust boundaries.
 
 ## Security model
