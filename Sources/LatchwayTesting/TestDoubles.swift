@@ -18,11 +18,41 @@ public struct LatchwayClosureIdentityTokenProvider: LatchwayIdentityTokenProvide
 
 public actor LatchwayTestClock: LatchwayClock {
     private var instant: Date
+    private var readsSuspended = false
+    private var pendingReads: [CheckedContinuation<Date, Never>] = []
 
     public init(now: Date) { instant = now }
-    public func now() async -> Date { instant }
+    public func now() async -> Date {
+        if !readsSuspended { return instant }
+        return await withCheckedContinuation { continuation in
+            pendingReads.append(continuation)
+        }
+    }
     public func advance(by interval: TimeInterval) { instant.addTimeInterval(interval) }
     public func set(_ date: Date) { instant = date }
+
+    /// Suspends subsequent reads so concurrency tests can deterministically
+    /// exercise actor reentrancy at a clock boundary.
+    public func suspendReads() { readsSuspended = true }
+
+    public func pendingReadCount() -> Int { pendingReads.count }
+
+    /// Resumes one already-suspended read and lets new reads proceed. Other
+    /// pending reads remain suspended until ``resumePendingReads()``.
+    public func resumeOneReadAndAllowFutureReads() {
+        readsSuspended = false
+        guard !pendingReads.isEmpty else { return }
+        pendingReads.removeFirst().resume(returning: instant)
+    }
+
+    public func resumePendingReads() {
+        readsSuspended = false
+        let continuations = pendingReads
+        pendingReads.removeAll(keepingCapacity: false)
+        for continuation in continuations {
+            continuation.resume(returning: instant)
+        }
+    }
 }
 
 public actor LatchwayInMemorySessionStorage: LatchwaySessionStorage {

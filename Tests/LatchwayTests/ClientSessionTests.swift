@@ -55,6 +55,49 @@ final class ClientSessionTests: XCTestCase {
         XCTAssertEqual(saveCount, 2)
     }
 
+    func testExpiredCallersRecheckSessionAfterActorReentrancy() async throws {
+        let fixture = try await makeFixture()
+        var first = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        try await fixture.client.authorize(&first, feature: "habit-assistant")
+        await fixture.clock.advance(by: 3_601)
+        await fixture.clock.suspendReads()
+
+        let callers = (0 ..< 24).map { _ in
+            Task {
+                var request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+                try await fixture.client.authorize(&request, feature: "habit-assistant")
+            }
+        }
+
+        for _ in 0 ..< 10_000 {
+            if await fixture.clock.pendingReadCount() == callers.count { break }
+            await Task.yield()
+        }
+        let allCallersSuspended = await fixture.clock.pendingReadCount() == callers.count
+        await fixture.clock.resumeOneReadAndAllowFutureReads()
+
+        var firstRefreshCompleted = false
+        for _ in 0 ..< 10_000 {
+            let counts = await fixture.server.counts()
+            if counts.refresh == 1, await fixture.storage.saveCount == 2 {
+                firstRefreshCompleted = true
+                break
+            }
+            await Task.yield()
+        }
+        await fixture.clock.resumePendingReads()
+        for caller in callers { try await caller.value }
+
+        XCTAssertTrue(allCallersSuspended)
+        XCTAssertTrue(firstRefreshCompleted)
+        let counts = await fixture.server.counts()
+        let saveCount = await fixture.storage.saveCount
+        XCTAssertEqual(counts.challenge, 1)
+        XCTAssertEqual(counts.exchange, 1)
+        XCTAssertEqual(counts.refresh, 1)
+        XCTAssertEqual(saveCount, 2)
+    }
+
     func testDPoPNonceChallengeRetriesControlRequestOnlyOnce() async throws {
         let fixture = try await makeFixture(requireNonce: true)
         var request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)

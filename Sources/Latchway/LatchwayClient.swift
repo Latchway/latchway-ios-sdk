@@ -309,7 +309,8 @@ public actor LatchwayClient {
     private func activeSession() async throws -> RuntimeSession {
         try validateConfiguration()
         if state == .revoked { throw terminalError ?? LatchwayError.sessionUnavailable }
-        if let session, session.isUsable(at: await clock.now()) {
+        let now = await clock.now()
+        if let session, session.isUsable(at: now) {
             state = .active
             return session
         }
@@ -318,7 +319,15 @@ public actor LatchwayClient {
 
         if session != nil { return try await refreshSession(force: true) }
         do {
-            if let stored = try await sessionStorage.load(), stored.refreshExpiresAt > (await clock.now()) {
+            let stored = try await sessionStorage.load()
+            let resumedAt = await clock.now()
+            if let session, session.isUsable(at: resumedAt) {
+                state = .active
+                return session
+            }
+            if refreshTask != nil { return try await refreshSession(force: true) }
+            if establishmentTask != nil { return try await establishSession() }
+            if let stored, stored.refreshExpiresAt > resumedAt {
                 return try await refreshStoredSession(stored)
             }
         } catch let error as LatchwayError {
@@ -332,56 +341,15 @@ public actor LatchwayClient {
         if let establishmentTask { return try await resolve(establishmentTask, kind: .establishing) }
         state = .establishing
         let task = Task { [identityTokenProvider, attestationProvider, controlPlane, proofFactory, sessionStorage, configuration, clock] in
-            try Task.checkCancellation()
-            let identityToken = try await identityTokenProvider.identityToken()
-            guard (16 ... 65_536).contains(identityToken.utf8.count) else {
-                throw LatchwayError.invalidRequest("The identity token has an invalid length")
-            }
-            let challenge = try await controlPlane.createChallenge(identityToken: identityToken)
-            let now = await clock.now()
-            let issuedAt = Date(timeIntervalSince1970: TimeInterval(challenge.issuedAt))
-            let challengeTTL = challenge.expiresAt.timeIntervalSince(issuedAt)
-            guard challenge.bindingVersion == 1,
-                  challenge.challengeID.range(
-                      of: "^chl_[A-Za-z0-9_-]{16,128}$",
-                      options: .regularExpression
-                  ) != nil,
-                  challenge.challengeNonce.range(
-                      of: "^[A-Za-z0-9_-]+$",
-                      options: .regularExpression
-                  ) != nil,
-                  challenge.issuedAt >= 0,
-                  issuedAt <= now.addingTimeInterval(300),
-                  challengeTTL > 0,
-                  challenge.expiresAt > now,
-                  ["required", "preferred"].contains(challenge.attestation.mode),
-                  ["app_attest", "play_integrity", "firebase_app_check", "turnstile", "debug"]
-                      .contains(challenge.attestation.provider),
-                  challenge.attestation.clientDataHash.utf8.count == 43,
-                  let clientDataHash = try? Base64URL.decode(challenge.attestation.clientDataHash),
-                  clientDataHash.count == 32
-            else { throw LatchwayError.invalidAttestationBinding }
-
-            let attestationChallenge = LatchwayAttestationChallenge(
-                id: challenge.challengeID,
-                provider: challenge.attestation.provider,
-                clientDataHash: clientDataHash,
-                expiresAt: challenge.expiresAt,
-                options: challenge.attestation.providerOptions ?? [:]
+            try await Self.performEstablishment(
+                identityTokenProvider: identityTokenProvider,
+                attestationProvider: attestationProvider,
+                controlPlane: controlPlane,
+                proofFactory: proofFactory,
+                sessionStorage: sessionStorage,
+                configuration: configuration,
+                clock: clock
             )
-            let evidence = try await attestationProvider.evidence(for: attestationChallenge)
-            guard evidence.provider == challenge.attestation.provider else { throw LatchwayError.attestationUnavailable }
-            let grant = try await controlPlane.exchange(challengeID: challenge.challengeID, evidence: evidence)
-            let expectedThumbprint = try await proofFactory.thumbprint()
-            let accepted = try await Self.accept(
-                grant: grant,
-                issuedAt: await clock.now(),
-                expectedThumbprint: expectedThumbprint,
-                storage: sessionStorage,
-                configuration: configuration
-            )
-            await attestationProvider.didAccept(evidence)
-            return accepted
         }
         establishmentTask = task
         defer { establishmentTask = nil }
@@ -408,27 +376,36 @@ public actor LatchwayClient {
     }
 
     private func refreshStoredSession(_ stored: LatchwayStoredSession) async throws -> RuntimeSession {
-        let now = await clock.now()
-        let remainingLifetime = stored.refreshExpiresAt.timeIntervalSince(now)
-        let expectedThumbprint = try await proofFactory.thumbprint()
-        guard (32 ... 2_048).contains(stored.refreshToken.utf8.count),
-              remainingLifetime.isFinite,
-              remainingLifetime > 0,
-              remainingLifetime <= 31_536_300,
-              stored.installation.id.range(
-                  of: "^ins_[A-Za-z0-9_-]{16,128}$",
-                  options: .regularExpression
-              ) != nil,
-              stored.installation.platform == configuration.clientRuntime.platformIdentifier,
-              stored.installation.status == "active",
-              stored.installation.dpopJKT == expectedThumbprint
-        else {
-            await clearSession()
-            return try await establishSession()
-        }
         if let refreshTask { return try await resolve(refreshTask, kind: .refreshing) }
         state = .refreshing
-        let task = Task { [controlPlane, identityTokenProvider, proofFactory, sessionStorage, configuration, clock] in
+        let task = Task { [controlPlane, identityTokenProvider, attestationProvider, proofFactory, sessionStorage, configuration, clock] in
+            try Task.checkCancellation()
+            let now = await clock.now()
+            let remainingLifetime = stored.refreshExpiresAt.timeIntervalSince(now)
+            let expectedThumbprint = try await proofFactory.thumbprint()
+            guard (32 ... 2_048).contains(stored.refreshToken.utf8.count),
+                  remainingLifetime.isFinite,
+                  remainingLifetime > 0,
+                  remainingLifetime <= 31_536_300,
+                  stored.installation.id.range(
+                      of: "^ins_[A-Za-z0-9_-]{16,128}$",
+                      options: .regularExpression
+                  ) != nil,
+                  stored.installation.platform == configuration.clientRuntime.platformIdentifier,
+                  stored.installation.status == "active",
+                  stored.installation.dpopJKT == expectedThumbprint
+            else {
+                try? await sessionStorage.clear()
+                return try await Self.performEstablishment(
+                    identityTokenProvider: identityTokenProvider,
+                    attestationProvider: attestationProvider,
+                    controlPlane: controlPlane,
+                    proofFactory: proofFactory,
+                    sessionStorage: sessionStorage,
+                    configuration: configuration,
+                    clock: clock
+                )
+            }
             let grant: SessionGrantWire
             do {
                 grant = try await controlPlane.refresh(refreshToken: stored.refreshToken)
@@ -439,7 +416,6 @@ public actor LatchwayClient {
                 }
                 grant = try await controlPlane.refresh(refreshToken: stored.refreshToken, identityToken: identityToken)
             }
-            let expectedThumbprint = try await proofFactory.thumbprint()
             return try await Self.accept(
                 grant: grant,
                 issuedAt: await clock.now(),
@@ -466,6 +442,69 @@ public actor LatchwayClient {
             }
             throw error
         }
+    }
+
+    private static func performEstablishment(
+        identityTokenProvider: any LatchwayIdentityTokenProvider,
+        attestationProvider: any LatchwayAttestationProvider,
+        controlPlane: LatchwayControlPlane,
+        proofFactory: LatchwayDPoPProofFactory,
+        sessionStorage: any LatchwaySessionStorage,
+        configuration: LatchwayConfiguration,
+        clock: any LatchwayClock
+    ) async throws -> RuntimeSession {
+        try Task.checkCancellation()
+        let identityToken = try await identityTokenProvider.identityToken()
+        guard (16 ... 65_536).contains(identityToken.utf8.count) else {
+            throw LatchwayError.invalidRequest("The identity token has an invalid length")
+        }
+        let challenge = try await controlPlane.createChallenge(identityToken: identityToken)
+        let now = await clock.now()
+        let issuedAt = Date(timeIntervalSince1970: TimeInterval(challenge.issuedAt))
+        let challengeTTL = challenge.expiresAt.timeIntervalSince(issuedAt)
+        guard challenge.bindingVersion == 1,
+              challenge.challengeID.range(
+                  of: "^chl_[A-Za-z0-9_-]{16,128}$",
+                  options: .regularExpression
+              ) != nil,
+              challenge.challengeNonce.range(
+                  of: "^[A-Za-z0-9_-]+$",
+                  options: .regularExpression
+              ) != nil,
+              challenge.issuedAt >= 0,
+              issuedAt <= now.addingTimeInterval(300),
+              challengeTTL > 0,
+              challenge.expiresAt > now,
+              ["required", "preferred"].contains(challenge.attestation.mode),
+              ["app_attest", "play_integrity", "firebase_app_check", "turnstile", "debug"]
+                  .contains(challenge.attestation.provider),
+              challenge.attestation.clientDataHash.utf8.count == 43,
+              let clientDataHash = try? Base64URL.decode(challenge.attestation.clientDataHash),
+              clientDataHash.count == 32
+        else { throw LatchwayError.invalidAttestationBinding }
+
+        let attestationChallenge = LatchwayAttestationChallenge(
+            id: challenge.challengeID,
+            provider: challenge.attestation.provider,
+            clientDataHash: clientDataHash,
+            expiresAt: challenge.expiresAt,
+            options: challenge.attestation.providerOptions ?? [:]
+        )
+        let evidence = try await attestationProvider.evidence(for: attestationChallenge)
+        guard evidence.provider == challenge.attestation.provider else {
+            throw LatchwayError.attestationUnavailable
+        }
+        let grant = try await controlPlane.exchange(challengeID: challenge.challengeID, evidence: evidence)
+        let expectedThumbprint = try await proofFactory.thumbprint()
+        let accepted = try await Self.accept(
+            grant: grant,
+            issuedAt: await clock.now(),
+            expectedThumbprint: expectedThumbprint,
+            storage: sessionStorage,
+            configuration: configuration
+        )
+        await attestationProvider.didAccept(evidence)
+        return accepted
     }
 
     private func resolve(_ task: Task<RuntimeSession, Error>, kind: LatchwayDiagnostics.SessionState) async throws -> RuntimeSession {
