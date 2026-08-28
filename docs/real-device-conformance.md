@@ -74,7 +74,7 @@ The exact remaining credential-dependent validation is:
 
 ```text
 Run AppAttestConformance on the provisioned physical device against the exact
-core image for contract 0.1.0, complete one real App Attest registration and a
+core image for contract 0.2.0, complete one real App Attest registration and a
 streamed /v1/chat/completions request, then use Run assertion pass to prove
 assertion mode with the same App Attest key.
 ```

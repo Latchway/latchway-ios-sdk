@@ -667,7 +667,7 @@ private actor SessionServerTransport: LatchwayHTTPTransport {
             return json(status: 200, object: [
                 "request_id": "request-12345678",
                 "server_version": "0.1.0",
-                "contract_version": "0.1.0",
+                "contract_version": "0.2.0",
                 "protocol_version": 1,
                 "installation": installation,
                 "session": ["expires_at": iso(now.addingTimeInterval(600)), "refresh_available": true],

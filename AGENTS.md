@@ -8,7 +8,7 @@ Build the Swift SDK that lets iOS applications authenticate to Latchway,
 establish device-bound sessions, and authorize ordinary URL requests without
 holding an upstream provider credential.
 
-Phase 10 Swift implementation is active against contract 0.1.0, wire protocol
+Phase 10 Swift implementation is active against contract 0.2.0, wire protocol
 1, and the checksummed core revision recorded in contract.lock. Package source,
 tests, examples, and internal handwritten wire DTOs may evolve within that
 locked contract. A contract change must update the lock and shared fixtures in
