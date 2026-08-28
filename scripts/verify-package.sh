@@ -23,5 +23,5 @@ swift build \
 
 ruby -c Latchway.podspec >/dev/null
 if command -v pod >/dev/null 2>&1; then
-  pod lib lint Latchway.podspec --quick --skip-tests
+  pod lib lint Latchway.podspec --platforms=ios --fail-fast
 fi
