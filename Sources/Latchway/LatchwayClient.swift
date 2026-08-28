@@ -91,15 +91,17 @@ public actor LatchwayClient {
     ///
     /// This overload exists for transports such as React Native fetch where
     /// the caller, rather than ``send(_:feature:)``, owns network dispatch.
-    /// A nonce is opaque and non-secret, but is still length checked before it
-    /// is included in a signed proof.
+    /// A nonce is opaque and non-secret, but must be one unambiguous printable
+    /// ASCII field value before it is included in a signed proof.
     public func authorize(
         _ request: inout URLRequest,
         feature: String,
         nonce: String
     ) async throws {
-        guard (16 ... 512).contains(nonce.utf8.count) else {
-            throw LatchwayError.invalidRequest("DPoP nonce must contain 16 to 512 UTF-8 bytes")
+        guard SafeRetryDirective.isValidNonce(nonce) else {
+            throw LatchwayError.invalidRequest(
+                "DPoP nonce must be one 16 to 512 byte printable ASCII value without whitespace or commas"
+            )
         }
         try await authorize(&request, feature: feature, dpopNonce: nonce)
     }
@@ -173,19 +175,18 @@ public actor LatchwayClient {
             firstRequest.value(forHTTPHeaderField: "X-Latchway-Request-ID"),
             forHTTPHeaderField: "X-Latchway-Request-ID"
         )
-        switch firstProblem.code {
-        case .sessionExpired where firstProblem.status == 401 && firstProblem.retryable:
+        let retryDirective = SafeRetryDirective.parse(
+            response: firstResponse,
+            expectedRequestID: firstRequest.value(forHTTPHeaderField: "X-Latchway-Request-ID")
+        )
+        switch retryDirective {
+        case .sessionExpired:
             let refreshed = try await refreshSession(force: true)
             try await applyAuthorization(&retryRequest, feature: feature, active: refreshed, nonce: nil)
-        case .dpopNonceRequired where firstProblem.status == 401 && firstProblem.retryable:
-            guard let nonce = firstResponse.header("DPoP-Nonce"), (16 ... 512).contains(nonce.utf8.count) else {
-                let error = LatchwayError.server(firstProblem)
-                await record(error)
-                throw error
-            }
+        case let .dpopNonceRequired(nonce):
             let active = try await activeSession()
             try await applyAuthorization(&retryRequest, feature: feature, active: active, nonce: nonce)
-        default:
+        case nil:
             let error = LatchwayError.server(firstProblem)
             await record(error)
             throw error
@@ -731,27 +732,46 @@ public actor LatchwayClient {
                 )
             }
         }
-        let forbiddenHeaders = [
-            "X-Api-Key", "Api-Key", "X-Goog-Api-Key", "Proxy-Authorization",
-            "X-Amz-Security-Token",
-        ]
-        guard forbiddenHeaders.allSatisfy({ request.value(forHTTPHeaderField: $0) == nil }) else {
+        let headerNames = Set((request.allHTTPHeaderFields ?? [:]).keys.map { $0.lowercased() })
+        guard headerNames.isDisjoint(with: Self.forbiddenCredentialHeaderNames) else {
             throw LatchwayError.invalidRequest(
                 "Upstream provider credentials must not be supplied to Latchway"
             )
         }
-        let forbiddenQueryNames: Set<String> = [
-            "access_token", "api_key", "apikey", "auth_token", "key", "token",
-            "x-amz-credential", "x-amz-signature", "x-goog-signature",
-        ]
         let queryItems = request.url
             .flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: false)?.queryItems }
             ?? []
-        guard queryItems.allSatisfy({ !forbiddenQueryNames.contains($0.name.lowercased()) }) else {
+        guard queryItems.allSatisfy({ item in
+            !Self.forbiddenCredentialNames.contains(Self.decodedCredentialName(item.name))
+        }) else {
             throw LatchwayError.invalidRequest(
                 "Upstream provider credentials must not be supplied in the request URL"
             )
         }
+    }
+
+    private static let forbiddenCredentialNames: Set<String> = [
+        "authorization", "proxy-authorization",
+        "api-key", "api_key", "apikey", "x-api-key",
+        "openai-api-key", "openai_api_key", "x-openai-api-key",
+        "anthropic-api-key", "anthropic_api_key",
+        "access_token", "auth_token", "token", "key", "x-auth-token", "cookie",
+        "x-amz-credential", "x-amz-security-token", "x-amz-signature",
+        "x-goog-api-key", "x-goog_api_key", "x-goog-credential", "x-goog-signature",
+    ]
+
+    private static let forbiddenCredentialHeaderNames = forbiddenCredentialNames
+
+    private static func decodedCredentialName(_ name: String) -> String {
+        // URLComponents decodes one percent-encoding layer in queryItems.
+        // Bounded additional passes fail closed when an intermediary decodes
+        // a multiply encoded credential name before forwarding it upstream.
+        var decoded = name
+        for _ in 0 ..< 2 {
+            guard let next = decoded.removingPercentEncoding, next != decoded else { break }
+            decoded = next
+        }
+        return decoded.lowercased()
     }
 
     private static func effectivePort(_ components: URLComponents) -> Int? {

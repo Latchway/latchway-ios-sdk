@@ -71,6 +71,23 @@ final class ClientSessionTests: XCTestCase {
         XCTAssertEqual(secondPayload["nonce"] as? String, "nonce-fixture-0123456789abcdef")
     }
 
+    func testControlPlaneDoesNotRetryAmbiguousDPoPNonce() async throws {
+        let fixture = try await makeFixture(
+            requireNonce: true,
+            safeRetryProblemMutation: .commaNonce
+        )
+        var request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+
+        await XCTAssertThrowsErrorAsync {
+            try await fixture.client.authorize(&request, feature: "habit-assistant")
+        }
+
+        let counts = await fixture.server.counts()
+        XCTAssertEqual(counts.challenge, 1)
+        XCTAssertEqual(counts.exchange, 0)
+        XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+    }
+
     func testCancellationDoesNotReturnAuthorizedSecretHeaders() async throws {
         let fixture = try await makeFixture(delayNanoseconds: 250_000_000)
         let task = Task { () throws -> URLRequest in
@@ -113,6 +130,67 @@ final class ClientSessionTests: XCTestCase {
         var foreign = URLRequest(url: URL(string: "https://attacker.example/v1/responses")!)
         await XCTAssertThrowsErrorAsync { try await fixture.client.authorize(&foreign, feature: "habit-assistant") }
         XCTAssertNil(foreign.value(forHTTPHeaderField: "Authorization"))
+    }
+
+    func testRejectsEveryKnownProviderCredentialAliasBeforeControlPlaneUse() async throws {
+        let fixture = try await makeFixture()
+        let credentialNames = [
+            "authorization", "proxy-authorization",
+            "api-key", "api_key", "apikey", "x-api-key",
+            "openai-api-key", "openai_api_key", "x-openai-api-key",
+            "anthropic-api-key", "anthropic_api_key",
+            "access_token", "auth_token", "token", "key", "x-auth-token", "cookie",
+            "x-amz-credential", "x-amz-security-token", "x-amz-signature",
+            "x-goog-api-key", "x-goog_api_key", "x-goog-credential", "x-goog-signature",
+        ]
+
+        for name in credentialNames {
+            var request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+            request.setValue("provider-secret", forHTTPHeaderField: name.uppercased())
+            await XCTAssertThrowsErrorAsync {
+                try await fixture.client.authorize(&request, feature: "habit-assistant")
+            }
+            XCTAssertNil(request.value(forHTTPHeaderField: "DPoP"), "Header alias must fail before signing: \(name)")
+        }
+
+        for name in credentialNames {
+            let uppercased = name.uppercased()
+            let first = try XCTUnwrap(uppercased.utf8.first)
+            let encodedName = String(format: "%%%02X", first) + uppercased.dropFirst()
+            var request = URLRequest(
+                url: try XCTUnwrap(URL(string: "https://gateway.example.test/v1/responses?\(encodedName)=provider-secret"))
+            )
+            await XCTAssertThrowsErrorAsync {
+                try await fixture.client.authorize(&request, feature: "habit-assistant")
+            }
+            XCTAssertNil(request.value(forHTTPHeaderField: "DPoP"), "Query alias must fail before signing: \(name)")
+        }
+
+        var multiplyEncoded = URLRequest(
+            url: URL(string: "https://gateway.example.test/v1/responses?api%255Fkey=provider-secret")!
+        )
+        await XCTAssertThrowsErrorAsync {
+            try await fixture.client.authorize(&multiplyEncoded, feature: "habit-assistant")
+        }
+
+        let counts = await fixture.server.counts()
+        XCTAssertEqual(counts.challenge, 0)
+        XCTAssertEqual(counts.refresh, 0)
+        XCTAssertEqual(counts.dataPlane, 0)
+    }
+
+    func testOrdinaryQueryIsAuthorizedAndCookiesRemainDisabled() async throws {
+        let fixture = try await makeFixture()
+        var request = URLRequest(
+            url: URL(string: "https://gateway.example.test/v1/responses?cursor=next-page&include=usage")!
+        )
+
+        try await fixture.client.authorize(&request, feature: "habit-assistant")
+
+        XCTAssertNotNil(request.value(forHTTPHeaderField: "Authorization"))
+        let configuration = await fixture.client.makeURLSession().configuration
+        XCTAssertFalse(configuration.httpShouldSetCookies)
+        XCTAssertEqual(configuration.httpCookieAcceptPolicy, .never)
     }
 
     func testRejectsNormalizedTraversalOutsideConfiguredBasePath() async throws {
@@ -320,6 +398,63 @@ final class ClientSessionTests: XCTestCase {
         XCTAssertEqual(try proofPayload(proofs[1])["nonce"] as? String, "nonce-fixture-0123456789abcdef")
     }
 
+    func testBufferedSendRequiresCanonicalSafeRetryProblemBeforeReplay() async throws {
+        let cases: [(String, SafeRetryProblemMutation)] = [
+            ("missing member", .missingMember),
+            ("extra member", .extraMember),
+            ("wrong type", .wrongType),
+            ("wrong title", .wrongTitle),
+            ("wrong detail", .wrongDetail),
+            ("wrong status", .wrongStatus),
+            ("missing request ID header", .missingRequestIDHeader),
+            ("wrong request ID", .wrongRequestID),
+            ("non-retryable", .notRetryable),
+            ("duplicate member", .duplicateMember),
+            ("Unicode duplicate member", .unicodeDuplicateMember),
+            ("missing nonce", .missingNonce),
+            ("comma-joined nonce", .commaNonce),
+            ("whitespace nonce", .whitespaceNonce),
+            ("control nonce", .controlNonce),
+            ("non-ASCII nonce", .nonASCIINonce),
+            ("duplicate nonce header", .duplicateNonceHeader),
+        ]
+
+        for (label, mutation) in cases {
+            let fixture = try await makeFixture(
+                dataPlaneRejection: "dpop_nonce_required",
+                safeRetryProblemMutation: mutation
+            )
+            var request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+            request.setValue("request-retry-0001", forHTTPHeaderField: "X-Latchway-Request-ID")
+
+            do {
+                _ = try await fixture.client.send(request, feature: "habit-assistant")
+                XCTFail("Unsafe retry metadata must not cause replay: \(label)")
+            } catch {}
+
+            let counts = await fixture.server.counts()
+            XCTAssertEqual(counts.dataPlane, 1, label)
+            XCTAssertEqual(counts.refresh, 0, label)
+        }
+    }
+
+    func testBufferedSendRejectsSessionRetryWhenNonceHeaderIsPresent() async throws {
+        let fixture = try await makeFixture(
+            dataPlaneRejection: "session_expired",
+            safeRetryProblemMutation: .sessionNonce
+        )
+        var request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        request.setValue("request-retry-0001", forHTTPHeaderField: "X-Latchway-Request-ID")
+
+        await XCTAssertThrowsErrorAsync {
+            _ = try await fixture.client.send(request, feature: "habit-assistant")
+        }
+
+        let counts = await fixture.server.counts()
+        XCTAssertEqual(counts.dataPlane, 1)
+        XCTAssertEqual(counts.refresh, 0)
+    }
+
     func testBufferedSendNeverRetriesAmbiguousUpstreamFailure() async throws {
         let fixture = try await makeFixture(dataPlaneRejection: "upstream_unavailable")
         let request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
@@ -471,16 +606,26 @@ final class ClientSessionTests: XCTestCase {
 
     func testCallerOwnedTransportRejectsInvalidNonceBeforeSigning() async throws {
         let fixture = try await makeFixture()
-        var request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        let invalidNonces = [
+            "short",
+            "nonce with whitespace 0123456789",
+            "nonce,joined-0123456789",
+            "nonce\twith-tab-0123456789",
+            "nön-ascii-nonce-0123456789",
+            String(repeating: "n", count: 513),
+        ]
 
-        do {
-            try await fixture.client.authorize(&request, feature: "habit-assistant", nonce: "short")
-            XCTFail("An invalid server nonce must fail before authorization")
-        } catch let LatchwayError.invalidRequest(reason) {
-            XCTAssertTrue(reason.contains("nonce"))
+        for nonce in invalidNonces {
+            var request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+            do {
+                try await fixture.client.authorize(&request, feature: "habit-assistant", nonce: nonce)
+                XCTFail("An invalid server nonce must fail before authorization")
+            } catch let LatchwayError.invalidRequest(reason) {
+                XCTAssertTrue(reason.contains("nonce"))
+            }
+            XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
         }
         let counts = await fixture.server.counts()
-        XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
         XCTAssertEqual(counts.challenge, 0)
     }
 
@@ -514,6 +659,7 @@ final class ClientSessionTests: XCTestCase {
         dataPlaneRejection: String? = nil,
         dataPlaneRetryable: Bool = true,
         dataPlaneOperationID: String? = nil,
+        safeRetryProblemMutation: SafeRetryProblemMutation? = nil,
         challengeExpired: Bool = false,
         challengeClockOffset: TimeInterval = 0,
         refreshRejection: String? = nil,
@@ -535,6 +681,7 @@ final class ClientSessionTests: XCTestCase {
             dataPlaneRejection: dataPlaneRejection,
             dataPlaneRetryable: dataPlaneRetryable,
             dataPlaneOperationID: dataPlaneOperationID,
+            safeRetryProblemMutation: safeRetryProblemMutation,
             challengeExpired: challengeExpired,
             challengeClockOffset: challengeClockOffset,
             refreshRejection: refreshRejection,
@@ -596,6 +743,27 @@ final class ClientSessionTests: XCTestCase {
     }
 }
 
+private enum SafeRetryProblemMutation: Sendable, Equatable {
+    case missingMember
+    case extraMember
+    case wrongType
+    case wrongTitle
+    case wrongDetail
+    case wrongStatus
+    case missingRequestIDHeader
+    case wrongRequestID
+    case notRetryable
+    case duplicateMember
+    case unicodeDuplicateMember
+    case missingNonce
+    case commaNonce
+    case whitespaceNonce
+    case controlNonce
+    case nonASCIINonce
+    case duplicateNonceHeader
+    case sessionNonce
+}
+
 private actor CountingIdentityProvider: LatchwayIdentityTokenProvider {
     private let token: String
     private var calls = 0
@@ -628,6 +796,7 @@ private actor SessionServerTransport: LatchwayHTTPTransport {
     private let dataPlaneRejection: String?
     private let dataPlaneRetryable: Bool
     private let dataPlaneOperationID: String?
+    private let safeRetryProblemMutation: SafeRetryProblemMutation?
     private let challengeExpired: Bool
     private let challengeClockOffset: TimeInterval
     private let refreshRejection: String?
@@ -641,6 +810,7 @@ private actor SessionServerTransport: LatchwayHTTPTransport {
         dataPlaneRejection: String?,
         dataPlaneRetryable: Bool,
         dataPlaneOperationID: String?,
+        safeRetryProblemMutation: SafeRetryProblemMutation?,
         challengeExpired: Bool,
         challengeClockOffset: TimeInterval,
         refreshRejection: String?,
@@ -653,6 +823,7 @@ private actor SessionServerTransport: LatchwayHTTPTransport {
         self.dataPlaneRejection = dataPlaneRejection
         self.dataPlaneRetryable = dataPlaneRetryable
         self.dataPlaneOperationID = dataPlaneOperationID
+        self.safeRetryProblemMutation = safeRetryProblemMutation
         self.challengeExpired = challengeExpired
         self.challengeClockOffset = challengeClockOffset
         self.refreshRejection = refreshRejection
@@ -677,11 +848,10 @@ private actor SessionServerTransport: LatchwayHTTPTransport {
                 }
             }
             if requireNonce, challengeCount == 1 {
-                return problem(
-                    status: 401,
+                return safeRetryProblem(
                     code: "dpop_nonce_required",
-                    retryable: true,
-                    headers: ["DPoP-Nonce": "nonce-fixture-0123456789abcdef"]
+                    requestID: request.value(forHTTPHeaderField: "X-Latchway-Request-ID") ?? "",
+                    mutation: safeRetryProblemMutation
                 )
             }
             return json(status: 201, object: [
@@ -742,6 +912,14 @@ private actor SessionServerTransport: LatchwayHTTPTransport {
                 }
                 let status = ["operation_indeterminate", "upstream_unavailable"]
                     .contains(dataPlaneRejection) ? 503 : 401
+                if ["dpop_nonce_required", "session_expired"].contains(dataPlaneRejection) {
+                    return safeRetryProblem(
+                        code: dataPlaneRejection,
+                        requestID: request.value(forHTTPHeaderField: "X-Latchway-Request-ID") ?? "",
+                        retryable: dataPlaneRetryable,
+                        mutation: safeRetryProblemMutation
+                    )
+                }
                 let headers = dataPlaneRejection == "dpop_nonce_required"
                     ? ["DPoP-Nonce": "nonce-fixture-0123456789abcdef"]
                     : [:]
@@ -809,6 +987,85 @@ private actor SessionServerTransport: LatchwayHTTPTransport {
         ]
         object["operation_id"] = operationID
         return json(status: status, object: object, headers: headers)
+    }
+
+    private func safeRetryProblem(
+        code: String,
+        requestID: String,
+        retryable: Bool = true,
+        mutation: SafeRetryProblemMutation? = nil
+    ) -> LatchwayHTTPResponse {
+        let isNonce = code == "dpop_nonce_required"
+        var status = 401
+        var object: [String: Any] = [
+            "type": "https://latchway.dev/problems/\(code)",
+            "title": isNonce ? "DPoP nonce required" : "Session expired",
+            "status": status,
+            "detail": isNonce
+                ? "A fresh server DPoP nonce is required."
+                : "The Latchway session is expired.",
+            "code": code,
+            "request_id": requestID,
+            "retryable": retryable,
+        ]
+        var headers = [
+            "Content-Type": "application/problem+json",
+            "X-Latchway-Request-ID": requestID,
+        ]
+        if isNonce { headers["DPoP-Nonce"] = "nonce-fixture-0123456789abcdef" }
+
+        switch mutation {
+        case .missingMember:
+            object.removeValue(forKey: "detail")
+        case .extraMember:
+            object["extra"] = true
+        case .wrongType:
+            object["type"] = "https://latchway.dev/problems/session_expired"
+        case .wrongTitle:
+            object["title"] = "Retry request"
+        case .wrongDetail:
+            object["detail"] = "Retry this request safely."
+        case .wrongStatus:
+            status = 400
+            object["status"] = 400
+        case .missingRequestIDHeader:
+            headers.removeValue(forKey: "X-Latchway-Request-ID")
+        case .wrongRequestID:
+            object["request_id"] = "request-retry-other"
+            headers["X-Latchway-Request-ID"] = "request-retry-other"
+        case .notRetryable:
+            object["retryable"] = false
+        case .missingNonce:
+            headers.removeValue(forKey: "DPoP-Nonce")
+        case .commaNonce:
+            headers["DPoP-Nonce"] = "nonce-first-0123456789,nonce-second-0123456789"
+        case .whitespaceNonce:
+            headers["DPoP-Nonce"] = "nonce with whitespace 0123456789"
+        case .controlNonce:
+            headers["DPoP-Nonce"] = "nonce-control-0123456789\u{7F}"
+        case .nonASCIINonce:
+            headers["DPoP-Nonce"] = "nön-ascii-nonce-0123456789"
+        case .duplicateNonceHeader:
+            headers["dpop-nonce"] = "second-nonce-0123456789"
+        case .sessionNonce:
+            headers["DPoP-Nonce"] = "nonce-fixture-0123456789abcdef"
+        case .duplicateMember, .unicodeDuplicateMember, nil:
+            break
+        }
+
+        if mutation == .duplicateMember || mutation == .unicodeDuplicateMember {
+            let duplicateName = mutation == .duplicateMember ? "code" : #"co\u0064e"#
+            let body = """
+            {"type":"https://latchway.dev/problems/dpop_nonce_required","title":"DPoP nonce required","status":401,"detail":"A fresh server DPoP nonce is required.","code":"dpop_nonce_required","\(duplicateName)":"dpop_nonce_required","request_id":"\(requestID)","retryable":true}
+            """
+            return LatchwayHTTPResponse(statusCode: status, headers: headers, body: Data(body.utf8))
+        }
+
+        return LatchwayHTTPResponse(
+            statusCode: status,
+            headers: headers,
+            body: try! JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        )
     }
 
     private func json(status: Int, object: Any, headers: [String: String] = [:]) -> LatchwayHTTPResponse {

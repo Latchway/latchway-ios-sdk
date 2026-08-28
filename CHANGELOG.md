@@ -28,6 +28,13 @@ Versioning once package publication begins.
 
 ### Changed
 
+- Hardened buffered and control-plane retries to require exact canonical,
+  request-correlated pre-dispatch problems and one unambiguous printable-ASCII
+  DPoP nonce; duplicate JSON members and ambiguous nonce headers fail closed.
+- Expanded pre-session credential-leak rejection to the cross-SDK provider
+  secret header/query alias set while retaining ordinary query parameters and
+  cookie-free URLSession behavior.
+
 - Synchronized the SDK with draft core contract 0.3.0 at commit
   `05f88b41813c210a23a459519abd3f7a9c3e45fa` and deterministic bundle SHA-256
   `ea265cfa750df8faeeaeac7bc60c04c4d907384205b5bf4d78a22a79dfc4d24c`.

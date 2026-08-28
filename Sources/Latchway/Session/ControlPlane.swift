@@ -151,13 +151,10 @@ struct LatchwayControlPlane: Sendable {
 
             let response = try await transport.send(request)
             if attempt == 0,
-               response.statusCode == 401,
-               let problem = try? decodeProblem(response),
-               problem.code == .dpopNonceRequired,
-               problem.retryable,
-               let suppliedNonce = response.header("DPoP-Nonce"),
-               suppliedNonce.utf8.count >= 16,
-               suppliedNonce.utf8.count <= 512 {
+               case let .dpopNonceRequired(suppliedNonce) = SafeRetryDirective.parse(
+                   response: response,
+                   expectedRequestID: requestID
+               ) {
                 nonce = suppliedNonce
                 continue
             }

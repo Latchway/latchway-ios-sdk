@@ -93,8 +93,22 @@ uncertain, the SDK returns the failure without automatic replay.
 
 The buffered `send` integration withholds a rejected response from application
 code and retries once only for the contract's pre-dispatch session-expiry or
-DPoP-nonce errors. It rejects streaming request bodies from retry. The
+DPoP-nonce errors. Retry eligibility is a fail-closed protocol boundary: the
+problem body must contain exactly the seven canonical RFC 9457 members with the
+registry's fixed values, the response request ID must match the original
+request, session expiry must not carry a nonce, and a nonce challenge must
+carry one unambiguous printable-ASCII value. Strict JSON validation rejects
+duplicate and Unicode-escaped duplicate members before decoding. The same
+nonce grammar protects the public caller-owned authorization API and internal
+control-plane retry. Buffered retry rejects streaming request bodies, and the
 `makeURLSession` streaming path never automatically replays.
+
+Before session or transport work, authorization rejects the shared SDK list of
+provider-secret header and decoded query names. It includes bearer/proxy auth,
+OpenAI/Anthropic/API-key aliases, access tokens, AWS credential/security-token/
+signature fields, Google credential/signature fields, and cookies. Ordinary
+non-credential query parameters remain supported. SDK-owned URL sessions also
+disable cookie acceptance and persistence.
 
 For caller-owned transports such as React Native fetch, public nonce-aware
 authorization and forced-refresh operations expose no stored credentials. The

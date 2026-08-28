@@ -83,10 +83,16 @@ for try await byte in bytes {
 
 For buffered requests, `client.send(_:feature:)` performs at most one automatic
 retry and only after the stable `session_expired` or `dpop_nonce_required`
-pre-dispatch rejection. It never replays an input stream or an ambiguous
-upstream failure. The built-in buffered transport rejects responses larger
-than 1 MiB. Streaming callers authorize once and receive bytes directly; the
-SDK does not buffer or replay their request.
+pre-dispatch rejection. Before replay, the SDK requires the canonical seven-key
+problem document, registry type/title/status/detail/retryability, a response
+request ID matching the original request, and either no nonce for
+`session_expired` or exactly one printable-ASCII nonce for
+`dpop_nonce_required`. Duplicate JSON members, extra metadata, folded nonce
+headers, commas, whitespace, and non-ASCII nonce values all fail closed. It
+never replays an input stream or an ambiguous upstream failure. The built-in
+buffered transport rejects responses larger than 1 MiB. Streaming callers
+authorize once and receive bytes directly; the SDK does not buffer or replay
+their request.
 
 Caller-owned transports that validate a same-origin rejection may use
 `authorize(_:feature:nonce:)` for `dpop_nonce_required` and `refresh()` for
@@ -113,7 +119,9 @@ The SDK:
 - Exposes quota, installation-revocation, and redacted diagnostic APIs
 - Preserves the canonical `operationID` on `operation_indeterminate` failures
   for audit reconciliation without rendering server detail in error descriptions
-- Rejects known upstream credential headers before adding Latchway credentials
+- Rejects known upstream credential header and decoded query aliases—including
+  authorization, AI API-key, access-token, AWS signing, Google signing, and
+  cookie fields—before session establishment or request signing
 - Keeps Firebase support optional and outside the core target
 
 The canonical package identity will be **Latchway**, with iOS 15 as the planned

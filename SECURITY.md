@@ -35,9 +35,14 @@ JWK thumbprints, DPoP proof construction, App Attest lifecycle, session refresh,
 request retry behavior, token redaction, and installation revocation as
 security-sensitive. They require focused tests and cross-repository conformance.
 
-The SDK must never accept an upstream AI-provider secret. Latchway server
-vulnerabilities should be reported against the core repository, with a
-cross-reference here when client behavior is involved.
+The SDK must never accept an upstream AI-provider secret. Known provider-secret
+header and decoded query aliases are rejected before session establishment,
+including authorization/access-token fields, AI API-key fields, AWS and Google
+signed-request credentials, and cookies. Automatic retry is allowed only after
+an exact, request-correlated canonical pre-dispatch problem; ambiguous problem
+metadata or nonce headers fail closed. Latchway server vulnerabilities should
+be reported against the core repository, with a cross-reference here when
+client behavior is involved.
 
 ## Disclosure
 
