@@ -31,3 +31,8 @@ Versioning once package publication begins.
   `ea265cfa750df8faeeaeac7bc60c04c4d907384205b5bf4d78a22a79dfc4d24c`.
   Wire protocol remains 1; the minimum server version is 0.3.0 and the maximum
   tested server series is 0.3.x.
+- Synchronized the SDK with draft core contract 0.4.0 at commit
+  `c9347421fac4c729f20ea87f9205c66c15fa983f` and deterministic bundle SHA-256
+  `39d32a2c9e4b0381ff815a40d87d75b51e4f37d6de55121b7bb0beef690c5c59`.
+  Wire protocol remains 1; the minimum server version is 0.4.0 and the maximum
+  tested server series is 0.4.x.
