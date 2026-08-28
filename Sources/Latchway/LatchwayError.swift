@@ -34,6 +34,7 @@ public enum LatchwayErrorCode: Sendable, Equatable, Hashable, CustomStringConver
     case serverNotReady
     case protocolVersionUnsupported
     case rateLimited
+    case operationIndeterminate
     case internalError
     case unknown(String)
 
@@ -82,6 +83,7 @@ public enum LatchwayErrorCode: Sendable, Equatable, Hashable, CustomStringConver
         "server_not_ready": .serverNotReady,
         "protocol_version_unsupported": .protocolVersionUnsupported,
         "rate_limited": .rateLimited,
+        "operation_indeterminate": .operationIndeterminate,
         "internal_error": .internalError,
     ]
 
@@ -96,6 +98,9 @@ public struct LatchwayProblem: Sendable, Equatable, Error {
     public let requestID: String
     public let retryable: Bool
     public let retryAfter: Date?
+    /// The canonical audit correlation identifier required for an
+    /// indeterminate operation outcome.
+    public let operationID: String?
 
     public init(
         code: LatchwayErrorCode,
@@ -104,7 +109,8 @@ public struct LatchwayProblem: Sendable, Equatable, Error {
         status: Int,
         requestID: String,
         retryable: Bool,
-        retryAfter: Date? = nil
+        retryAfter: Date? = nil,
+        operationID: String? = nil
     ) {
         self.code = code
         self.title = title
@@ -113,6 +119,7 @@ public struct LatchwayProblem: Sendable, Equatable, Error {
         self.requestID = requestID
         self.retryable = retryable
         self.retryAfter = retryAfter
+        self.operationID = operationID
     }
 }
 

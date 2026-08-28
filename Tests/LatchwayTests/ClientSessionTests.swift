@@ -337,6 +337,56 @@ final class ClientSessionTests: XCTestCase {
         XCTAssertEqual(diagnostics.lastErrorCode, "upstream_unavailable")
     }
 
+    func testBufferedSendPreservesIndeterminateOperationIDWithoutRetry() async throws {
+        let operationID = "arq_0123456789ABCDEFGHJKMNPQRS"
+        let fixture = try await makeFixture(
+            dataPlaneRejection: "operation_indeterminate",
+            dataPlaneOperationID: operationID
+        )
+        let request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+
+        do {
+            _ = try await fixture.client.send(request, feature: "habit-assistant")
+            XCTFail("An indeterminate operation must be returned for reconciliation")
+        } catch let LatchwayError.server(problem) {
+            XCTAssertEqual(problem.code, .operationIndeterminate)
+            XCTAssertEqual(problem.operationID, operationID)
+            XCTAssertEqual(problem.status, 503)
+            XCTAssertTrue(problem.retryable)
+        }
+
+        let counts = await fixture.server.counts()
+        XCTAssertEqual(counts.dataPlane, 1)
+        XCTAssertEqual(counts.refresh, 0)
+    }
+
+    func testBufferedSendRejectsMissingMalformedOrForbiddenOperationID() async throws {
+        let canonical = "arq_0123456789ABCDEFGHJKMNPQRS"
+        let cases: [(code: String, operationID: String?)] = [
+            ("operation_indeterminate", nil),
+            ("operation_indeterminate", "identity-token-reflection"),
+            ("upstream_unavailable", canonical),
+        ]
+
+        for testCase in cases {
+            let fixture = try await makeFixture(
+                dataPlaneRejection: testCase.code,
+                dataPlaneOperationID: testCase.operationID
+            )
+            let request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+
+            do {
+                _ = try await fixture.client.send(request, feature: "habit-assistant")
+                XCTFail("Invalid operation_id semantics must fail closed")
+            } catch let error as LatchwayError {
+                XCTAssertEqual(error, .invalidServerResponse)
+                if let operationID = testCase.operationID {
+                    XCTAssertFalse(error.description.contains(operationID))
+                }
+            }
+        }
+    }
+
     func testBufferedSendRejectsMalformedErrorWithoutRetry() async throws {
         let fixture = try await makeFixture(dataPlaneRejection: "malformed")
         let request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
@@ -463,6 +513,7 @@ final class ClientSessionTests: XCTestCase {
         delayNanoseconds: UInt64 = 0,
         dataPlaneRejection: String? = nil,
         dataPlaneRetryable: Bool = true,
+        dataPlaneOperationID: String? = nil,
         challengeExpired: Bool = false,
         challengeClockOffset: TimeInterval = 0,
         refreshRejection: String? = nil,
@@ -483,6 +534,7 @@ final class ClientSessionTests: XCTestCase {
             delayNanoseconds: delayNanoseconds,
             dataPlaneRejection: dataPlaneRejection,
             dataPlaneRetryable: dataPlaneRetryable,
+            dataPlaneOperationID: dataPlaneOperationID,
             challengeExpired: challengeExpired,
             challengeClockOffset: challengeClockOffset,
             refreshRejection: refreshRejection,
@@ -575,6 +627,7 @@ private actor SessionServerTransport: LatchwayHTTPTransport {
     private var protectedRequestIDs: [String] = []
     private let dataPlaneRejection: String?
     private let dataPlaneRetryable: Bool
+    private let dataPlaneOperationID: String?
     private let challengeExpired: Bool
     private let challengeClockOffset: TimeInterval
     private let refreshRejection: String?
@@ -587,6 +640,7 @@ private actor SessionServerTransport: LatchwayHTTPTransport {
         delayNanoseconds: UInt64,
         dataPlaneRejection: String?,
         dataPlaneRetryable: Bool,
+        dataPlaneOperationID: String?,
         challengeExpired: Bool,
         challengeClockOffset: TimeInterval,
         refreshRejection: String?,
@@ -598,6 +652,7 @@ private actor SessionServerTransport: LatchwayHTTPTransport {
         self.delayNanoseconds = delayNanoseconds
         self.dataPlaneRejection = dataPlaneRejection
         self.dataPlaneRetryable = dataPlaneRetryable
+        self.dataPlaneOperationID = dataPlaneOperationID
         self.challengeExpired = challengeExpired
         self.challengeClockOffset = challengeClockOffset
         self.refreshRejection = refreshRejection
@@ -685,7 +740,8 @@ private actor SessionServerTransport: LatchwayHTTPTransport {
                         body: Data("unsafe error".utf8)
                     )
                 }
-                let status = dataPlaneRejection == "upstream_unavailable" ? 503 : 401
+                let status = ["operation_indeterminate", "upstream_unavailable"]
+                    .contains(dataPlaneRejection) ? 503 : 401
                 let headers = dataPlaneRejection == "dpop_nonce_required"
                     ? ["DPoP-Nonce": "nonce-fixture-0123456789abcdef"]
                     : [:]
@@ -693,6 +749,7 @@ private actor SessionServerTransport: LatchwayHTTPTransport {
                     status: status,
                     code: dataPlaneRejection,
                     retryable: dataPlaneRetryable,
+                    operationID: dataPlaneOperationID,
                     headers: headers
                 )
             }
@@ -734,8 +791,14 @@ private actor SessionServerTransport: LatchwayHTTPTransport {
         ["provider": "app_attest", "level": "app_verified", "verified_at": iso(now), "expires_at": iso(now.addingTimeInterval(86_400))]
     }
 
-    private func problem(status: Int, code: String, retryable: Bool, headers: [String: String] = [:]) -> LatchwayHTTPResponse {
-        json(status: status, object: [
+    private func problem(
+        status: Int,
+        code: String,
+        retryable: Bool,
+        operationID: String? = nil,
+        headers: [String: String] = [:]
+    ) -> LatchwayHTTPResponse {
+        var object: [String: Any] = [
             "type": "https://latchway.dev/problems/\(code)",
             "title": "Safe failure",
             "status": status,
@@ -743,7 +806,9 @@ private actor SessionServerTransport: LatchwayHTTPTransport {
             "code": code,
             "request_id": "request-12345678",
             "retryable": retryable,
-        ], headers: headers)
+        ]
+        object["operation_id"] = operationID
+        return json(status: status, object: object, headers: headers)
     }
 
     private func json(status: Int, object: Any, headers: [String: String] = [:]) -> LatchwayHTTPResponse {

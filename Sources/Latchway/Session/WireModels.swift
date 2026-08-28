@@ -139,11 +139,28 @@ struct ProblemWire: Decodable {
     let requestID: String
     let retryable: Bool
     let retryAfter: Date?
+    let operationID: String?
+    private let operationIDMemberPresent: Bool
 
     enum CodingKeys: String, CodingKey {
         case type, title, status, detail, code, retryable
         case requestID = "request_id"
         case retryAfter = "retry_after"
+        case operationID = "operation_id"
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        type = try container.decode(String.self, forKey: .type)
+        title = try container.decode(String.self, forKey: .title)
+        status = try container.decode(Int.self, forKey: .status)
+        detail = try container.decode(String.self, forKey: .detail)
+        code = try container.decode(String.self, forKey: .code)
+        requestID = try container.decode(String.self, forKey: .requestID)
+        retryable = try container.decode(Bool.self, forKey: .retryable)
+        retryAfter = try container.decodeIfPresent(Date.self, forKey: .retryAfter)
+        operationID = try container.decodeIfPresent(String.self, forKey: .operationID)
+        operationIDMemberPresent = container.contains(.operationID)
     }
 
     var problem: LatchwayProblem {
@@ -154,7 +171,8 @@ struct ProblemWire: Decodable {
             status: status,
             requestID: requestID,
             retryable: retryable,
-            retryAfter: retryAfter
+            retryAfter: retryAfter,
+            operationID: operationID
         )
     }
 
@@ -165,6 +183,38 @@ struct ProblemWire: Decodable {
             && (1 ... 2_048).contains(detail.utf8.count)
             && (8 ... 128).contains(requestID.utf8.count)
             && code.range(of: "^[a-z][a-z0-9_]{0,62}$", options: .regularExpression) != nil
+            && Self.hasValidOperationContract(
+                code: LatchwayErrorCode(rawValue: code),
+                status: status,
+                retryable: retryable,
+                operationID: operationID,
+                operationIDMemberPresent: operationIDMemberPresent
+            )
+    }
+
+    static func hasValidOperationContract(
+        code: LatchwayErrorCode,
+        status: Int,
+        retryable: Bool,
+        operationID: String?,
+        operationIDMemberPresent: Bool
+    ) -> Bool {
+        if code == .operationIndeterminate {
+            return status == 503
+                && retryable
+                && operationID.map(isCanonicalOperationID) == true
+        }
+        return !operationIDMemberPresent
+    }
+
+    private static func isCanonicalOperationID(_ value: String) -> Bool {
+        let bytes = Array(value.utf8)
+        guard bytes.count == 30,
+              bytes.starts(with: Array("arq_".utf8)),
+              (0x30 ... 0x37).contains(bytes[4])
+        else { return false }
+        let alphabet = Set("0123456789ABCDEFGHJKMNPQRSTVWXYZ".utf8)
+        return bytes.dropFirst(5).allSatisfy(alphabet.contains)
     }
 }
 

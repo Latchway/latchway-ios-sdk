@@ -111,6 +111,8 @@ The SDK:
 - Stores refresh state in a non-synchronizable, this-device-only Keychain item
   and coordinates refresh through a Swift actor single flight
 - Exposes quota, installation-revocation, and redacted diagnostic APIs
+- Preserves the canonical `operationID` on `operation_indeterminate` failures
+  for audit reconciliation without rendering server detail in error descriptions
 - Rejects known upstream credential headers before adding Latchway credentials
 - Keeps Firebase support optional and outside the core target
 

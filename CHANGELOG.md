@@ -23,6 +23,8 @@ Versioning once package publication begins.
 - Runtime-isolated native Keychain and App Attest namespaces, independently
   versioned client headers, and a build-linted CocoaPods App Attest subspec for
   React Native autolinking.
+- Typed `operation_indeterminate` errors with their canonical audit correlation
+  identifier preserved on the public problem value.
 
 ### Changed
 

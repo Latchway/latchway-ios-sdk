@@ -633,6 +633,16 @@ public actor LatchwayClient {
                   || response.header("X-Latchway-Request-ID") == requestID,
               let retryable = object["retryable"] as? Bool
         else { return nil }
+        let errorCode = LatchwayErrorCode(rawValue: code)
+        let operationIDMemberPresent = object.keys.contains("operation_id")
+        let operationID = object["operation_id"] as? String
+        guard ProblemWire.hasValidOperationContract(
+            code: errorCode,
+            status: status,
+            retryable: retryable,
+            operationID: operationID,
+            operationIDMemberPresent: operationIDMemberPresent
+        ) else { return nil }
         let retryAfter = (object["retry_after"] as? String).flatMap { value -> Date? in
             let formatter = ISO8601DateFormatter()
             formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -641,13 +651,14 @@ public actor LatchwayClient {
             return formatter.date(from: value)
         }
         return LatchwayProblem(
-            code: LatchwayErrorCode(rawValue: code),
+            code: errorCode,
             title: title,
             detail: detail,
             status: status,
             requestID: requestID,
             retryable: retryable,
-            retryAfter: retryAfter
+            retryAfter: retryAfter,
+            operationID: operationID
         )
     }
 

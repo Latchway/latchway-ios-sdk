@@ -33,6 +33,23 @@ final class PublicAPITests: XCTestCase {
         XCTAssertTrue(description.contains("request-12345678"))
     }
 
+    func testIndeterminateOperationPreservesActionableIDWhileDescriptionRedactsDetail() {
+        let secret = "provider-secret-never-print"
+        let operationID = "arq_0123456789ABCDEFGHJKMNPQRS"
+        let problem = LatchwayProblem(
+            code: .operationIndeterminate,
+            title: "Operation outcome indeterminate",
+            detail: secret,
+            status: 503,
+            requestID: "request-12345678",
+            retryable: true,
+            operationID: operationID
+        )
+
+        XCTAssertEqual(problem.operationID, operationID)
+        XCTAssertFalse(LatchwayError.server(problem).description.contains(secret))
+    }
+
     func testJSONValueRoundTrip() throws {
         let value = LatchwayJSONValue.object([
             "safe": .string("value"),
