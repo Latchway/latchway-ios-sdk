@@ -1,9 +1,8 @@
 # Contributing to Latchway iOS SDK
 
-Thank you for helping build Latchway. This repository is currently establishing
-its governance and protocol boundary. It intentionally has no Swift package or
-contract lock until the core repository publishes the first authoritative
-contract bundle.
+Thank you for helping build Latchway. The core repository owns the protocol;
+this SDK consumes its checksummed contract bundle through `contract.lock` and
+ships as a Swift Package with optional CocoaPods subspecs.
 
 ## Before making a change
 
@@ -24,8 +23,8 @@ contract bundle.
 - Private keys are non-exportable and never synchronizable.
 - Automatic replay is allowed only when the server proves that the original
   request was rejected before upstream dispatch.
-- Do not create a local wire format or contract.lock without a published core
-  contract bundle.
+- Update `contract.lock` and copied conformance fixtures only from a published,
+  checksummed core contract bundle.
 - Do not leave production-path placeholders or hard-coded success behavior.
 
 ## Tests
@@ -35,8 +34,9 @@ protocol work also requires shared-vector and conformance coverage. Actor
 coordination, cancellation, streaming, redaction, key persistence, and retry
 safety must be tested explicitly.
 
-Canonical commands will be documented when Package.swift and CI are introduced.
-A contribution is not ready while its documented checks fail.
+Run `scripts/verify-package.sh` for every change and
+`scripts/check-contract.sh ../latchway/api` for protocol-facing changes. A
+contribution is not ready while either applicable gate fails.
 
 ## Pull requests
 

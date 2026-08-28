@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Toolchain identity
+        run: |
+          xcodebuild -version
+          swift --version
+      - name: Verify SwiftPM products and CocoaPods metadata
+        run: scripts/verify-package.sh

@@ -1,0 +1,44 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  source-package:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate immutable release input
+        run: scripts/release-preflight.sh "${GITHUB_REF_NAME}"
+      - name: Build deterministic source archive
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          version="${RELEASE_TAG#v}"
+          archive="${RUNNER_TEMP}/latchway-ios-sdk-${version}.tar.gz"
+          git archive --format=tar.gz --prefix="latchway-ios-sdk-${version}/" --output="$archive" "${GITHUB_SHA}"
+          (cd "$RUNNER_TEMP" && shasum -a 256 "$(basename "$archive")" >"$(basename "$archive").sha256")
+      - name: Publish GitHub release and Swift Package tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          version="${RELEASE_TAG#v}"
+          archive="${RUNNER_TEMP}/latchway-ios-sdk-${version}.tar.gz"
+          gh release create "$RELEASE_TAG" "$archive" "${archive}.sha256" --verify-tag --generate-notes
+      - name: Publish CocoaPods metadata when authorized
+        env:
+          COCOAPODS_TRUNK_TOKEN: ${{ secrets.COCOAPODS_TRUNK_TOKEN }}
+        run: |
+          if [ -z "$COCOAPODS_TRUNK_TOKEN" ]; then
+            echo "COCOAPODS_TRUNK_TOKEN is not configured; Swift Package release is complete."
+            exit 0
+          fi
+          pod trunk push Latchway.podspec

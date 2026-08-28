@@ -29,8 +29,15 @@ hardware attestation.
 - `LatchwayTesting`: deterministic signers, clocks, storage, transports,
   identity providers, and attestation doubles
 
-Add the repository as a Swift Package dependency, then link `Latchway` and
-`LatchwayAppAttest` to the application target.
+Add the repository as a Swift Package dependency, pin a released semantic
+version, then link `Latchway` and `LatchwayAppAttest` to the application target:
+
+```swift
+.package(
+    url: "https://github.com/Latchway/latchway-ios-sdk.git",
+    from: "0.1.0"
+)
+```
 
 Swift Package Manager is the canonical distribution. The production
 `Latchway.podspec` additionally supports React Native autolinking through
@@ -153,12 +160,23 @@ Review [Security Policy](SECURITY.md) before reporting a vulnerability.
 ## Development and verification
 
 ```bash
-swift package dump-package
-swift build
-swift test
+scripts/verify-package.sh
 scripts/check-contract.sh ../latchway/api
 tuist generate --path Examples/AppAttestConformance --no-open
 ```
+
+`verify-package.sh` parses the manifest, builds every library in release mode,
+runs the suite in parallel, compiles a separate consumer package importing all
+four products, and strictly lints the podspec when CocoaPods is installed.
+Pull requests and pushes to `main` run the same gate on the pinned macOS runner.
+
+Stable `vMAJOR.MINOR.PATCH` tags drive publication. The tag, public SDK version,
+podspec version, contract lock, repository cleanliness, and forbidden-file scan
+must all pass before the workflow creates a deterministic source archive,
+SHA-256 checksum, and GitHub release. CocoaPods publication runs only when the
+repository has a `COCOAPODS_TRUNK_TOKEN`; the token is never needed by builds or
+tests. Maintainers can run `scripts/release-preflight.sh vMAJOR.MINOR.PATCH`
+locally against an existing tag before pushing it.
 
 Pass the reproducible contract archive as the optional second argument to
 `check-contract.sh` to verify its SHA-256 against `contract.lock` as well as the

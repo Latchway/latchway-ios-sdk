@@ -25,6 +25,9 @@ Versioning once package publication begins.
   React Native autolinking.
 - Typed `operation_indeterminate` errors with their canonical audit correlation
   identifier preserved on the public problem value.
+- A release-gated Swift Package and CocoaPods publication workflow, including
+  a clean-tag/version preflight, nested consumer build, deterministic source
+  archive, checksum, and optional credentialed CocoaPods publication.
 
 ### Changed
 
@@ -34,6 +37,9 @@ Versioning once package publication begins.
 - Expanded pre-session credential-leak rejection to the cross-SDK provider
   secret header/query alias set while retaining ordinary query parameters and
   cookie-free URLSession behavior.
+- Closed an actor-reentrancy race that could make concurrent callers rotate an
+  already-refreshed session a second time; scheduler-controlled regression
+  coverage now proves one refresh and one persisted rotation per expiry.
 
 - Synchronized the SDK with draft core contract 0.3.0 at commit
   `05f88b41813c210a23a459519abd3f7a9c3e45fa` and deterministic bundle SHA-256
