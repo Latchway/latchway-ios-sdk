@@ -5,8 +5,8 @@ self-hosted gateway without embedding an upstream provider key. This package
 provides the Swift transport and platform-security integration for that client
 boundary.
 
-> **Project status:** intended `1.0.0` source candidate for contract 0.4.0 and wire
-> protocol 1, with server 0.4.0 as the minimum and 0.4.x as the maximum tested
+> **Project status:** intended `1.0.0` source candidate for contract 0.5.1 and wire
+> protocol 1, with server 1.0.0 as the minimum and 1.0.x as the maximum tested
 > series. The package builds and its fixture suite passes, but it is not a
 > supported release until server conformance and a real App Attest device run
 > are recorded.

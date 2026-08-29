@@ -1019,8 +1019,8 @@ private actor SessionServerTransport: LatchwayHTTPTransport {
         case "/client/v1/diagnostics":
             return json(status: 200, object: [
                 "request_id": "request-12345678",
-                "server_version": "0.4.0",
-                "contract_version": "0.4.0",
+                "server_version": "1.0.0",
+                "contract_version": "0.5.1",
                 "protocol_version": 1,
                 "installation": installation,
                 "session": ["expires_at": iso(now.addingTimeInterval(600)), "refresh_available": true],

@@ -3,7 +3,7 @@
 ## Status
 
 This document fixes the ownership and dependency boundaries for the Swift SDK.
-The implementation consumes contract 0.4.0/wire protocol 1 at the exact core
+The implementation consumes contract 0.5.1/wire protocol 1 at the exact core
 revision and bundle digest in `contract.lock`.
 
 ## System boundary
