@@ -178,6 +178,8 @@ jobs:
           COCOAPODS_TRUNK_TOKEN: ${{ secrets.COCOAPODS_TRUNK_TOKEN }}
         run: scripts/publish-or-verify-cocoapods.sh "${RELEASE_TAG#v}"
       - name: Verify the immutable CocoaPods release
+        env:
+          LATCHWAY_COCOAPODS_EXPECTED_ARCHIVE: ${{ runner.temp }}/latchway-ios-sdk-${{ needs.promote.outputs.version }}.tar.gz
         run: scripts/verify-cocoapods-release.sh "${RELEASE_TAG#v}"
       - name: Reconcile immutable GitHub release assets after registry verification
         env:

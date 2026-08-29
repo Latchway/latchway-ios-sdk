@@ -20,7 +20,9 @@ fi
 shard=$(ruby -rdigest -e 'digest = Digest::MD5.hexdigest(ARGV.fetch(0)); print digest[0], "/", digest[1], "/", digest[2]' Latchway)
 url="https://cdn.cocoapods.org/Specs/$shard/Latchway/$version/Latchway.podspec.json"
 temporary_spec=$(mktemp "${TMPDIR:-/tmp}/latchway-cocoapods-spec.XXXXXX")
-trap 'rm -f "$temporary_spec"' EXIT HUP INT TERM
+temporary_local_spec=$(mktemp "${TMPDIR:-/tmp}/latchway-cocoapods-local-spec.XXXXXX")
+temporary_archive_root=$(mktemp -d "${TMPDIR:-/tmp}/latchway-cocoapods-archive.XXXXXX")
+trap 'rm -f "$temporary_spec" "$temporary_local_spec"; rm -rf "$temporary_archive_root"' EXIT HUP INT TERM
 
 available=false
 attempt=1
@@ -51,4 +53,41 @@ ruby -rjson -e '
   abort "published CocoaPods subspec mismatch" unless names == %w[AppAttest Core FirebaseAuth]
 ' "$temporary_spec" "$version"
 
-echo "Verified Latchway $version on the CocoaPods CDN"
+expected_archive=${LATCHWAY_COCOAPODS_EXPECTED_ARCHIVE:-}
+archive_sha256=
+specs_byte_equivalent=false
+if [ -n "$expected_archive" ]; then
+  if [ ! -f "$expected_archive" ] || [ "$(basename "$expected_archive")" != "latchway-ios-sdk-$version.tar.gz" ]; then
+    echo "The reviewed CocoaPods source archive is missing or misnamed" >&2
+    exit 64
+  fi
+  "$(dirname "$0")/build-release-archive.sh" "v$version" "$temporary_archive_root" >/dev/null
+  cmp "$expected_archive" "$temporary_archive_root/latchway-ios-sdk-$version.tar.gz" || {
+    echo "The reviewed CocoaPods source archive differs from the exact release tag" >&2
+    exit 1
+  }
+  archive_sha256=$(shasum -a 256 "$expected_archive" | awk '{print $1}')
+  pod ipc spec Latchway.podspec > "$temporary_local_spec"
+  ruby -rjson -e '
+    published = JSON.parse(File.read(ARGV.fetch(0)))
+    local = JSON.parse(File.read(ARGV.fetch(1)))
+    abort "published CocoaPods specification differs from the reviewed podspec" unless published == local
+  ' "$temporary_spec" "$temporary_local_spec"
+  specs_byte_equivalent=true
+fi
+
+published_spec_sha256=$(shasum -a 256 "$temporary_spec" | awk '{print $1}')
+ruby -rjson -e '
+  spec = JSON.parse(File.read(ARGV.fetch(0)))
+  puts JSON.pretty_generate({
+    schema_version: 1,
+    registry: "cocoapods",
+    package: "Latchway",
+    version: ARGV.fetch(1),
+    published_spec_sha256: ARGV.fetch(2),
+    reviewed_source_archive_sha256: ARGV.fetch(3),
+    published_spec_equals_reviewed_podspec: ARGV.fetch(4) == "true",
+    reviewed_source_archive_equals_release_tag: !ARGV.fetch(3).empty?,
+    source: spec.fetch("source"),
+  })
+' "$temporary_spec" "$version" "$published_spec_sha256" "$archive_sha256" "$specs_byte_equivalent"
