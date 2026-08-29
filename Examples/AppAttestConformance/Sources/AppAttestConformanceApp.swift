@@ -1,4 +1,5 @@
 import Darwin
+import CryptoKit
 import Foundation
 import Latchway
 import LatchwayAppAttest
@@ -167,6 +168,45 @@ private final class ConformanceModel: ObservableObject {
             tests.append(.http(id: "tampered_dpop_rejected", passed: tamperPassed, response: tamper))
             tamperResult = tamperPassed ? "passed" : "failed"
 
+            do {
+                _ = try await client.quota(feature: values.errorMappingFeature)
+                tests.append(.failed(id: "canonical_error_mapping"))
+            } catch let error as LatchwayError {
+                if case let .server(problem) = error {
+                    tests.append(.mappedError(
+                        id: "canonical_error_mapping",
+                        problem: problem,
+                        expectedCode: .featureNotFound,
+                        expectedStatus: 404
+                    ))
+                } else {
+                    tests.append(.failed(id: "canonical_error_mapping"))
+                }
+            }
+
+            let beforeRefresh = try await authorizedQuotaProbe(client: client, values: values)
+            let beforeRefreshDiagnostics = await client.diagnostics()
+            try await client.refresh()
+            let afterRefresh = try await authorizedQuotaProbe(client: client, values: values)
+            let afterRefreshDiagnostics = await client.diagnostics()
+            tests.append(try .rotation(
+                id: "session_refresh_rotation",
+                credentialBefore: requiredAuthorizationHash(beforeRefresh),
+                credentialAfter: requiredAuthorizationHash(afterRefresh),
+                installationBefore: requiredOpaqueHash(beforeRefreshDiagnostics.installationID),
+                installationAfter: requiredOpaqueHash(afterRefreshDiagnostics.installationID)
+            ))
+            diagnostics = afterRefreshDiagnostics
+
+            var unsupportedProtocol = try await authorizedQuotaProbe(client: client, values: values)
+            unsupportedProtocol.setValue("0", forHTTPHeaderField: "X-Latchway-Protocol-Version")
+            let unsupported = try await sendBounded(unsupportedProtocol, maximumBytes: 65_536)
+            tests.append(.protocolRejection(
+                id: "protocol_version_rejection",
+                response: unsupported,
+                version: 0
+            ))
+
             let stream = try await streamedRequest(client: client, values: values)
             tests.append(.http(
                 id: "streamed_request",
@@ -200,6 +240,15 @@ private final class ConformanceModel: ObservableObject {
                 && assertionDiagnostics.installationID == diagnostics?.installationID
             tests.append(.boolean(id: "app_attest_assertion", passed: assertionPassed))
             attestationResult = assertionPassed ? "registration + assertion" : "assertion failed"
+
+            let postRevocationProbe = try await authorizedQuotaProbe(client: assertionClient, values: values)
+            try await assertionClient.revokeCurrentInstallation()
+            let revoked = try await sendBounded(postRevocationProbe, maximumBytes: 65_536)
+            tests.append(.http(
+                id: "installation_revocation",
+                passed: revoked.status == 403 && revoked.problemCode == "installation_revoked",
+                response: revoked
+            ))
         } catch {
             let missing = EvidencePolicy.iosTests.subtracting(tests.map(\.id))
             tests.append(contentsOf: missing.sorted().map { .failed(id: $0) })
@@ -355,6 +404,7 @@ private struct Values {
     let identityProvider: String
     let identityToken: String
     let feature: String
+    let errorMappingFeature: String
     let model: String
     let runID: String
     let distribution: String
@@ -377,6 +427,11 @@ private struct Values {
               let environment = values.canonical("LATCHWAY_ENVIRONMENT", pattern: "^[a-z][a-z0-9_-]{0,62}$"),
               let identityToken = values["LATCHWAY_IDENTITY_TOKEN"], (16 ... 65_536).contains(identityToken.utf8.count),
               let feature = values.canonical("LATCHWAY_FEATURE", pattern: "^[a-z][a-z0-9_-]{0,62}$"),
+              let errorMappingFeature = values.canonical(
+                  "LATCHWAY_ERROR_MAPPING_FEATURE",
+                  pattern: "^[a-z][a-z0-9_-]{0,62}$"
+              ),
+              errorMappingFeature != feature,
               let model = values.bounded("LATCHWAY_MODEL", maximum: 256),
               let runID = values.canonical("LATCHWAY_RUN_ID", pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$"),
               let distribution = values.canonical("LATCHWAY_DISTRIBUTION", pattern: "^(ad_hoc|testflight|app_store)$"),
@@ -410,6 +465,7 @@ private struct Values {
         self.identityProvider = values["LATCHWAY_IDENTITY_PROVIDER"] ?? "firebase"
         self.identityToken = identityToken
         self.feature = feature
+        self.errorMappingFeature = errorMappingFeature
         self.model = model
         self.runID = runID
         self.distribution = distribution
@@ -435,6 +491,7 @@ private struct Values {
             "gateway_deployment_key_id": deploymentKeyID,
             "gateway_deployment_statement_sha256": deploymentStatementHash,
             "gateway_deployment_public_key_sha256": deploymentPublicKeyHash,
+            "error_mapping_feature": errorMappingFeature,
         ]
     }
 
@@ -521,6 +578,12 @@ private struct EvidenceTest: Codable {
     let httpStatus: Int?
     let errorCode: String?
     let requestID: String?
+    let mappedErrorType: String?
+    let credentialBeforeSHA256: String?
+    let credentialAfterSHA256: String?
+    let installationBeforeSHA256: String?
+    let installationAfterSHA256: String?
+    let protocolVersionSent: Int?
 
     enum CodingKeys: String, CodingKey {
         case id, status
@@ -528,10 +591,44 @@ private struct EvidenceTest: Codable {
         case httpStatus = "http_status"
         case errorCode = "error_code"
         case requestID = "request_id"
+        case mappedErrorType = "mapped_error_type"
+        case credentialBeforeSHA256 = "credential_before_sha256"
+        case credentialAfterSHA256 = "credential_after_sha256"
+        case installationBeforeSHA256 = "installation_before_sha256"
+        case installationAfterSHA256 = "installation_after_sha256"
+        case protocolVersionSent = "protocol_version_sent"
+    }
+
+    init(
+        id: String,
+        status: String,
+        durationMS: Int = 0,
+        httpStatus: Int? = nil,
+        errorCode: String? = nil,
+        requestID: String? = nil,
+        mappedErrorType: String? = nil,
+        credentialBeforeSHA256: String? = nil,
+        credentialAfterSHA256: String? = nil,
+        installationBeforeSHA256: String? = nil,
+        installationAfterSHA256: String? = nil,
+        protocolVersionSent: Int? = nil
+    ) {
+        self.id = id
+        self.status = status
+        self.durationMS = durationMS
+        self.httpStatus = httpStatus
+        self.errorCode = errorCode
+        self.requestID = requestID
+        self.mappedErrorType = mappedErrorType
+        self.credentialBeforeSHA256 = credentialBeforeSHA256
+        self.credentialAfterSHA256 = credentialAfterSHA256
+        self.installationBeforeSHA256 = installationBeforeSHA256
+        self.installationAfterSHA256 = installationAfterSHA256
+        self.protocolVersionSent = protocolVersionSent
     }
 
     static func boolean(id: String, passed: Bool) -> Self {
-        Self(id: id, status: passed ? "passed" : "failed", durationMS: 0, httpStatus: nil, errorCode: nil, requestID: nil)
+        Self(id: id, status: passed ? "passed" : "failed")
     }
 
     static func failed(id: String) -> Self { boolean(id: id, passed: false) }
@@ -546,6 +643,52 @@ private struct EvidenceTest: Codable {
             requestID: response.requestID
         )
     }
+
+    static func mappedError(
+        id: String,
+        problem: LatchwayProblem,
+        expectedCode: LatchwayErrorCode,
+        expectedStatus: Int
+    ) -> Self {
+        Self(
+            id: id,
+            status: problem.code == expectedCode && problem.status == expectedStatus ? "passed" : "failed",
+            httpStatus: problem.status,
+            errorCode: problem.code.description,
+            requestID: problem.requestID,
+            mappedErrorType: "swift_latchway_problem"
+        )
+    }
+
+    static func rotation(
+        id: String,
+        credentialBefore: String,
+        credentialAfter: String,
+        installationBefore: String,
+        installationAfter: String
+    ) throws -> Self {
+        Self(
+            id: id,
+            status: credentialBefore != credentialAfter && installationBefore == installationAfter
+                ? "passed" : "failed",
+            credentialBeforeSHA256: credentialBefore,
+            credentialAfterSHA256: credentialAfter,
+            installationBeforeSHA256: installationBefore,
+            installationAfterSHA256: installationAfter
+        )
+    }
+
+    static func protocolRejection(id: String, response: HTTPObservation, version: Int) -> Self {
+        Self(
+            id: id,
+            status: response.status == 426 && response.problemCode == "protocol_version_unsupported"
+                ? "passed" : "failed",
+            httpStatus: response.status,
+            errorCode: response.problemCode,
+            requestID: response.requestID,
+            protocolVersionSent: version
+        )
+    }
 }
 
 private enum EvidencePolicy {
@@ -553,8 +696,21 @@ private enum EvidencePolicy {
         "physical_device", "identifier_pins", "app_attest_supported", "secure_enclave_key",
         "app_attest_registration", "session_created", "dpop_authorized_request",
         "dpop_replay_rejected", "tampered_dpop_rejected", "streamed_request", "quota",
-        "app_attest_assertion",
+        "app_attest_assertion", "canonical_error_mapping", "session_refresh_rotation",
+        "installation_revocation", "protocol_version_rejection",
     ]
+}
+
+private func requiredAuthorizationHash(_ request: URLRequest) throws -> String {
+    guard let value = request.value(forHTTPHeaderField: "Authorization"),
+          value.hasPrefix("DPoP "), value.utf8.count >= 37
+    else { throw SuiteError.protocolFailure }
+    return SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined()
+}
+
+private func requiredOpaqueHash(_ value: String?) throws -> String {
+    guard let value, !value.isEmpty else { throw SuiteError.protocolFailure }
+    return SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined()
 }
 
 private struct DeviceObservation: Codable {

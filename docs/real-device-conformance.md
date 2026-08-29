@@ -25,6 +25,12 @@ One run resets the conformance app's isolated SDK state, then records:
 - one authorized request, exact DPoP replay rejection as HTTP 401
   `dpop_replayed`, and a bit-tampered proof rejected as HTTP 401
   `dpop_invalid`;
+- typed `LatchwayProblem` mapping of HTTP 404 `feature_not_found` for a
+  protected nonexistent feature, an explicit refresh whose redacted pre/post
+  access-credential hashes differ while its installation hash is stable,
+  rejection of protocol version `0` as HTTP 426
+  `protocol_version_unsupported`, and server enforcement of installation
+  revocation as HTTP 403 `installation_revoked`;
 - a bounded streamed request and quota response; and
 - a second session using the same installation and an App Attest assertion.
 
@@ -71,6 +77,7 @@ LATCHWAY_APPLICATION_ID
 LATCHWAY_ENVIRONMENT
 LATCHWAY_IDENTITY_PROVIDER
 LATCHWAY_FEATURE
+LATCHWAY_ERROR_MAPPING_FEATURE     # canonical feature ID guaranteed absent
 LATCHWAY_MODEL
 ```
 

@@ -73,6 +73,7 @@ jobs:
           LATCHWAY_IDENTITY_PROVIDER: ${{ vars.LATCHWAY_IDENTITY_PROVIDER }}
           LATCHWAY_IDENTITY_TOKEN: ${{ secrets.LATCHWAY_IDENTITY_TOKEN }}
           LATCHWAY_FEATURE: ${{ vars.LATCHWAY_FEATURE }}
+          LATCHWAY_ERROR_MAPPING_FEATURE: ${{ vars.LATCHWAY_ERROR_MAPPING_FEATURE }}
           LATCHWAY_MODEL: ${{ vars.LATCHWAY_MODEL }}
           LATCHWAY_RUN_ID: app-attest-${{ github.run_id }}-${{ github.run_attempt }}
         run: scripts/run-physical-app-attest.sh
