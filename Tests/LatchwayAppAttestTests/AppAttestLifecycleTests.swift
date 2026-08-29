@@ -64,6 +64,25 @@ final class AppAttestLifecycleTests: XCTestCase {
         await XCTAssertThrowsErrorAsync { _ = try await provider.evidence(for: challenge) }
     }
 
+    func testUnsupportedDeviceFailsClosedWithoutCreatingAKey() async {
+        let service = FakeService(supported: false)
+        let provider = LatchwayAppAttestProvider(service: service, stateStore: MemoryStateStore())
+
+        do {
+            _ = try await provider.evidence(for: fixtureChallenge())
+            XCTFail("Expected App Attest to be unavailable")
+        } catch let error as LatchwayError {
+            XCTAssertEqual(error, .attestationUnavailable)
+        } catch {
+            XCTFail("Expected a stable LatchwayError, got \(type(of: error))")
+        }
+
+        let counts = await service.counts()
+        XCTAssertEqual(counts.generateKey, 0)
+        XCTAssertEqual(counts.attestation, 0)
+        XCTAssertEqual(counts.assertion, 0)
+    }
+
     func testKeyCreationFailureUsesStableRedactedError() async {
         let provider = LatchwayAppAttestProvider(
             service: FakeService(generateKeyFailures: [.serverUnavailable]),
@@ -90,6 +109,7 @@ final class AppAttestLifecycleTests: XCTestCase {
 }
 
 private actor FakeService: AppAttestServicing {
+    private let supported: Bool
     private var generateKeyFailures: [AppAttestOperationError]
     private var attestationFailures: [AppAttestOperationError]
     private var assertionFailures: [AppAttestOperationError]
@@ -98,16 +118,18 @@ private actor FakeService: AppAttestServicing {
     private(set) var assertionCount = 0
 
     init(
+        supported: Bool = true,
         generateKeyFailures: [AppAttestOperationError] = [],
         attestationFailures: [AppAttestOperationError] = [],
         assertionFailures: [AppAttestOperationError] = []
     ) {
+        self.supported = supported
         self.generateKeyFailures = generateKeyFailures
         self.attestationFailures = attestationFailures
         self.assertionFailures = assertionFailures
     }
 
-    func isSupported() async -> Bool { true }
+    func isSupported() async -> Bool { supported }
     func generateKey() async throws -> String {
         generateKeyCount += 1
         if !generateKeyFailures.isEmpty { throw generateKeyFailures.removeFirst() }
