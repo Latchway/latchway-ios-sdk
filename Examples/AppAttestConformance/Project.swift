@@ -7,7 +7,7 @@ let developmentTeam = Environment.latchwayDevelopmentTeam.getString(default: "")
 let appAttestEnvironment = Environment.latchwayAppAttestEnvironment.getString(
     default: "development"
 )
-let marketingVersion = Environment.latchwayConformanceVersion.getString(default: "0.1.0")
+let marketingVersion = Environment.latchwayConformanceVersion.getString(default: "1.0.0")
 let buildNumber = Environment.latchwayConformanceBuild.getString(default: "1")
 
 guard ["development", "production"].contains(appAttestEnvironment) else {

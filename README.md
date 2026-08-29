@@ -5,7 +5,7 @@ self-hosted gateway without embedding an upstream provider key. This package
 provides the Swift transport and platform-security integration for that client
 boundary.
 
-> **Project status:** pre-release implementation for contract 0.4.0 and wire
+> **Project status:** intended `1.0.0` source candidate for contract 0.4.0 and wire
 > protocol 1, with server 0.4.0 as the minimum and 0.4.x as the maximum tested
 > series. The package builds and its fixture suite passes, but it is not a
 > supported release until server conformance and a real App Attest device run
@@ -35,7 +35,7 @@ version, then link `Latchway` and `LatchwayAppAttest` to the application target:
 ```swift
 .package(
     url: "https://github.com/Latchway/latchway-ios-sdk.git",
-    from: "0.1.0"
+    from: "1.0.0"
 )
 ```
 
@@ -44,7 +44,7 @@ Swift Package Manager is the canonical distribution. The production
 `Latchway/Core`, `Latchway/AppAttest`, and `Latchway/FirebaseAuth` subspecs:
 
 ```ruby
-pod 'Latchway/AppAttest', '0.1.0'
+pod 'Latchway/AppAttest', '1.0.0'
 ```
 
 CocoaPods compiles selected subspecs into the `Latchway` module; SwiftPM keeps
