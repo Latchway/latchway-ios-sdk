@@ -36,6 +36,8 @@ class Asset:
 
 
 class Client(Protocol):
+    def immutable_releases_enabled(self, repository: str) -> bool: ...
+
     def release(self, repository: str, tag: str) -> dict[str, Any] | None: ...
 
     def create(self, repository: str, tag: str, title: str, prerelease: bool) -> None: ...
@@ -46,12 +48,48 @@ class Client(Protocol):
 
     def finalize(self, repository: str, tag: str, prerelease: bool) -> None: ...
 
+    def verify_release_attestation(
+        self, repository: str, tag: str, assets: list[Asset]
+    ) -> None: ...
+
 
 class GitHubClient:
+    def immutable_releases_enabled(self, repository: str) -> bool:
+        token = os.environ.get("LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN", "")
+        if not token or any(character in token for character in "\x00\r\n"):
+            raise RuntimeError("The protected immutable-release settings credential is missing.")
+        environment = os.environ.copy()
+        environment["GH_TOKEN"] = token
+        result = subprocess.run(
+            [
+                "gh", "api",
+                "-H", "Accept: application/vnd.github+json",
+                "-H", "X-GitHub-Api-Version: 2026-03-10",
+                f"repos/{repository}/immutable-releases",
+            ],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            env=environment,
+        )
+        if result.returncode != 0:
+            return False
+        try:
+            value = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            return False
+        return (
+            isinstance(value, dict)
+            and set(value) == {"enabled", "enforced_by_owner"}
+            and value.get("enabled") is True
+            and isinstance(value.get("enforced_by_owner"), bool)
+        )
+
     def release(self, repository: str, tag: str) -> dict[str, Any] | None:
         endpoint = f"repos/{repository}/releases/tags/{quote(tag, safe='')}"
         result = subprocess.run(
-            ["gh", "api", endpoint],
+            ["gh", "api", "-H", "X-GitHub-Api-Version: 2026-03-10", endpoint],
             check=False,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -110,6 +148,22 @@ class GitHubClient:
             arguments.extend(["--prerelease=false", "--latest"])
         _run(arguments, "GitHub release finalization")
 
+    def verify_release_attestation(
+        self, repository: str, tag: str, assets: list[Asset]
+    ) -> None:
+        _run(
+            ["gh", "release", "verify", tag, "--repo", repository, "--format", "json"],
+            "GitHub immutable release attestation verification",
+        )
+        for asset in assets:
+            _run(
+                [
+                    "gh", "release", "verify-asset", tag, str(asset.path),
+                    "--repo", repository, "--format", "json",
+                ],
+                f"GitHub immutable release asset attestation verification ({asset.name})",
+            )
+
 
 def _run(arguments: list[str], operation: str) -> None:
     result = subprocess.run(arguments, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -163,6 +217,12 @@ def validate_release(
         raise Rejected("Existing GitHub release prerelease state does not match the promoted version.")
     if not isinstance(release.get("draft"), bool) or (release["draft"] and not allow_draft):
         raise Rejected("Existing GitHub release is not finalized.")
+    if not isinstance(release.get("immutable"), bool):
+        raise Rejected("Existing GitHub release has no immutable-state proof.")
+    if release["draft"] and release["immutable"]:
+        raise Rejected("A draft GitHub release cannot already be immutable.")
+    if not release["draft"] and not release["immutable"]:
+        raise Rejected("Published GitHub release is mutable.")
     raw_assets = release.get("assets")
     if not isinstance(raw_assets, list):
         raise Rejected("Existing GitHub release has an invalid asset list.")
@@ -210,6 +270,11 @@ def reconcile(
     assets: list[Asset],
     client: Client,
 ) -> None:
+    # This admin-read preflight is intentionally first. Publishing a draft is
+    # irreversible when immutable releases are disabled, so do not create or
+    # mutate any release until GitHub proves the repository setting is active.
+    if not client.immutable_releases_enabled(repository):
+        raise Rejected("Immutable GitHub releases are not enabled for this repository.")
     release = client.release(repository, tag)
     if release is None:
         client.create(repository, tag, title, prerelease)
@@ -271,6 +336,7 @@ def reconcile(
         raise Rejected("Final GitHub release does not contain the complete immutable asset set.")
     for asset in assets:
         verify_remote_asset(client, repository, asset, final_assets[asset.name])
+    client.verify_release_attestation(repository, tag, assets)
 
 
 def parse_arguments() -> argparse.Namespace:

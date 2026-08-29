@@ -22,7 +22,8 @@ url="https://cdn.cocoapods.org/Specs/$shard/Latchway/$version/Latchway.podspec.j
 temporary_spec=$(mktemp "${TMPDIR:-/tmp}/latchway-cocoapods-spec.XXXXXX")
 temporary_local_spec=$(mktemp "${TMPDIR:-/tmp}/latchway-cocoapods-local-spec.XXXXXX")
 temporary_archive_root=$(mktemp -d "${TMPDIR:-/tmp}/latchway-cocoapods-archive.XXXXXX")
-trap 'rm -f "$temporary_spec" "$temporary_local_spec"; rm -rf "$temporary_archive_root"' EXIT HUP INT TERM
+temporary_report=$(mktemp "${TMPDIR:-/tmp}/latchway-cocoapods-report.XXXXXX")
+trap 'rm -f "$temporary_spec" "$temporary_local_spec" "$temporary_report"; rm -rf "$temporary_archive_root"' EXIT HUP INT TERM
 
 available=false
 attempt=1
@@ -77,10 +78,23 @@ if [ -n "$expected_archive" ]; then
 fi
 
 published_spec_sha256=$(shasum -a 256 "$temporary_spec" | awk '{print $1}')
+reviewed_spec_sha256=
+if [ "$specs_byte_equivalent" = true ]; then
+  reviewed_spec_sha256=$(shasum -a 256 "$temporary_local_spec" | awk '{print $1}')
+fi
+source_commit=$(git rev-parse --verify HEAD)
+source_tag="v$version"
+if ! printf '%s\n' "$source_commit" | grep -Eq '^[0-9a-f]{40}$' ||
+   [ "$(git rev-parse --verify "refs/tags/$source_tag^{commit}")" != "$source_commit" ]; then
+  echo "The reviewed source commit and annotated release tag disagree" >&2
+  exit 1
+fi
 ruby -rjson -e '
   spec = JSON.parse(File.read(ARGV.fetch(0)))
   puts JSON.pretty_generate({
     schema_version: 1,
+    kind: "latchway_cocoapods_release_evidence",
+    status: ARGV.fetch(4) == "true" ? "passed" : "registry_only",
     registry: "cocoapods",
     package: "Latchway",
     version: ARGV.fetch(1),
@@ -88,6 +102,39 @@ ruby -rjson -e '
     reviewed_source_archive_sha256: ARGV.fetch(3),
     published_spec_equals_reviewed_podspec: ARGV.fetch(4) == "true",
     reviewed_source_archive_equals_release_tag: !ARGV.fetch(3).empty?,
+    reviewed_spec_sha256: ARGV.fetch(5),
+    source_commit: ARGV.fetch(6),
+    source_tag: ARGV.fetch(7),
+    registry_url: ARGV.fetch(8),
     source: spec.fetch("source"),
   })
-' "$temporary_spec" "$version" "$published_spec_sha256" "$archive_sha256" "$specs_byte_equivalent"
+' "$temporary_spec" "$version" "$published_spec_sha256" "$archive_sha256" "$specs_byte_equivalent" \
+  "$reviewed_spec_sha256" "$source_commit" "$source_tag" "$url" >"$temporary_report"
+
+evidence_directory=${LATCHWAY_COCOAPODS_EVIDENCE_DIRECTORY:-}
+if [ -n "$evidence_directory" ]; then
+  if [ "$specs_byte_equivalent" != true ]; then
+    echo "Retained CocoaPods evidence requires the exact reviewed source archive" >&2
+    exit 64
+  fi
+  if [ -e "$evidence_directory" ] || [ -L "$evidence_directory" ]; then
+    echo "The CocoaPods evidence destination must not already exist" >&2
+    exit 64
+  fi
+  mkdir -m 700 "$evidence_directory"
+  cp "$temporary_spec" "$evidence_directory/cocoapods-published-podspec.json"
+  cp "$temporary_local_spec" "$evidence_directory/cocoapods-reviewed-podspec.json"
+  cp "$temporary_report" "$evidence_directory/cocoapods-release-evidence.json"
+  chmod 600 "$evidence_directory"/*
+  (
+    cd "$evidence_directory"
+    shasum -a 256 \
+      cocoapods-published-podspec.json \
+      cocoapods-release-evidence.json \
+      cocoapods-reviewed-podspec.json \
+      > cocoapods-release-evidence.SHA256SUMS
+  )
+  chmod 600 "$evidence_directory/cocoapods-release-evidence.SHA256SUMS"
+fi
+
+cat "$temporary_report"

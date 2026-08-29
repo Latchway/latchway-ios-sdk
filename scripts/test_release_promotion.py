@@ -445,6 +445,24 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertLess(public_verification, reconciliation)
         self.assertNotIn("--clobber", workflow)
         self.assertNotIn("gh release create", workflow)
+        self.assertIn("LATCHWAY_COCOAPODS_EVIDENCE_DIRECTORY", workflow)
+        self.assertIn("cocoapods-release-evidence.json", workflow)
+        self.assertIn("cocoapods-published-podspec.json", workflow)
+        self.assertIn("cocoapods-reviewed-podspec.json", workflow)
+        self.assertIn("LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN", workflow)
+        reconciler = (ROOT / "scripts/reconcile-github-release.py").read_text(encoding="utf-8")
+        self.assertIn("repos/{repository}/immutable-releases", reconciler)
+        self.assertIn("Published GitHub release is mutable", reconciler)
+        verifier = (ROOT / "scripts/verify-cocoapods-release.sh").read_text(encoding="utf-8")
+        for retained in (
+            "cocoapods-published-podspec.json",
+            "cocoapods-reviewed-podspec.json",
+            "cocoapods-release-evidence.json",
+            "cocoapods-release-evidence.SHA256SUMS",
+        ):
+            self.assertIn(retained, verifier)
+        self.assertIn("source_commit", verifier)
+        self.assertIn("reviewed_spec_sha256", verifier)
 
 
 if __name__ == "__main__":
