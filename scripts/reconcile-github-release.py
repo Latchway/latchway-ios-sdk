@@ -620,6 +620,13 @@ def parse_arguments() -> argparse.Namespace:
 def main() -> int:
     arguments = parse_arguments()
     try:
+        result = subprocess.run(
+            [sys.executable, str(Path(__file__).with_name("require-gh-version.py"))],
+            check=False,
+            stdout=subprocess.DEVNULL,
+        )
+        if result.returncode != 0:
+            raise RuntimeError("GitHub CLI does not satisfy the release security baseline.")
         assets = inspect_assets(arguments.assets)
         reconcile(
             repository=arguments.repository,
