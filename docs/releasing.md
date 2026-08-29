@@ -25,6 +25,12 @@ exact CDN podspec, reviewed podspec, source-bound verification record, and
 checksum manifest are retained beside the source archive; every retained file
 receives a GitHub build-provenance attestation.
 
+If the core repository is private, configure
+`LATCHWAY_SIBLING_REPOSITORIES_READ_TOKEN` as a fine-grained Contents: read
+credential for `Latchway/latchway`. It authenticates only the pinned promotion
+asset download and attestation verification, is never persisted by checkout,
+and is unnecessary when the core repository is public.
+
 Swift Package Manager consumes the same tag locked by GitHub's immutable
 release. The GitHub release is deliberately last: a failed CocoaPods
 publication or public-registry check cannot leave a release page that claims
