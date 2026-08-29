@@ -1,0 +1,98 @@
+name: Physical App Attest evidence
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_commit:
+        description: Full latchway-ios-sdk commit embedded in the release candidate
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: physical-app-attest-production
+  cancel-in-progress: false
+
+jobs:
+  app-attest-production:
+    name: Production App Attest on physical Apple hardware
+    environment: app-attest-production
+    runs-on: [self-hosted, macOS, latchway-physical-ios]
+    timeout-minutes: 45
+    steps:
+      - name: Check out exact iOS candidate
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.source_commit }}
+          persist-credentials: false
+      - name: Verify protected toolchain and immutable commit
+        env:
+          EXPECTED_XCODE_IDENTITY: ${{ vars.LATCHWAY_XCODE_IDENTITY }}
+          EXPECTED_COMMIT: ${{ vars.LATCHWAY_SOURCE_COMMIT }}
+          REQUESTED_COMMIT: ${{ inputs.source_commit }}
+        run: |
+          test "$REQUESTED_COMMIT" = "$EXPECTED_COMMIT"
+          test "$GITHUB_SHA" = "$EXPECTED_COMMIT"
+          [[ "$EXPECTED_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
+          test "$(xcodebuild -version | tr '\n' ' ' | sed 's/[[:space:]]*$//')" = "$EXPECTED_XCODE_IDENTITY"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+      - name: Collect and validate production physical-device evidence
+        env:
+          LATCHWAY_EVIDENCE_OUTPUT_DIR: ${{ runner.temp }}/latchway-app-attest-evidence
+          LATCHWAY_IOS_DEVICE_ID: ${{ secrets.LATCHWAY_IOS_DEVICE_ID }}
+          LATCHWAY_IOS_APP_BUNDLE_PATH: ${{ vars.LATCHWAY_IOS_APP_BUNDLE_PATH }}
+          LATCHWAY_IOS_INSTALL_MODE: ${{ vars.LATCHWAY_IOS_INSTALL_MODE }}
+          LATCHWAY_BUNDLE_ID: ${{ vars.LATCHWAY_IOS_BUNDLE_ID }}
+          LATCHWAY_APP_VERSION: ${{ vars.LATCHWAY_IOS_APP_VERSION }}
+          LATCHWAY_BUILD_NUMBER: ${{ vars.LATCHWAY_IOS_BUILD_NUMBER }}
+          LATCHWAY_TEAM_ID: ${{ vars.LATCHWAY_IOS_TEAM_ID }}
+          LATCHWAY_SIGNING_CERTIFICATE_SHA256: ${{ vars.LATCHWAY_IOS_SIGNING_CERTIFICATE_SHA256 }}
+          LATCHWAY_APP_BINARY_SHA256: ${{ vars.LATCHWAY_IOS_APP_BINARY_SHA256 }}
+          LATCHWAY_DISTRIBUTION: ${{ vars.LATCHWAY_IOS_DISTRIBUTION }}
+          LATCHWAY_SOURCE_COMMIT: ${{ vars.LATCHWAY_SOURCE_COMMIT }}
+          LATCHWAY_CORE_COMMIT: ${{ vars.LATCHWAY_CORE_COMMIT }}
+          LATCHWAY_SDK_VERSION: ${{ vars.LATCHWAY_IOS_SDK_VERSION }}
+          LATCHWAY_CONTRACT_VERSION: ${{ vars.LATCHWAY_CONTRACT_VERSION }}
+          LATCHWAY_CONTRACT_BUNDLE_SHA256: ${{ vars.LATCHWAY_CONTRACT_BUNDLE_SHA256 }}
+          LATCHWAY_GATEWAY_IMAGE_DIGEST: ${{ vars.LATCHWAY_GATEWAY_IMAGE_DIGEST }}
+          LATCHWAY_GATEWAY_CONFIGURATION_SHA256: ${{ vars.LATCHWAY_GATEWAY_CONFIGURATION_SHA256 }}
+          LATCHWAY_GATEWAY_ORIGIN: ${{ vars.LATCHWAY_GATEWAY_ORIGIN }}
+          LATCHWAY_GATEWAY_DEPLOYMENT_KEY_ID: ${{ vars.LATCHWAY_GATEWAY_DEPLOYMENT_KEY_ID }}
+          LATCHWAY_GATEWAY_DEPLOYMENT_STATEMENT_SHA256: ${{ vars.LATCHWAY_GATEWAY_DEPLOYMENT_STATEMENT_SHA256 }}
+          LATCHWAY_GATEWAY_DEPLOYMENT_PUBLIC_KEY_PATH: ${{ vars.LATCHWAY_GATEWAY_DEPLOYMENT_PUBLIC_KEY_PATH }}
+          LATCHWAY_GATEWAY_DEPLOYMENT_PUBLIC_KEY_SHA256: ${{ vars.LATCHWAY_GATEWAY_DEPLOYMENT_PUBLIC_KEY_SHA256 }}
+          LATCHWAY_GATEWAY_MINIMUM_TRUST_LEVEL: ${{ vars.LATCHWAY_GATEWAY_MINIMUM_TRUST_LEVEL }}
+          LATCHWAY_BASE_URL: ${{ vars.LATCHWAY_BASE_URL }}
+          LATCHWAY_APPLICATION_ID: ${{ vars.LATCHWAY_APPLICATION_ID }}
+          LATCHWAY_ENVIRONMENT: ${{ vars.LATCHWAY_ENVIRONMENT }}
+          LATCHWAY_IDENTITY_PROVIDER: ${{ vars.LATCHWAY_IDENTITY_PROVIDER }}
+          LATCHWAY_IDENTITY_TOKEN: ${{ secrets.LATCHWAY_IDENTITY_TOKEN }}
+          LATCHWAY_FEATURE: ${{ vars.LATCHWAY_FEATURE }}
+          LATCHWAY_MODEL: ${{ vars.LATCHWAY_MODEL }}
+          LATCHWAY_RUN_ID: app-attest-${{ github.run_id }}-${{ github.run_attempt }}
+        run: scripts/run-physical-app-attest.sh
+      - name: Attest the validated profile and evidence
+        id: attest
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        with:
+          subject-path: |
+            ${{ runner.temp }}/latchway-app-attest-evidence/app-attest-profile.json
+            ${{ runner.temp }}/latchway-app-attest-evidence/app-attest-evidence.json
+            ${{ runner.temp }}/latchway-app-attest-evidence/SHA256SUMS
+      - name: Retain the GitHub Sigstore bundle with the report
+        env:
+          BUNDLE_PATH: ${{ steps.attest.outputs.bundle-path }}
+        run: cp "$BUNDLE_PATH" "${{ runner.temp }}/latchway-app-attest-evidence/github-attestation.sigstore.json"
+      - name: Retain redacted evidence, JUnit, profiles, and hashes
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: app-attest-physical-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/latchway-app-attest-evidence
+          if-no-files-found: warn
+          retention-days: 30

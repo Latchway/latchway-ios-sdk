@@ -1,20 +1,35 @@
 # App Attest conformance application
 
-This is a deployable SwiftUI application, generated with Tuist 4.200 or newer,
-for the physical-device gate. It is not an App Attest simulator and cannot turn
-fixture or debug evidence into a production success claim.
+This Tuist-generated SwiftUI app is the physical production-evidence client.
+It exercises registration, assertion reuse, session establishment, a bounded
+stream, quota, exact DPoP replay rejection, and a tampered-proof rejection.
 
-Generate an unsigned build project with:
+An unsigned compile is a useful static gate only:
 
 ```bash
 tuist generate --path Examples/AppAttestConformance --no-open
+xcodebuild \
+  -project Examples/AppAttestConformance/AppAttestConformance.xcodeproj \
+  -scheme AppAttestConformance \
+  -configuration Release \
+  -destination 'generic/platform=iOS' \
+  CODE_SIGNING_ALLOWED=NO \
+  build
 ```
 
-For a signed run, pass a team-owned bundle identifier and development team as
-documented in `../../docs/real-device-conformance.md`. The default manifest
-selects the development App Attest entitlement; production is an explicit,
-separate generation setting.
+The generated scheme uses Release. Production generation also requires a
+team-owned bundle ID, Team ID, version, build, and production entitlement:
 
-After the registration run succeeds, **Run assertion pass** clears only the
-Latchway refresh session. It preserves the Secure Enclave and App Attest keys,
-forcing the next session challenge to exercise App Attest assertion mode.
+```bash
+TUIST_LATCHWAY_CONFORMANCE_BUNDLE_ID=com.example.latchway.conformance \
+TUIST_LATCHWAY_DEVELOPMENT_TEAM=YOURTEAMID \
+TUIST_LATCHWAY_APP_ATTEST_ENVIRONMENT=production \
+TUIST_LATCHWAY_CONFORMANCE_VERSION=1.0.0 \
+TUIST_LATCHWAY_CONFORMANCE_BUILD=1 \
+tuist generate --path Examples/AppAttestConformance --no-open
+```
+
+Use the protected workflow and `../../docs/real-device-conformance.md` for the
+actual run. The app writes only `Documents/latchway-device-observation.json`.
+That observation is deliberately not a pass until the external signature,
+profile, schema, redaction, and physical-run validator accepts it.

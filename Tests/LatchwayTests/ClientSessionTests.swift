@@ -293,17 +293,68 @@ final class ClientSessionTests: XCTestCase {
         XCTAssertEqual(attestationCount, 0)
     }
 
-    func testRefreshReauthenticatesExactlyOnceWhenServerRequiresIdentity() async throws {
+    func testRefreshIdentityReauthenticationStartsFreshAttestedExchange() async throws {
         let fixture = try await makeFixture(refreshRejection: "identity_reauthentication_required")
         var first = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
         try await fixture.client.authorize(&first, feature: "habit-assistant")
-        await fixture.clock.advance(by: 3_601)
+        try await fixture.client.refresh()
         var second = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
         try await fixture.client.authorize(&second, feature: "habit-assistant")
         let counts = await fixture.server.counts()
         let identityCount = await fixture.identity.count()
-        XCTAssertEqual(counts.refresh, 2)
+        let attestationCount = await fixture.attestation.challenges.count
+        let refreshBodyFields = await fixture.server.refreshBodyFields()
+        XCTAssertEqual(counts.refresh, 1)
+        XCTAssertEqual(counts.challenge, 2)
+        XCTAssertEqual(counts.exchange, 2)
         XCTAssertEqual(identityCount, 2)
+        XCTAssertEqual(attestationCount, 2)
+        XCTAssertEqual(refreshBodyFields, [["refresh_token"]])
+    }
+
+    func testRefreshAttestationStepUpStartsFreshAttestedExchange() async throws {
+        let fixture = try await makeFixture(refreshRejection: "attestation_step_up_required")
+        var first = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        try await fixture.client.authorize(&first, feature: "habit-assistant")
+        try await fixture.client.refresh()
+        var second = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        try await fixture.client.authorize(&second, feature: "habit-assistant")
+
+        let counts = await fixture.server.counts()
+        let attestationCount = await fixture.attestation.challenges.count
+        let refreshBodyFields = await fixture.server.refreshBodyFields()
+        XCTAssertEqual(counts.refresh, 1)
+        XCTAssertEqual(counts.challenge, 2)
+        XCTAssertEqual(counts.exchange, 2)
+        XCTAssertEqual(attestationCount, 2)
+        XCTAssertEqual(refreshBodyFields, [["refresh_token"]])
+    }
+
+    func testFailedRefreshStepUpReplacementCannotReuseRetiredSession() async throws {
+        let fixture = try await makeFixture(
+            refreshRejection: "attestation_step_up_required",
+            failSecondAttestation: true
+        )
+        var first = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        try await fixture.client.authorize(&first, feature: "habit-assistant")
+
+        do {
+            try await fixture.client.refresh()
+            XCTFail("A failed attested replacement must fail closed")
+        } catch let error as LatchwayError {
+            XCTAssertEqual(error, .attestationUnavailable)
+        }
+        let failedDiagnostics = await fixture.client.diagnostics()
+        let retiredStorage = try await fixture.storage.load()
+        XCTAssertNil(failedDiagnostics.sessionExpiresAt)
+        XCTAssertNil(retiredStorage)
+
+        var recovered = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        try await fixture.client.authorize(&recovered, feature: "habit-assistant")
+        let counts = await fixture.server.counts()
+        XCTAssertEqual(counts.refresh, 1)
+        XCTAssertEqual(counts.challenge, 3)
+        XCTAssertEqual(counts.exchange, 2)
     }
 
     func testRefreshTokenReuseClearsRotatedState() async throws {
@@ -612,6 +663,8 @@ final class ClientSessionTests: XCTestCase {
         XCTAssertEqual(challengePlatforms, ["react_native_ios"])
         XCTAssertEqual(challengeSDKVersions, ["0.1.0-dev.0"])
         XCTAssertEqual(diagnostics.sdkVersion, "0.1.0-dev.0")
+        XCTAssertEqual(diagnostics.trustProvider, "app_attest")
+        XCTAssertEqual(diagnostics.trustLevel, "app_verified")
     }
 
     func testCallerOwnedTransportCanAuthorizeNonceRetry() async throws {
@@ -687,6 +740,28 @@ final class ClientSessionTests: XCTestCase {
         XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
     }
 
+    func testNoncanonicalApplicationIDsFailBeforeNetworkUse() async throws {
+        for applicationID in [
+            "habitify",
+            "app_habitify",
+            "app_81J00000000000000000000000",
+            "app_01j00000000000000000000000",
+            "app_01J0000000000000000000000",
+        ] {
+            let fixture = try await makeFixture(applicationID: applicationID)
+            var request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+            do {
+                try await fixture.client.authorize(&request, feature: "habit-assistant")
+                XCTFail("A noncanonical application ID must fail locally")
+            } catch let LatchwayError.invalidConfiguration(reason) {
+                XCTAssertTrue(reason.contains("applicationID"))
+            }
+            let counts = await fixture.server.counts()
+            XCTAssertEqual(counts.challenge, 0)
+            XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+        }
+    }
+
     private struct Fixture {
         let client: LatchwayClient
         let server: SessionServerTransport
@@ -706,8 +781,10 @@ final class ClientSessionTests: XCTestCase {
         challengeExpired: Bool = false,
         challengeClockOffset: TimeInterval = 0,
         refreshRejection: String? = nil,
+        failSecondAttestation: Bool = false,
         failingSaveCalls: Set<Int> = [],
         storedRefreshToken: String? = nil,
+        applicationID: String = "app_01J00000000000000000000000",
         clientRuntime: LatchwayClientRuntime = .iOS,
         clientSDKVersion: String = LatchwayVersion.sdk,
         baseURL: URL = URL(string: "https://gateway.example.test")!
@@ -735,7 +812,11 @@ final class ClientSessionTests: XCTestCase {
             "key_id": .string("fixture-key"),
             "attestation_object": .string("YXR0ZXN0YXRpb24"),
         ])
-        let attestation = LatchwayScriptedAttestationProvider(results: Array(repeating: .success(evidence), count: 4))
+        var attestationResults = Array(repeating: Result<LatchwayAttestationEvidence, Error>.success(evidence), count: 4)
+        if failSecondAttestation {
+            attestationResults[1] = .failure(LatchwayError.attestationUnavailable)
+        }
+        let attestation = LatchwayScriptedAttestationProvider(results: attestationResults)
         let storedSession = storedRefreshToken.map { token in
             LatchwayStoredSession(
                 refreshToken: token,
@@ -754,7 +835,7 @@ final class ClientSessionTests: XCTestCase {
         )
         let configuration = LatchwayConfiguration(
             baseURL: baseURL,
-            applicationID: "app_habitify",
+            applicationID: applicationID,
             environment: "production",
             clientRuntime: clientRuntime,
             clientSDKVersion: clientSDKVersion,
@@ -835,6 +916,7 @@ private actor SessionServerTransport: LatchwayHTTPTransport {
     private var challengeSDKs: [String] = []
     private var requestedPlatforms: [String] = []
     private var requestedSDKVersions: [String] = []
+    private var refreshBodies: [[String]] = []
     private var protectedRequestIDs: [String] = []
     private let dataPlaneRejection: String?
     private let dataPlaneRetryable: Bool
@@ -915,8 +997,11 @@ private actor SessionServerTransport: LatchwayHTTPTransport {
             return grant(status: 201, sequence: exchangeCount)
         case "/client/v1/sessions/refresh":
             refreshCount += 1
-            if let refreshRejection,
-               refreshRejection != "identity_reauthentication_required" || refreshCount == 1 {
+            if let body = request.httpBody,
+               let object = try? JSONSerialization.jsonObject(with: body) as? [String: Any] {
+                refreshBodies.append(object.keys.sorted())
+            }
+            if let refreshRejection, refreshCount == 1 {
                 let status = refreshRejection == "installation_revoked" ? 403 : 401
                 return problem(status: status, code: refreshRejection, retryable: false)
             }
@@ -939,7 +1024,14 @@ private actor SessionServerTransport: LatchwayHTTPTransport {
                 "protocol_version": 1,
                 "installation": installation,
                 "session": ["expires_at": iso(now.addingTimeInterval(600)), "refresh_available": true],
-                "trust": trust,
+                // Deliberately stronger than the accepted grant. Diagnostics
+                // must report the trust bound to the active session instead.
+                "trust": [
+                    "provider": "app_attest",
+                    "level": "device_verified",
+                    "verified_at": iso(now),
+                    "expires_at": iso(now.addingTimeInterval(86_400)),
+                ],
             ])
         case "/v1/responses":
             dataPlaneCount += 1
@@ -983,6 +1075,7 @@ private actor SessionServerTransport: LatchwayHTTPTransport {
     func counts() -> (challenge: Int, exchange: Int, refresh: Int, quota: Int, revoke: Int, dataPlane: Int) {
         (challengeCount, exchangeCount, refreshCount, quotaCount, revokeCount, dataPlaneCount)
     }
+    func refreshBodyFields() -> [[String]] { refreshBodies }
 
     func challengeProofs() -> [String] { proofs }
     func challengeRequestIDs() -> [String] { challengeIDs }

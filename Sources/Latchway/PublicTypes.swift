@@ -248,6 +248,12 @@ public struct LatchwayDiagnostics: Sendable, Equatable {
     public let sessionExpiresAt: Date?
     public let installationID: String?
     public let serverVersion: String?
+    /// Trust provider bound to the currently accepted session grant.
+    /// This is nil when there is no active session.
+    public let trustProvider: String?
+    /// Trust level bound to the currently accepted session grant.
+    /// This is nil when there is no active session.
+    public let trustLevel: String?
     public let lastRequestID: String?
     public let lastErrorCode: String?
 
@@ -262,6 +268,8 @@ public struct LatchwayDiagnostics: Sendable, Equatable {
         sessionExpiresAt: Date? = nil,
         installationID: String? = nil,
         serverVersion: String? = nil,
+        trustProvider: String? = nil,
+        trustLevel: String? = nil,
         lastRequestID: String? = nil,
         lastErrorCode: String? = nil
     ) {
@@ -275,6 +283,8 @@ public struct LatchwayDiagnostics: Sendable, Equatable {
         self.sessionExpiresAt = sessionExpiresAt
         self.installationID = installationID
         self.serverVersion = serverVersion
+        self.trustProvider = trustProvider
+        self.trustLevel = trustLevel
         self.lastRequestID = lastRequestID
         self.lastErrorCode = lastErrorCode
     }

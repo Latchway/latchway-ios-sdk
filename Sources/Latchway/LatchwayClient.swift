@@ -282,15 +282,22 @@ public actor LatchwayClient {
         let attestation = await attestationProvider.status()
         var installationID = session?.installation.id
         var expiration = session?.expiresAt
+        var trustProvider: String?
+        var trustLevel: String?
 
-        if let active = session,
-           active.isUsable(at: await clock.now()),
-           let remote = try? await controlPlane.diagnostics(accessToken: active.accessToken),
-           Self.validDiagnostics(remote, active: active, thumbprint: thumbprint) {
-            serverVersion = remote.serverVersion
-            lastRequestID = remote.requestID
-            installationID = remote.installation.id
-            expiration = remote.session.expiresAt
+        if let active = session, active.isUsable(at: await clock.now()) {
+            // The accepted grant is the authority for this session's trust.
+            // A later diagnostics response may update server metadata but must
+            // never upgrade the trust bound to the active access token.
+            trustProvider = active.trust.provider
+            trustLevel = active.trust.level
+            if let remote = try? await controlPlane.diagnostics(accessToken: active.accessToken),
+               Self.validDiagnostics(remote, active: active, thumbprint: thumbprint) {
+                serverVersion = remote.serverVersion
+                lastRequestID = remote.requestID
+                installationID = remote.installation.id
+                expiration = remote.session.expiresAt
+            }
         }
         return LatchwayDiagnostics(
             sdkVersion: configuration.clientSDKVersion,
@@ -301,6 +308,8 @@ public actor LatchwayClient {
             sessionExpiresAt: expiration,
             installationID: installationID,
             serverVersion: serverVersion,
+            trustProvider: trustProvider,
+            trustLevel: trustLevel,
             lastRequestID: lastRequestID,
             lastErrorCode: lastErrorCode
         )
@@ -378,7 +387,7 @@ public actor LatchwayClient {
     private func refreshStoredSession(_ stored: LatchwayStoredSession) async throws -> RuntimeSession {
         if let refreshTask { return try await resolve(refreshTask, kind: .refreshing) }
         state = .refreshing
-        let task = Task { [controlPlane, identityTokenProvider, attestationProvider, proofFactory, sessionStorage, configuration, clock] in
+        let task = Task { [self, controlPlane, identityTokenProvider, attestationProvider, proofFactory, sessionStorage, configuration, clock] in
             try Task.checkCancellation()
             let now = await clock.now()
             let remainingLifetime = stored.refreshExpiresAt.timeIntervalSince(now)
@@ -395,7 +404,7 @@ public actor LatchwayClient {
                   stored.installation.status == "active",
                   stored.installation.dpopJKT == expectedThumbprint
             else {
-                try? await sessionStorage.clear()
+                try await self.retireSessionForAttestedReestablishment()
                 return try await Self.performEstablishment(
                     identityTokenProvider: identityTokenProvider,
                     attestationProvider: attestationProvider,
@@ -409,12 +418,21 @@ public actor LatchwayClient {
             let grant: SessionGrantWire
             do {
                 grant = try await controlPlane.refresh(refreshToken: stored.refreshToken)
-            } catch let error as LatchwayError where error.requiresIdentityReauthentication {
-                let identityToken = try await identityTokenProvider.identityToken()
-                guard (16 ... 65_536).contains(identityToken.utf8.count) else {
-                    throw LatchwayError.invalidRequest("The identity token has an invalid length")
-                }
-                grant = try await controlPlane.refresh(refreshToken: stored.refreshToken, identityToken: identityToken)
+            } catch let error as LatchwayError where error.requiresAttestedReestablishment {
+                // The v1 refresh contract accepts only refresh_token. Retire
+                // the stored session and run the ordinary challenge + attested
+                // exchange inside this single-flight task so every waiter
+                // observes the same replacement session.
+                try await self.retireSessionForAttestedReestablishment()
+                return try await Self.performEstablishment(
+                    identityTokenProvider: identityTokenProvider,
+                    attestationProvider: attestationProvider,
+                    controlPlane: controlPlane,
+                    proofFactory: proofFactory,
+                    sessionStorage: sessionStorage,
+                    configuration: configuration,
+                    clock: clock
+                )
             }
             return try await Self.accept(
                 grant: grant,
@@ -441,6 +459,18 @@ public actor LatchwayClient {
                 }
             }
             throw error
+        }
+    }
+
+    private func retireSessionForAttestedReestablishment() async throws {
+        // Retire the actor-visible session before any fallible identity or
+        // attestation work. If replacement fails, no caller may resume using
+        // the grant for which the server required step-up.
+        session = nil
+        do {
+            try await sessionStorage.clear()
+        } catch {
+            throw LatchwayError.keyStorageFailure
         }
     }
 
@@ -718,8 +748,13 @@ public actor LatchwayClient {
     }
 
     private func validateConfiguration() throws {
-        guard (1 ... 128).contains(configuration.applicationID.utf8.count) else {
-            throw LatchwayError.invalidConfiguration("applicationID must contain 1 to 128 UTF-8 bytes")
+        guard configuration.applicationID.range(
+            of: "^app_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+            options: .regularExpression
+        ) != nil else {
+            throw LatchwayError.invalidConfiguration(
+                "applicationID must be the canonical app_ resource ID returned by the Admin API"
+            )
         }
         for (label, value) in [("environment", configuration.environment), ("identityProvider", configuration.identityProvider)] {
             guard value.range(of: "^[a-z][a-z0-9_-]{0,62}$", options: .regularExpression) != nil else {
@@ -899,9 +934,15 @@ private actor LatchwayUnavailableAttestationProvider: LatchwayAttestationProvide
 }
 
 private extension LatchwayError {
-    var requiresIdentityReauthentication: Bool {
+    var requiresAttestedReestablishment: Bool {
         guard case let .server(problem) = self else { return false }
-        return problem.code == .identityReauthenticationRequired || problem.code == .identityTokenExpired
+        return [
+            .identityReauthenticationRequired,
+            .identityTokenExpired,
+            .attestationRequired,
+            .attestationStale,
+            .attestationStepUpRequired,
+        ].contains(problem.code)
     }
 
     var requiresFreshSession: Bool {

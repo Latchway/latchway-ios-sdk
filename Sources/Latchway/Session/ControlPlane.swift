@@ -59,11 +59,11 @@ struct LatchwayControlPlane: Sendable {
         )
     }
 
-    func refresh(refreshToken: String, identityToken: String? = nil) async throws -> SessionGrantWire {
+    func refresh(refreshToken: String) async throws -> SessionGrantWire {
         try await sendJSON(
             method: "POST",
             path: "client/v1/sessions/refresh",
-            body: SessionRefreshRequest(refreshToken: refreshToken, identityToken: identityToken, attestation: nil),
+            body: SessionRefreshRequest(refreshToken: refreshToken),
             accessToken: nil,
             expectedStatus: 200,
             as: SessionGrantWire.self

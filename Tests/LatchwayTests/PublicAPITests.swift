@@ -6,11 +6,11 @@ final class PublicAPITests: XCTestCase {
     func testRequestedConfigurationInitializerRemainsAvailable() {
         let configuration = LatchwayConfiguration(
             baseURL: URL(string: "https://gateway.example.test")!,
-            applicationID: "app_habitify",
+            applicationID: "app_01J00000000000000000000000",
             environment: "production"
         )
         XCTAssertEqual(configuration.baseURL.absoluteString, "https://gateway.example.test")
-        XCTAssertEqual(configuration.applicationID, "app_habitify")
+        XCTAssertEqual(configuration.applicationID, "app_01J00000000000000000000000")
         XCTAssertEqual(configuration.environment, "production")
         XCTAssertEqual(configuration.clientRuntime, .iOS)
         XCTAssertEqual(configuration.clientSDKVersion, LatchwayVersion.sdk)
@@ -61,12 +61,12 @@ final class PublicAPITests: XCTestCase {
 
     func testKeychainNamespacesSeparateNativeAndReactNativeInstallations() {
         let native = LatchwayKeychainNamespace.service(
-            applicationID: "app_habitify",
+            applicationID: "app_01J00000000000000000000000",
             environment: "production",
             clientRuntime: .iOS
         )
         let reactNative = LatchwayKeychainNamespace.service(
-            applicationID: "app_habitify",
+            applicationID: "app_01J00000000000000000000000",
             environment: "production",
             clientRuntime: .reactNativeIOS
         )

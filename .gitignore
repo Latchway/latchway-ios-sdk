@@ -11,6 +11,10 @@ Examples/AppAttestConformance/AppAttestConformance.xcodeproj/
 Examples/AppAttestConformance/AppAttestConformance.xcworkspace/
 Examples/AppAttestConformance/Derived/
 
+# Python conformance test cache
+__pycache__/
+*.py[cod]
+
 # Local credentials and signing material
 .env
 .env.*

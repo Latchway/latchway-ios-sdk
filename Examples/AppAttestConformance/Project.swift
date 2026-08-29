@@ -7,6 +7,8 @@ let developmentTeam = Environment.latchwayDevelopmentTeam.getString(default: "")
 let appAttestEnvironment = Environment.latchwayAppAttestEnvironment.getString(
     default: "development"
 )
+let marketingVersion = Environment.latchwayConformanceVersion.getString(default: "0.1.0")
+let buildNumber = Environment.latchwayConformanceBuild.getString(default: "1")
 
 guard ["development", "production"].contains(appAttestEnvironment) else {
     fatalError(
@@ -16,6 +18,8 @@ guard ["development", "production"].contains(appAttestEnvironment) else {
 
 var buildSettings: SettingsDictionary = [
     "CODE_SIGN_STYLE": "Automatic",
+    "CURRENT_PROJECT_VERSION": .string(buildNumber),
+    "MARKETING_VERSION": .string(marketingVersion),
     "SWIFT_STRICT_CONCURRENCY": "complete",
     "SWIFT_VERSION": "6.0",
 ]
@@ -38,6 +42,9 @@ let project = Project(
             deploymentTargets: .iOS("15.0"),
             infoPlist: .extendingDefault(with: [
                 "CFBundleDisplayName": "Latchway Conformance",
+                "CFBundleShortVersionString": "$(MARKETING_VERSION)",
+                "CFBundleVersion": "$(CURRENT_PROJECT_VERSION)",
+                "LatchwayAppAttestEnvironment": .string(appAttestEnvironment),
                 "UILaunchScreen": [:],
             ]),
             sources: ["Sources/**"],
@@ -57,7 +64,7 @@ let project = Project(
             shared: true,
             buildAction: .buildAction(targets: ["AppAttestConformance"]),
             runAction: .runAction(
-                configuration: .debug,
+                configuration: .release,
                 executable: .executable("AppAttestConformance")
             )
         ),

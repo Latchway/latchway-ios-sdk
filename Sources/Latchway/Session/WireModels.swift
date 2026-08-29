@@ -73,13 +73,9 @@ struct SessionExchangeRequest: Encodable {
 
 struct SessionRefreshRequest: Encodable {
     let refreshToken: String
-    let identityToken: String?
-    let attestation: LatchwayAttestationEvidence?
 
     enum CodingKeys: String, CodingKey {
         case refreshToken = "refresh_token"
-        case identityToken = "identity_token"
-        case attestation
     }
 }
 

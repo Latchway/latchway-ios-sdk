@@ -24,5 +24,28 @@ jobs:
         run: |
           xcodebuild -version
           swift --version
+      - name: Install pinned Tuist
+        uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2
+        with:
+          install: true
+          cache: false
+      - name: Compile production App Attest host without signing
+        env:
+          TUIST_LATCHWAY_APP_ATTEST_ENVIRONMENT: production
+        run: |
+          test "$(tuist version)" = "4.200.4"
+          tuist generate --path Examples/AppAttestConformance --no-open
+          xcodebuild -quiet \
+            -project Examples/AppAttestConformance/AppAttestConformance.xcodeproj \
+            -scheme AppAttestConformance \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/latchway-app-attest-host" \
+            CODE_SIGNING_ALLOWED=NO build
+      - name: Test fail-closed physical evidence policy
+        run: |
+          python3 scripts/test-device-evidence.py
+          python3 scripts/test-verify-gateway-deployment.py
+          bash -n scripts/gateway-deployment-evidence.sh scripts/run-physical-app-attest.sh
       - name: Verify SwiftPM products and CocoaPods metadata
         run: scripts/verify-package.sh
