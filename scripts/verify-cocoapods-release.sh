@@ -28,7 +28,10 @@ trap 'rm -f "$temporary_spec" "$temporary_local_spec" "$temporary_report"; rm -r
 available=false
 attempt=1
 while [ "$attempt" -le "$attempts" ]; do
-  if curl --fail --silent --show-error --location --output "$temporary_spec" "$url"; then
+  if curl --proto '=https' --proto-redir '=https' --tlsv1.2 \
+    --connect-timeout 15 --max-time 60 --max-filesize 1048576 \
+    --fail --silent --show-error --location \
+    --output "$temporary_spec" "$url"; then
     available=true
     break
   fi

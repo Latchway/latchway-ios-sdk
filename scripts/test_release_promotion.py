@@ -438,9 +438,13 @@ class ReleaseWorkflowTests(unittest.TestCase):
         if REPOSITORY_ID != "ios":
             self.skipTest("iOS-only release recovery")
         workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+        administration_preflight = workflow.index(
+            "Require immutable-release administration policy and attestation tooling"
+        )
         registry = workflow.index("scripts/publish-or-verify-cocoapods.sh")
         public_verification = workflow.index("scripts/verify-cocoapods-release.sh")
         reconciliation = workflow.index("python3 scripts/reconcile-github-release.py")
+        self.assertLess(administration_preflight, registry)
         self.assertLess(registry, public_verification)
         self.assertLess(public_verification, reconciliation)
         self.assertNotIn("--clobber", workflow)
@@ -450,10 +454,27 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("cocoapods-published-podspec.json", workflow)
         self.assertIn("cocoapods-reviewed-podspec.json", workflow)
         self.assertIn("LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN", workflow)
+        self.assertIn("gh release verify --help", workflow)
+        self.assertIn("gh release verify-asset --help", workflow)
+        self.assertIn("repos/$GITHUB_REPOSITORY/immutable-releases", workflow)
+        self.assertIn("--expected-commit \"$RELEASE_COMMIT\"", workflow)
         reconciler = (ROOT / "scripts/reconcile-github-release.py").read_text(encoding="utf-8")
         self.assertIn("repos/{repository}/immutable-releases", reconciler)
+        self.assertIn("repos/{repository}/git/ref/tags/{encoded_tag}", reconciler)
+        self.assertIn("repos/{repository}/git/tags/{tag_object['sha']}", reconciler)
+        self.assertIn('os.environ.pop("LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN", "")', reconciler)
+        self.assertIn("_validate_release_attestation", reconciler)
         self.assertIn("Published GitHub release is mutable", reconciler)
         verifier = (ROOT / "scripts/verify-cocoapods-release.sh").read_text(encoding="utf-8")
+        for curl_constraint in (
+            "--proto '=https'",
+            "--proto-redir '=https'",
+            "--tlsv1.2",
+            "--connect-timeout 15",
+            "--max-time 60",
+            "--max-filesize 1048576",
+        ):
+            self.assertIn(curl_constraint, verifier)
         for retained in (
             "cocoapods-published-podspec.json",
             "cocoapods-reviewed-podspec.json",

@@ -163,6 +163,26 @@ jobs:
           test "$(git cat-file -t "refs/tags/$RELEASE_TAG")" = tag
           test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$RELEASE_COMMIT"
           scripts/release-preflight.sh "$RELEASE_TAG"
+      - name: Require immutable-release administration policy and attestation tooling
+        env:
+          GH_TOKEN: ${{ secrets.LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$GH_TOKEN"
+          verify_help=$(gh release verify --help)
+          verify_asset_help=$(gh release verify-asset --help)
+          grep --fixed-strings -- '--format' <<<"$verify_help" >/dev/null
+          grep --fixed-strings -- '--format' <<<"$verify_asset_help" >/dev/null
+          settings=$(gh api \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/$GITHUB_REPOSITORY/immutable-releases")
+          jq --exit-status '
+            type == "object" and
+            (keys | sort) == ["enabled", "enforced_by_owner"] and
+            .enabled == true and
+            (.enforced_by_owner | type) == "boolean"
+          ' <<<"$settings" >/dev/null
       - name: Verify SwiftPM products and CocoaPods metadata
         run: scripts/verify-package.sh
       - name: Build deterministic source archive
@@ -196,6 +216,7 @@ jobs:
           python3 scripts/reconcile-github-release.py \
             --repository "$GITHUB_REPOSITORY" \
             --tag "$RELEASE_TAG" \
+            --expected-commit "$RELEASE_COMMIT" \
             --title "$RELEASE_TAG" \
             "$archive" \
             "${archive}.sha256" \
