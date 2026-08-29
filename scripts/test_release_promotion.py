@@ -414,7 +414,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertLess(verifier, tag)
         publication_markers = {
             "javascript": 'npm publish "$RELEASE_TARBALL"',
-            "ios": "pod trunk push Latchway.podspec",
+            "ios": "scripts/publish-or-verify-cocoapods.sh",
             "android": "scripts/publish-central.sh",
             "react_native": "node scripts/publish-or-verify.mjs",
         }
@@ -433,6 +433,18 @@ class ReleaseWorkflowTests(unittest.TestCase):
         publish = workflow.index("node scripts/publish-or-verify.mjs")
         self.assertLess(dependency, publish)
         self.assertIn("needs: [promote, verify, android, ios]", workflow)
+
+    def test_ios_release_is_resumable_without_overwriting_public_state(self) -> None:
+        if REPOSITORY_ID != "ios":
+            self.skipTest("iOS-only release recovery")
+        workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+        registry = workflow.index("scripts/publish-or-verify-cocoapods.sh")
+        public_verification = workflow.index("scripts/verify-cocoapods-release.sh")
+        reconciliation = workflow.index("python3 scripts/reconcile-github-release.py")
+        self.assertLess(registry, public_verification)
+        self.assertLess(public_verification, reconciliation)
+        self.assertNotIn("--clobber", workflow)
+        self.assertNotIn("gh release create", workflow)
 
 
 if __name__ == "__main__":
