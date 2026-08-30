@@ -121,7 +121,7 @@ public actor LatchwayInstallationKeyManager: LatchwayInstallationKey {
                 restored = .secureEnclave(
                     try SecureEnclave.P256.Signing.PrivateKey(dataRepresentation: representation)
                 )
-            } else if kind == "keychain_software" {
+            } else if kind == "keychain_software", policy != .disallow {
                 restored = .software(try P256.Signing.PrivateKey(rawRepresentation: representation))
             } else {
                 throw LatchwayError.keyStorageFailure

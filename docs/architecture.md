@@ -3,8 +3,11 @@
 ## Status
 
 This document fixes the ownership and dependency boundaries for the Swift SDK.
-The implementation consumes contract 0.5.1/wire protocol 1 at the exact core
-revision and bundle digest in `contract.lock`.
+The implementation consumes draft contract 1.0.0/current wire protocol 2 at the
+exact core revision and bundle digest in `contract.lock`. Its root grant decoder
+retains the optional family/component fields needed to read legacy wire-1
+installation/session responses; all requests emitted by this source identify
+wire 2.
 
 ## System boundary
 

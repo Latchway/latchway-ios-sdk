@@ -223,13 +223,40 @@ public struct LatchwayInstallationSummary: Sendable, Codable, Equatable {
 public struct LatchwayTrustSummary: Sendable, Codable, Equatable {
     public let provider: String
     public let level: String
+    public let source: String?
+    public let parentComponentID: String?
+    public let parentAttestationProvider: String?
+    public let delegationID: String?
     public let verifiedAt: Date
     public let expiresAt: Date
 
     enum CodingKeys: String, CodingKey {
-        case provider, level
+        case provider, level, source
+        case parentComponentID = "parent_component_id"
+        case parentAttestationProvider = "parent_attestation_provider"
+        case delegationID = "delegation_id"
         case verifiedAt = "verified_at"
         case expiresAt = "expires_at"
+    }
+
+    public init(
+        provider: String,
+        level: String,
+        source: String? = nil,
+        parentComponentID: String? = nil,
+        parentAttestationProvider: String? = nil,
+        delegationID: String? = nil,
+        verifiedAt: Date,
+        expiresAt: Date
+    ) {
+        self.provider = provider
+        self.level = level
+        self.source = source
+        self.parentComponentID = parentComponentID
+        self.parentAttestationProvider = parentAttestationProvider
+        self.delegationID = delegationID
+        self.verifiedAt = verifiedAt
+        self.expiresAt = expiresAt
     }
 }
 
@@ -247,6 +274,14 @@ public struct LatchwayDiagnostics: Sendable, Equatable {
     public let sessionState: SessionState
     public let sessionExpiresAt: Date?
     public let installationID: String?
+    /// Installation Family bound to the root session, when emitted by the
+    /// component-aware contract. Legacy wire-1 grants leave this nil.
+    public let installationFamilyID: String?
+    /// Root Client Component bound to the session, when emitted by the
+    /// component-aware contract. This is never a delegated extension token.
+    public let componentID: String?
+    public let componentDefinitionID: String?
+    public let componentKind: String?
     public let serverVersion: String?
     /// Trust provider bound to the currently accepted session grant.
     /// This is nil when there is no active session.
@@ -267,6 +302,10 @@ public struct LatchwayDiagnostics: Sendable, Equatable {
         sessionState: SessionState,
         sessionExpiresAt: Date? = nil,
         installationID: String? = nil,
+        installationFamilyID: String? = nil,
+        componentID: String? = nil,
+        componentDefinitionID: String? = nil,
+        componentKind: String? = nil,
         serverVersion: String? = nil,
         trustProvider: String? = nil,
         trustLevel: String? = nil,
@@ -282,6 +321,10 @@ public struct LatchwayDiagnostics: Sendable, Equatable {
         self.sessionState = sessionState
         self.sessionExpiresAt = sessionExpiresAt
         self.installationID = installationID
+        self.installationFamilyID = installationFamilyID
+        self.componentID = componentID
+        self.componentDefinitionID = componentDefinitionID
+        self.componentKind = componentKind
         self.serverVersion = serverVersion
         self.trustProvider = trustProvider
         self.trustLevel = trustLevel

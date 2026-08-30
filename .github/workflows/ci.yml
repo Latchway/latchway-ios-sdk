@@ -45,6 +45,7 @@ jobs:
       - name: Test fail-closed physical evidence policy
         run: |
           python3 scripts/test-device-evidence.py
+          python3 scripts/test-physical-evidence-workflow.py
           python3 scripts/test-verify-gateway-deployment.py
           bash -n scripts/gateway-deployment-evidence.sh scripts/run-physical-app-attest.sh
       - name: Verify SwiftPM products and CocoaPods metadata

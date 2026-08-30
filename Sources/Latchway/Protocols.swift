@@ -42,11 +42,21 @@ public struct LatchwayStoredSession: Sendable, Codable, Equatable {
     public let refreshToken: String
     public let refreshExpiresAt: Date
     public let installation: LatchwayInstallationSummary
+    public let installationFamily: LatchwayInstallationFamilySummary?
+    public let component: LatchwayClientComponentSummary?
 
-    public init(refreshToken: String, refreshExpiresAt: Date, installation: LatchwayInstallationSummary) {
+    public init(
+        refreshToken: String,
+        refreshExpiresAt: Date,
+        installation: LatchwayInstallationSummary,
+        installationFamily: LatchwayInstallationFamilySummary? = nil,
+        component: LatchwayClientComponentSummary? = nil
+    ) {
         self.refreshToken = refreshToken
         self.refreshExpiresAt = refreshExpiresAt
         self.installation = installation
+        self.installationFamily = installationFamily
+        self.component = component
     }
 }
 

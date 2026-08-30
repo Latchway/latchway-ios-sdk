@@ -8,9 +8,11 @@ Build the Swift SDK that lets iOS applications authenticate to Latchway,
 establish device-bound sessions, and authorize ordinary URL requests without
 holding an upstream provider credential.
 
-The version 1 Swift implementation is locked to released contract checkpoint
-0.5.1, wire protocol 1, and the checksummed core revision recorded in
-`contract.lock`. The package remains unpublished until the protected physical
+The version 1 Swift implementation is locked to draft contract checkpoint
+1.0.0, current wire protocol 2, and the checksummed core revision recorded in
+`contract.lock`. Compatible legacy root responses from server-supported wire 1
+remain readable, but new SDK requests identify wire 2. The package remains
+unpublished until the core contract is released and the protected physical
 device, registry, provenance, and immutable-release evidence gates pass.
 Package source, tests, examples, and internal handwritten wire DTOs may evolve
 within the locked contract. A contract change must update the lock and shared

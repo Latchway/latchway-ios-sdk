@@ -36,6 +36,12 @@ Pod::Spec.new do |spec|
     app_attest.frameworks = 'DeviceCheck', 'Foundation', 'Security'
   end
 
+  spec.subspec 'AppExtensions' do |app_extensions|
+    app_extensions.dependency 'Latchway/Core', spec.version.to_s
+    app_extensions.source_files = 'Sources/LatchwayAppExtensions/**/*.swift'
+    app_extensions.frameworks = 'Foundation'
+  end
+
   spec.subspec 'FirebaseAuth' do |firebase_auth|
     firebase_auth.dependency 'Latchway/Core', spec.version.to_s
     firebase_auth.source_files = 'Sources/LatchwayFirebaseAuth/**/*.swift'

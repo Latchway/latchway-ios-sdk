@@ -83,7 +83,13 @@ public actor LatchwayClient {
     }
 
     public func authorize(_ request: inout URLRequest, feature: String) async throws {
-        try await authorize(&request, feature: feature, dpopNonce: nil)
+        try await authorize(
+            &request,
+            feature: feature,
+            dpopNonce: nil,
+            framework: nil,
+            allowManagedPlaceholder: false
+        )
     }
 
     /// Authorizes a request using a nonce supplied by a validated, same-origin
@@ -103,7 +109,57 @@ public actor LatchwayClient {
                 "DPoP nonce must be one 16 to 512 byte printable ASCII value without whitespace or commas"
             )
         }
-        try await authorize(&request, feature: feature, dpopNonce: nonce)
+        try await authorize(
+            &request,
+            feature: feature,
+            dpopNonce: nonce,
+            framework: nil,
+            allowManagedPlaceholder: false
+        )
+    }
+
+    /// Creates a transport that binds every request to one feature and, when
+    /// supplied, one framework integration identity.
+    public nonisolated func transport(
+        feature: String,
+        framework: LatchwayFrameworkMetadata? = nil
+    ) -> LatchwayFeatureTransport {
+        LatchwayFeatureTransport(
+            feature: feature,
+            framework: framework,
+            baseURL: configuration.baseURL,
+            authorize: { [self] request in
+                try await authorizedFrameworkRequest(
+                    request,
+                    feature: feature,
+                    framework: framework
+                )
+            },
+            send: { [self] request in
+                try await send(
+                    request,
+                    feature: feature,
+                    framework: framework,
+                    allowManagedPlaceholder: true
+                )
+            }
+        )
+    }
+
+    private func authorizedFrameworkRequest(
+        _ request: URLRequest,
+        feature: String,
+        framework: LatchwayFrameworkMetadata?
+    ) async throws -> URLRequest {
+        var authorized = request
+        try await authorize(
+            &authorized,
+            feature: feature,
+            dpopNonce: nil,
+            framework: framework,
+            allowManagedPlaceholder: true
+        )
+        return authorized
     }
 
     /// Forces one single-flight session refresh without exposing session
@@ -117,15 +173,21 @@ public actor LatchwayClient {
     private func authorize(
         _ request: inout URLRequest,
         feature: String,
-        dpopNonce: String?
+        dpopNonce: String?,
+        framework: LatchwayFrameworkMetadata?,
+        allowManagedPlaceholder: Bool
     ) async throws {
         guard !Task.isCancelled else { throw LatchwayError.cancelled }
         try validateConfiguration()
         try validateFeature(feature)
-        guard let url = request.url else { throw LatchwayError.invalidRequest("URLRequest must contain a URL") }
-        try validateGatewayURL(url)
+        try LatchwayComponentRequestSecurity.prepare(
+            &request,
+            configuration: configuration,
+            framework: framework,
+            allowManagedPlaceholder: allowManagedPlaceholder
+        )
+        guard let url = request.url else { throw LatchwayError.invalidServerResponse }
         let method = request.httpMethod?.uppercased() ?? "GET"
-        try validateNoUpstreamCredential(in: request)
 
         let active = try await activeSession()
         guard !Task.isCancelled else { throw LatchwayError.cancelled }
@@ -139,12 +201,11 @@ public actor LatchwayClient {
         request.setValue("DPoP \(active.accessToken)", forHTTPHeaderField: "Authorization")
         request.setValue(proof, forHTTPHeaderField: "DPoP")
         request.setValue(feature, forHTTPHeaderField: "X-Latchway-Feature")
-        request.setValue(configuration.clientRuntime.sdkIdentifier, forHTTPHeaderField: "X-Latchway-SDK")
-        request.setValue(configuration.clientSDKVersion, forHTTPHeaderField: "X-Latchway-SDK-Version")
-        request.setValue(String(LatchwayVersion.protocolVersion), forHTTPHeaderField: "X-Latchway-Protocol-Version")
-        if request.value(forHTTPHeaderField: "X-Latchway-Request-ID") == nil {
-            request.setValue(UUID().uuidString.lowercased(), forHTTPHeaderField: "X-Latchway-Request-ID")
-        }
+        LatchwayComponentRequestSecurity.addMetadata(
+            to: &request,
+            configuration: configuration,
+            framework: framework
+        )
     }
 
     /// Authorizes and sends a buffered request through the configured transport.
@@ -155,9 +216,34 @@ public actor LatchwayClient {
     /// never replayed. Streaming callers should call ``authorize(_:feature:)``
     /// and consume `bytes(for:)` from ``makeURLSession()`` directly.
     public func send(_ request: URLRequest, feature: String) async throws -> LatchwayHTTPResponse {
+        try await send(
+            request,
+            feature: feature,
+            framework: nil,
+            allowManagedPlaceholder: false
+        )
+    }
+
+    private func send(
+        _ request: URLRequest,
+        feature: String,
+        framework: LatchwayFrameworkMetadata?,
+        allowManagedPlaceholder: Bool
+    ) async throws -> LatchwayHTTPResponse {
         var firstRequest = request
-        try await authorize(&firstRequest, feature: feature)
+        try await authorize(
+            &firstRequest,
+            feature: feature,
+            dpopNonce: nil,
+            framework: framework,
+            allowManagedPlaceholder: allowManagedPlaceholder
+        )
         let firstResponse = try await sendThroughTransport(firstRequest)
+        if (300 ... 399).contains(firstResponse.statusCode) {
+            let error = LatchwayError.invalidServerResponse
+            await record(error)
+            throw error
+        }
         guard (400 ... 599).contains(firstResponse.statusCode) else { return firstResponse }
         guard let firstProblem = Self.problem(from: firstResponse) else {
             let error = LatchwayError.invalidServerResponse
@@ -182,10 +268,24 @@ public actor LatchwayClient {
         switch retryDirective {
         case .sessionExpired:
             let refreshed = try await refreshSession(force: true)
-            try await applyAuthorization(&retryRequest, feature: feature, active: refreshed, nonce: nil)
+            try await applyAuthorization(
+                &retryRequest,
+                feature: feature,
+                active: refreshed,
+                nonce: nil,
+                framework: framework,
+                allowManagedPlaceholder: allowManagedPlaceholder
+            )
         case let .dpopNonceRequired(nonce):
             let active = try await activeSession()
-            try await applyAuthorization(&retryRequest, feature: feature, active: active, nonce: nonce)
+            try await applyAuthorization(
+                &retryRequest,
+                feature: feature,
+                active: active,
+                nonce: nonce,
+                framework: framework,
+                allowManagedPlaceholder: allowManagedPlaceholder
+            )
         case nil:
             let error = LatchwayError.server(firstProblem)
             await record(error)
@@ -193,6 +293,11 @@ public actor LatchwayClient {
         }
 
         let secondResponse = try await sendThroughTransport(retryRequest)
+        if (300 ... 399).contains(secondResponse.statusCode) {
+            let error = LatchwayError.invalidServerResponse
+            await record(error)
+            throw error
+        }
         if (400 ... 599).contains(secondResponse.statusCode) {
             guard let problem = Self.problem(from: secondResponse) else {
                 let error = LatchwayError.invalidServerResponse
@@ -256,24 +361,129 @@ public actor LatchwayClient {
             throw error
         }
 
-        session = nil
-        establishmentTask?.cancel()
-        establishmentTask = nil
-        refreshTask?.cancel()
-        refreshTask = nil
-        var cleanupError: LatchwayError?
-        do { try await sessionStorage.clear() }
-        catch { cleanupError = .keyStorageFailure }
-        do { try await attestationProvider.reset() }
-        catch let error as LatchwayError { cleanupError = cleanupError ?? error }
-        catch { cleanupError = cleanupError ?? .attestationUnavailable }
-        do { try await installationKey.reset() }
-        catch { cleanupError = cleanupError ?? .keyStorageFailure }
-        state = .revoked
-        if let cleanupError {
-            lastErrorCode = cleanupError.stableLocalCode
-            throw cleanupError
+        try await retireAfterRevocation()
+    }
+
+    /// Revokes the complete installation family and retires the root key and
+    /// session material locally.
+    ///
+    /// Use ``revokeCurrentInstallationFamily(retiring:)`` when the containing
+    /// app has delegated components so their component-specific Keychain state
+    /// is erased as part of the same sign-out operation.
+    public func revokeCurrentInstallationFamily() async throws {
+        try await revokeCurrentInstallationFamily(retiring: [])
+    }
+
+    /// Revokes the complete installation family, including every delegated
+    /// component, then erases the root and supplied component key material.
+    ///
+    /// Pass the same complete descriptor set used with
+    /// ``prepareComponents(_:)``. Access groups cannot be discovered from
+    /// Keychain safely, so omitting a component would leave only server-revoked
+    /// local material for that component behind.
+    public func revokeCurrentInstallationFamily(
+        retiring components: [LatchwayComponentConfiguration]
+    ) async throws {
+        let definitions = components.map(\.definitionID)
+        guard Set(definitions).count == definitions.count else {
+            throw LatchwayComponentError.invalidConfiguration(
+                "component definition IDs must be unique in one retirement call"
+            )
         }
+        try components.forEach(validateComponentConfiguration)
+        let active = try await activeSession()
+        do {
+            do {
+                try await controlPlane.revokeFamily(accessToken: active.accessToken)
+            } catch let error as LatchwayError where error.isSafeRefreshRejection {
+                let refreshed = try await refreshSession(force: true)
+                try await controlPlane.revokeFamily(accessToken: refreshed.accessToken)
+            }
+        } catch let error as LatchwayError {
+            await record(error)
+            throw error
+        } catch {
+            let error = LatchwayError.transportFailure
+            await record(error)
+            throw error
+        }
+        var cleanupError: Error?
+        do { try await retireAfterRevocation() }
+        catch { cleanupError = error }
+        for component in components {
+            do { try await retireComponentState(component) }
+            catch { cleanupError = cleanupError ?? error }
+        }
+        if let cleanupError { throw cleanupError }
+    }
+
+    /// Provisions every missing or expired delegated component. Existing,
+    /// still-valid credentials bound to the current component key are reused;
+    /// use ``replaceComponent(_:)`` for an explicit key replacement.
+    @discardableResult
+    public func prepareComponents(
+        _ components: [LatchwayComponentConfiguration]
+    ) async throws -> [LatchwayComponentDiagnostics] {
+        let definitions = components.map(\.definitionID)
+        guard Set(definitions).count == definitions.count else {
+            throw LatchwayComponentError.invalidConfiguration(
+                "component definition IDs must be unique in one preparation call"
+            )
+        }
+        var diagnostics: [LatchwayComponentDiagnostics] = []
+        diagnostics.reserveCapacity(components.count)
+        for component in components {
+            diagnostics.append(try await prepareComponent(component, replacing: false))
+        }
+        return diagnostics
+    }
+
+    /// Replaces one delegated component key and invalidates its previous server
+    /// session family through the provisioning endpoint.
+    @discardableResult
+    public func replaceComponent(
+        _ component: LatchwayComponentConfiguration
+    ) async throws -> LatchwayComponentDiagnostics {
+        try await prepareComponent(component, replacing: true)
+    }
+
+    /// Revokes one delegated component without revoking its siblings.
+    public func revokeComponent(_ component: LatchwayComponentConfiguration) async throws {
+        try validateComponentConfiguration(component)
+        let storage = componentStorage(for: component)
+        guard let stored = try await storage.load() else {
+            throw LatchwayComponentError.componentNotProvisioned
+        }
+        let active = try await activeSession()
+        do {
+            try await controlPlane.revokeComponent(
+                componentID: stored.component.id,
+                accessToken: active.accessToken
+            )
+        } catch let error as LatchwayError {
+            throw Self.componentError(from: error)
+        }
+        try await retireComponentState(component)
+    }
+
+    public func componentDiagnostics(
+        _ component: LatchwayComponentConfiguration
+    ) async -> LatchwayComponentDiagnostics {
+        let key = componentKey(for: component)
+        let keyStorage = await key.storage()
+        let thumbprint = try? await LatchwayDPoPProofFactory(
+            key: key,
+            clock: clock
+        ).thumbprint()
+        let credential = try? await componentStorage(for: component).load()
+        return Self.componentDiagnostics(
+            component: component,
+            keyStorage: keyStorage,
+            keyThumbprint: thumbprint,
+            credential: credential,
+            sessionAvailable: false,
+            now: await clock.now()
+        )
     }
 
     public func diagnostics() async -> LatchwayDiagnostics {
@@ -281,6 +491,8 @@ public actor LatchwayClient {
         let thumbprint = try? await proofFactory.thumbprint()
         let attestation = await attestationProvider.status()
         var installationID = session?.installation.id
+        var installationFamilyID = session?.installationFamily?.id
+        var component = session?.component
         var expiration = session?.expiresAt
         var trustProvider: String?
         var trustLevel: String?
@@ -296,6 +508,8 @@ public actor LatchwayClient {
                 serverVersion = remote.serverVersion
                 lastRequestID = remote.requestID
                 installationID = remote.installation.id
+                installationFamilyID = remote.installationFamily?.id ?? installationFamilyID
+                component = remote.component ?? component
                 expiration = remote.session.expiresAt
             }
         }
@@ -307,6 +521,10 @@ public actor LatchwayClient {
             sessionState: state,
             sessionExpiresAt: expiration,
             installationID: installationID,
+            installationFamilyID: installationFamilyID,
+            componentID: component?.id,
+            componentDefinitionID: component?.definitionID,
+            componentKind: component?.kind,
             serverVersion: serverVersion,
             trustProvider: trustProvider,
             trustLevel: trustLevel,
@@ -374,7 +592,9 @@ public actor LatchwayClient {
             stored = LatchwayStoredSession(
                 refreshToken: session.refreshToken,
                 refreshExpiresAt: session.refreshExpiresAt,
-                installation: session.installation
+                installation: session.installation,
+                installationFamily: session.installationFamily,
+                component: session.component
             )
         } else if let loaded = try await sessionStorage.load() {
             stored = loaded
@@ -402,7 +622,13 @@ public actor LatchwayClient {
                   ) != nil,
                   stored.installation.platform == configuration.clientRuntime.platformIdentifier,
                   stored.installation.status == "active",
-                  stored.installation.dpopJKT == expectedThumbprint
+                  stored.installation.dpopJKT == expectedThumbprint,
+                  Self.validRootBinding(
+                      family: stored.installationFamily,
+                      component: stored.component,
+                      expectedThumbprint: expectedThumbprint,
+                      platform: configuration.clientRuntime.platformIdentifier
+                  )
             else {
                 try await self.retireSessionForAttestedReestablishment()
                 return try await Self.performEstablishment(
@@ -447,8 +673,9 @@ public actor LatchwayClient {
         do { return try await resolve(task, kind: .refreshing) }
         catch let error as LatchwayError {
             if error == .keyStorageFailure {
-                // The server may already have consumed and rotated the refresh
-                // token. Discard every local copy so it can never be replayed.
+                // Legacy root sessions remain on the wire-1 terminal reuse
+                // profile. The server may have consumed this refresh token, so
+                // discard every local copy rather than replaying it.
                 await clearSession()
             } else if error.requiresFreshSession {
                 if error.isRevocation {
@@ -577,6 +804,17 @@ public actor LatchwayClient {
                   of: "^ins_[A-Za-z0-9_-]{16,128}$",
                   options: .regularExpression
               ) != nil,
+              Self.validRootBinding(
+                  family: grant.installationFamily,
+                  component: grant.component,
+                  expectedThumbprint: expectedThumbprint,
+                  platform: configuration.clientRuntime.platformIdentifier
+              ),
+              Self.validRootTrustBinding(
+                  grant.trust,
+                  family: grant.installationFamily,
+                  component: grant.component
+              ),
               [
                   "none", "identity_only", "web_risk_verified", "app_verified",
                   "device_verified", "strong_device_verified", "debug",
@@ -592,17 +830,21 @@ public actor LatchwayClient {
             refreshToken: grant.refreshToken,
             refreshExpiresAt: issuedAt.addingTimeInterval(TimeInterval(grant.refreshExpiresIn)),
             installation: grant.installation,
+            installationFamily: grant.installationFamily,
+            component: grant.component,
             trust: grant.trust
         )
         do {
             try await storage.save(LatchwayStoredSession(
                 refreshToken: runtime.refreshToken,
                 refreshExpiresAt: runtime.refreshExpiresAt,
-                installation: runtime.installation
+                installation: runtime.installation,
+                installationFamily: runtime.installationFamily,
+                component: runtime.component
             ))
         } catch {
-            // A failed write after refresh must not leave the previously
-            // rotated token available for accidental reuse.
+            // A failed write after legacy root refresh must not leave the
+            // previously rotated token available for accidental reuse.
             try? await storage.clear()
             throw LatchwayError.keyStorageFailure
         }
@@ -617,6 +859,283 @@ public actor LatchwayClient {
         refreshTask = nil
         try? await sessionStorage.clear()
         state = .absent
+    }
+
+    private func retireAfterRevocation() async throws {
+        session = nil
+        establishmentTask?.cancel()
+        establishmentTask = nil
+        refreshTask?.cancel()
+        refreshTask = nil
+        var cleanupError: LatchwayError?
+        do { try await sessionStorage.clear() }
+        catch { cleanupError = .keyStorageFailure }
+        do { try await attestationProvider.reset() }
+        catch let error as LatchwayError { cleanupError = cleanupError ?? error }
+        catch { cleanupError = cleanupError ?? .attestationUnavailable }
+        do { try await installationKey.reset() }
+        catch { cleanupError = cleanupError ?? .keyStorageFailure }
+        state = .revoked
+        if let cleanupError {
+            lastErrorCode = cleanupError.stableLocalCode
+            throw cleanupError
+        }
+    }
+
+    private func prepareComponent(
+        _ component: LatchwayComponentConfiguration,
+        replacing: Bool
+    ) async throws -> LatchwayComponentDiagnostics {
+        try validateComponentConfiguration(component)
+        let active = try await activeSession()
+        let prior = try await componentStorage(for: component).load()
+        let changedFamily = prior.map { stored in
+            active.installationFamily?.id != stored.family.id
+        } ?? false
+        if replacing || changedFamily {
+            try await retireComponentState(component)
+        }
+        let key = componentKey(for: component)
+        let storage = componentStorage(for: component)
+
+        let proofFactory = LatchwayDPoPProofFactory(key: key, clock: clock)
+        let thumbprint: String
+        do {
+            thumbprint = try await proofFactory.thumbprint()
+        } catch let error as LatchwayComponentError {
+            throw error
+        } catch {
+            throw LatchwayComponentError.componentKeyUnavailable
+        }
+        let now = await clock.now()
+        if !replacing,
+           let existing = try await storage.load(),
+           existing.isValid(
+               for: component,
+               keyThumbprint: thumbprint,
+               now: now,
+               rotationLeeway: 60
+           ) {
+            return Self.componentDiagnostics(
+                component: component,
+                keyStorage: await key.storage(),
+                keyThumbprint: thumbprint,
+                credential: existing,
+                sessionAvailable: existing.kind == .sessionRefreshToken,
+                now: now
+            )
+        }
+
+        let grant: ComponentProvisioningWire
+        do {
+            grant = try await controlPlane.provisionComponent(
+                definitionID: component.definitionID,
+                publicJWK: try await key.publicJWK(),
+                requestedFeatures: component.requestedFeatures,
+                accessToken: active.accessToken
+            )
+        } catch let error as LatchwayError {
+            throw Self.componentError(from: error)
+        }
+        let credential = try Self.validatedComponentProvisioning(
+            grant,
+            component: component,
+            keyThumbprint: thumbprint,
+            expectedFamilyID: active.installationFamily?.id,
+            parentTrust: active.trust,
+            now: await clock.now()
+        )
+        try await storage.save(credential)
+        return Self.componentDiagnostics(
+            component: component,
+            keyStorage: await key.storage(),
+            keyThumbprint: thumbprint,
+            credential: credential,
+            sessionAvailable: false,
+            now: await clock.now()
+        )
+    }
+
+    private func componentKey(
+        for component: LatchwayComponentConfiguration
+    ) -> LatchwayComponentKeyManager {
+        LatchwayComponentKeyManager(
+            applicationID: configuration.applicationID,
+            environment: configuration.environment,
+            definitionID: component.definitionID,
+            keychainAccessGroup: component.keychainAccessGroup,
+            softwareFallbackPolicy: configuration.softwareKeyFallbackPolicy
+        )
+    }
+
+    private func componentStorage(
+        for component: LatchwayComponentConfiguration
+    ) -> LatchwayKeychainComponentStorage {
+        LatchwayKeychainComponentStorage(
+            applicationID: configuration.applicationID,
+            environment: configuration.environment,
+            definitionID: component.definitionID,
+            accessGroup: component.keychainAccessGroup
+        )
+    }
+
+    private func retireComponentState(
+        _ component: LatchwayComponentConfiguration
+    ) async throws {
+        var cleanupFailed = false
+        do { try await componentStorage(for: component).clear() }
+        catch { cleanupFailed = true }
+        do { try await componentKey(for: component).reset() }
+        catch { cleanupFailed = true }
+        if cleanupFailed {
+            throw LatchwayComponentError.keychainAccessGroupUnavailable
+        }
+    }
+
+    private func validateComponentConfiguration(
+        _ component: LatchwayComponentConfiguration
+    ) throws {
+        for (label, value) in [
+            ("definitionID", component.definitionID),
+            ("kind", component.kind),
+        ] {
+            guard value.range(of: "^[a-z][a-z0-9_-]{0,62}$", options: .regularExpression) != nil else {
+                throw LatchwayComponentError.invalidConfiguration(
+                    "\(label) must be a valid Latchway identifier"
+                )
+            }
+        }
+        guard component.keychainAccessGroup.range(
+            of: "^[A-Za-z0-9._-]{1,255}$",
+            options: .regularExpression
+        ) != nil else {
+            throw LatchwayComponentError.invalidConfiguration(
+                "keychainAccessGroup must be one fully resolved signed-entitlement access group"
+            )
+        }
+        guard !component.requestedFeatures.isEmpty,
+              component.requestedFeatures.count <= 256,
+              Set(component.requestedFeatures).count == component.requestedFeatures.count,
+              component.requestedFeatures.allSatisfy({ feature in
+                  feature.range(of: "^[a-z][a-z0-9_-]{0,62}$", options: .regularExpression) != nil
+              })
+        else {
+            throw LatchwayComponentError.invalidConfiguration(
+                "requestedFeatures must contain unique Latchway feature identifiers"
+            )
+        }
+    }
+
+    private static func validatedComponentProvisioning(
+        _ grant: ComponentProvisioningWire,
+        component: LatchwayComponentConfiguration,
+        keyThumbprint: String,
+        expectedFamilyID: String?,
+        parentTrust: LatchwayTrustSummary,
+        now: Date
+    ) throws -> LatchwayStoredComponentCredential {
+        guard grant.componentID.range(
+            of: "^cmp_[A-Za-z0-9_-]{16,128}$",
+            options: .regularExpression
+        ) != nil,
+        grant.installationFamilyID.range(
+            of: "^fam_[A-Za-z0-9_-]{16,128}$",
+            options: .regularExpression
+        ) != nil,
+        expectedFamilyID == nil || grant.installationFamilyID == expectedFamilyID,
+        grant.componentDefinitionID == nil || grant.componentDefinitionID == component.definitionID,
+        grant.componentKind == nil || grant.componentKind == component.kind,
+        grant.trust.expiresAt > now,
+        grant.trust.expiresAt <= parentTrust.expiresAt,
+        grant.trust.source != .delegatedFromAttestedRoot || [
+            "app_verified", "device_verified", "strong_device_verified",
+        ].contains(parentTrust.level),
+        grant.refreshGrantExpiresAt > now,
+        grant.refreshGrantExpiresAt.timeIntervalSince(now) <= 2_592_300,
+        (32 ... 2_048).contains(grant.refreshGrant.utf8.count),
+        !grant.grantedFeatures.isEmpty,
+        grant.grantedFeatures.count <= 256,
+        Set(grant.grantedFeatures).count == grant.grantedFeatures.count,
+        Set(grant.grantedFeatures).isSubset(of: Set(component.requestedFeatures)),
+        grant.grantedFeatures.allSatisfy({ feature in
+            feature.range(of: "^[a-z][a-z0-9_-]{0,62}$", options: .regularExpression) != nil
+        }) else {
+            throw LatchwayError.invalidServerResponse
+        }
+
+        return LatchwayStoredComponentCredential(
+            family: .init(id: grant.installationFamilyID, status: "active"),
+            component: .init(
+                id: grant.componentID,
+                definitionID: component.definitionID,
+                kind: component.kind,
+                platform: "ios",
+                isRoot: false,
+                dpopJKT: keyThumbprint,
+                status: "active",
+                grantedFeatures: grant.grantedFeatures
+            ),
+            requestedFeatures: component.requestedFeatures.sorted(),
+            trustSource: grant.trust.source,
+            trustExpiresAt: grant.trust.expiresAt,
+            keyThumbprint: keyThumbprint,
+            rotationToken: grant.refreshGrant,
+            rotationExpiresAt: grant.refreshGrantExpiresAt,
+            kind: .provisioningGrant
+        )
+    }
+
+    private static func componentDiagnostics(
+        component: LatchwayComponentConfiguration,
+        keyStorage: LatchwayKeyStorage,
+        keyThumbprint: String?,
+        credential: LatchwayStoredComponentCredential?,
+        sessionAvailable: Bool,
+        now: Date
+    ) -> LatchwayComponentDiagnostics {
+        let usable = credential.flatMap { credential in
+            keyThumbprint.map { thumbprint in
+                credential.isValid(
+                    for: component,
+                    keyThumbprint: thumbprint,
+                    now: now
+                )
+            }
+        } ?? false
+        return LatchwayComponentDiagnostics(
+            familyID: credential?.family.id,
+            componentID: credential?.component.id,
+            definitionID: component.definitionID,
+            keychainAccessGroup: component.keychainAccessGroup,
+            keyAvailable: keyStorage != .unavailable,
+            keyStorage: keyStorage,
+            grantAvailable: usable,
+            sessionAvailable: usable && sessionAvailable,
+            trustSource: credential?.trustSource,
+            trustExpiresAt: credential?.trustExpiresAt,
+            containingAppActionRequired: !usable
+        )
+    }
+
+    private static func componentError(from error: LatchwayError) -> LatchwayComponentError {
+        guard case let .server(problem) = error else { return .latchway(error) }
+        return switch problem.code {
+        case .containingAppSetupRequired: .containingAppSetupRequired
+        case .componentDefinitionNotFound, .componentNotConfigured, .componentNotProvisioned:
+            .componentNotProvisioned
+        case .componentRevoked, .componentKeyReplaced, .sessionRevoked, .refreshTokenReused:
+            .componentRevoked
+        case .componentKeyInvalid: .componentKeyUnavailable
+        case .installationRevoked, .installationFamilyRevoked, .installationFamilyNotFound:
+            .installationFamilyRevoked
+        case .componentDelegationExpired, .componentParentTrustExpired: .parentTrustExpired
+        case .componentFeatureNotGranted: .featureNotDelegated
+        case .componentDirectAttestationRequired, .attestationStepUpRequired:
+            .directAttestationRequired
+        case .identityReauthenticationRequired, .identityTokenExpired, .identityTokenInvalid:
+            .identityChanged
+        default: .latchway(error)
+        }
     }
 
     private func validateFeature(_ feature: String) throws {
@@ -659,12 +1178,18 @@ public actor LatchwayClient {
         _ request: inout URLRequest,
         feature: String,
         active: RuntimeSession,
-        nonce: String?
+        nonce: String?,
+        framework: LatchwayFrameworkMetadata?,
+        allowManagedPlaceholder: Bool
     ) async throws {
         try validateFeature(feature)
-        guard let url = request.url else { throw LatchwayError.invalidRequest("URLRequest must contain a URL") }
-        try validateGatewayURL(url)
-        try validateNoUpstreamCredential(in: request)
+        try LatchwayComponentRequestSecurity.prepare(
+            &request,
+            configuration: configuration,
+            framework: framework,
+            allowManagedPlaceholder: allowManagedPlaceholder
+        )
+        guard let url = request.url else { throw LatchwayError.invalidServerResponse }
         guard !Task.isCancelled else { throw LatchwayError.cancelled }
         let method = request.httpMethod?.uppercased() ?? "GET"
         let proof = try await proofFactory.proof(method: method, url: url, accessToken: active.accessToken, nonce: nonce)
@@ -672,15 +1197,14 @@ public actor LatchwayClient {
         request.setValue("DPoP \(active.accessToken)", forHTTPHeaderField: "Authorization")
         request.setValue(proof, forHTTPHeaderField: "DPoP")
         request.setValue(feature, forHTTPHeaderField: "X-Latchway-Feature")
-        request.setValue(configuration.clientRuntime.sdkIdentifier, forHTTPHeaderField: "X-Latchway-SDK")
-        request.setValue(configuration.clientSDKVersion, forHTTPHeaderField: "X-Latchway-SDK-Version")
-        request.setValue(String(LatchwayVersion.protocolVersion), forHTTPHeaderField: "X-Latchway-Protocol-Version")
-        if request.value(forHTTPHeaderField: "X-Latchway-Request-ID") == nil {
-            request.setValue(UUID().uuidString.lowercased(), forHTTPHeaderField: "X-Latchway-Request-ID")
-        }
+        LatchwayComponentRequestSecurity.addMetadata(
+            to: &request,
+            configuration: configuration,
+            framework: framework
+        )
     }
 
-    private static func problem(from response: LatchwayHTTPResponse) -> LatchwayProblem? {
+    static func problem(from response: LatchwayHTTPResponse) -> LatchwayProblem? {
         guard (400 ... 599).contains(response.statusCode),
               response.body.count <= 65_536,
               Self.mediaType(response.header("Content-Type")) == "application/problem+json",
@@ -732,21 +1256,6 @@ public actor LatchwayClient {
         )
     }
 
-    private func validateGatewayURL(_ url: URL) throws {
-        guard let request = URLComponents(url: url, resolvingAgainstBaseURL: false),
-              let gateway = URLComponents(url: configuration.baseURL, resolvingAgainstBaseURL: false),
-              request.scheme?.lowercased() == gateway.scheme?.lowercased(),
-              request.host?.lowercased() == gateway.host?.lowercased(),
-              Self.effectivePort(request) == Self.effectivePort(gateway),
-              request.user == nil,
-              request.password == nil,
-              Self.isWithinGatewayPath(
-                  try Self.normalizedPath(url),
-                  basePath: try Self.normalizedPath(configuration.baseURL)
-              )
-        else { throw LatchwayError.invalidRequest("Requests may only be authorized for the configured Latchway origin") }
-    }
-
     private func validateConfiguration() throws {
         guard configuration.applicationID.range(
             of: "^app_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
@@ -792,92 +1301,12 @@ public actor LatchwayClient {
         }
     }
 
-    private func validateNoUpstreamCredential(in request: URLRequest) throws {
-        if let requestID = request.value(forHTTPHeaderField: "X-Latchway-Request-ID") {
-            guard requestID.utf8.count >= 8,
-                  requestID.utf8.count <= 128,
-                  requestID.range(
-                      of: "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
-                      options: .regularExpression
-                  ) != nil
-            else {
-                throw LatchwayError.invalidRequest(
-                    "X-Latchway-Request-ID must match the client contract"
-                )
-            }
-        }
-        let headerNames = Set((request.allHTTPHeaderFields ?? [:]).keys.map { $0.lowercased() })
-        guard headerNames.isDisjoint(with: Self.forbiddenCredentialHeaderNames) else {
-            throw LatchwayError.invalidRequest(
-                "Upstream provider credentials must not be supplied to Latchway"
-            )
-        }
-        let queryItems = request.url
-            .flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: false)?.queryItems }
-            ?? []
-        guard queryItems.allSatisfy({ item in
-            !Self.forbiddenCredentialNames.contains(Self.decodedCredentialName(item.name))
-        }) else {
-            throw LatchwayError.invalidRequest(
-                "Upstream provider credentials must not be supplied in the request URL"
-            )
-        }
-    }
-
-    private static let forbiddenCredentialNames: Set<String> = [
-        "authorization", "proxy-authorization",
-        "api-key", "api_key", "apikey", "x-api-key",
-        "openai-api-key", "openai_api_key", "x-openai-api-key",
-        "anthropic-api-key", "anthropic_api_key",
-        "access_token", "auth_token", "token", "key", "x-auth-token", "cookie",
-        "x-amz-credential", "x-amz-security-token", "x-amz-signature",
-        "x-goog-api-key", "x-goog_api_key", "x-goog-credential", "x-goog-signature",
-    ]
-
-    private static let forbiddenCredentialHeaderNames = forbiddenCredentialNames
-
-    private static func decodedCredentialName(_ name: String) -> String {
-        // URLComponents decodes one percent-encoding layer in queryItems.
-        // Bounded additional passes fail closed when an intermediary decodes
-        // a multiply encoded credential name before forwarding it upstream.
-        var decoded = name
-        for _ in 0 ..< 2 {
-            guard let next = decoded.removingPercentEncoding, next != decoded else { break }
-            decoded = next
-        }
-        return decoded.lowercased()
-    }
-
-    private static func effectivePort(_ components: URLComponents) -> Int? {
-        if let port = components.port { return port }
-        switch components.scheme?.lowercased() {
-        case "https": return 443
-        case "http": return 80
-        default: return nil
-        }
-    }
-
     private static func mediaType(_ value: String?) -> String? {
         value?
             .split(separator: ";", maxSplits: 1, omittingEmptySubsequences: false)
             .first?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
-    }
-
-    private static func isWithinGatewayPath(_ requestPath: String, basePath: String) -> Bool {
-        let normalizedBase = basePath.isEmpty || basePath == "/" ? "" : basePath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        guard !normalizedBase.isEmpty else { return true }
-        let prefix = "/" + normalizedBase
-        return requestPath == prefix || requestPath.hasPrefix(prefix + "/")
-    }
-
-    private static func normalizedPath(_ url: URL) throws -> String {
-        let htu = try LatchwayDPoPProofFactory.normalizedHTU(url)
-        guard let path = URLComponents(string: htu)?.percentEncodedPath, !path.isEmpty else {
-            throw LatchwayError.invalidRequest("The request URL path cannot be normalized")
-        }
-        return path
     }
 
     private static func validDiagnostics(
@@ -891,9 +1320,90 @@ public actor LatchwayClient {
             && remote.installation.platform == active.installation.platform
             && remote.installation.status == "active"
             && remote.installation.dpopJKT == thumbprint
+            && validRootBinding(
+                family: remote.installationFamily,
+                component: remote.component,
+                expectedThumbprint: thumbprint,
+                platform: active.installation.platform
+            )
+            && (active.installationFamily == nil
+                || active.installationFamily == remote.installationFamily)
+            && (active.component == nil || active.component == remote.component)
             && remote.session.expiresAt > Date(timeIntervalSince1970: 0)
             && (1 ... 128).contains(remote.requestID.utf8.count)
             && (1 ... 128).contains(remote.serverVersion.utf8.count)
+    }
+
+    /// Validates optional component-aware root metadata without making it a
+    /// requirement for legacy wire-1 grants. Partial metadata fails closed.
+    private static func validRootBinding(
+        family: LatchwayInstallationFamilySummary?,
+        component: LatchwayClientComponentSummary?,
+        expectedThumbprint: String?,
+        platform: String
+    ) -> Bool {
+        if family == nil, component == nil { return true }
+        guard let family, let component, let expectedThumbprint else { return false }
+        return family.id.range(
+            of: "^fam_[A-Za-z0-9_-]{16,128}$",
+            options: .regularExpression
+        ) != nil
+            && family.status == "active"
+            && component.id.range(
+                of: "^cmp_[A-Za-z0-9_-]{16,128}$",
+                options: .regularExpression
+            ) != nil
+            && component.definitionID.range(
+                of: "^[a-z][a-z0-9_-]{0,62}$",
+                options: .regularExpression
+            ) != nil
+            && component.kind == "main_app"
+            && component.platform == platform
+            && component.isRoot
+            && component.status == "active"
+            && component.dpopJKT == expectedThumbprint
+            && !component.grantedFeatures.isEmpty
+            && component.grantedFeatures.count <= 256
+            && Set(component.grantedFeatures).count == component.grantedFeatures.count
+            && component.grantedFeatures.allSatisfy { feature in
+                feature.range(
+                    of: "^[a-z][a-z0-9_-]{0,62}$",
+                    options: .regularExpression
+                ) != nil
+            }
+    }
+
+    private static func validRootTrustBinding(
+        _ trust: LatchwayTrustSummary,
+        family: LatchwayInstallationFamilySummary?,
+        component: LatchwayClientComponentSummary?
+    ) -> Bool {
+        let providers: Set<String> = [
+            "app_attest", "play_integrity", "firebase_app_check", "turnstile", "debug",
+        ]
+        guard providers.contains(trust.provider),
+              trust.parentComponentID == nil,
+              trust.parentAttestationProvider == nil,
+              trust.delegationID == nil
+        else { return false }
+
+        guard let source = trust.source else {
+            // Legacy wire-1 grants carried no family/component provenance.
+            return family == nil && component == nil
+        }
+        guard let source = LatchwayComponentTrustSource(rawValue: source) else { return false }
+        return switch source {
+        case .directAttested:
+            ["app_verified", "device_verified", "strong_device_verified"].contains(trust.level)
+        case .identityOnly:
+            ["none", "identity_only"].contains(trust.level)
+        case .webRiskVerified:
+            trust.level == "web_risk_verified"
+        case .debug:
+            trust.level == "debug"
+        case .delegatedFromAttestedRoot, .delegatedIdentityOnly:
+            false
+        }
     }
 
     private func record(_ error: LatchwayError) async {
@@ -947,7 +1457,16 @@ private extension LatchwayError {
 
     var requiresFreshSession: Bool {
         guard case let .server(problem) = self else { return false }
-        return [.refreshTokenReused, .installationRevoked, .sessionRevoked, .attestationStale, .attestationStepUpRequired].contains(problem.code)
+        return [
+            .refreshTokenReused,
+            .installationRevoked,
+            .installationFamilyRevoked,
+            .componentRevoked,
+            .componentKeyReplaced,
+            .sessionRevoked,
+            .attestationStale,
+            .attestationStepUpRequired,
+        ].contains(problem.code)
     }
 
     var isSafeRefreshRejection: Bool {
@@ -959,7 +1478,13 @@ private extension LatchwayError {
 
     var isRevocation: Bool {
         guard case let .server(problem) = self else { return false }
-        return problem.code == .installationRevoked || problem.code == .sessionRevoked
+        return [
+            .installationRevoked,
+            .installationFamilyRevoked,
+            .componentRevoked,
+            .componentKeyReplaced,
+            .sessionRevoked,
+        ].contains(problem.code)
     }
 
     var stableLocalCode: String {

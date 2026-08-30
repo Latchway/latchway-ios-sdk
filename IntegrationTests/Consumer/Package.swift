@@ -17,7 +17,10 @@ let package = Package(
             dependencies: [
                 .product(name: "Latchway", package: "Latchway"),
                 .product(name: "LatchwayAppAttest", package: "Latchway"),
+                .product(name: "LatchwayAppExtensions", package: "Latchway"),
                 .product(name: "LatchwayFirebaseAuth", package: "Latchway"),
+                .product(name: "LatchwaySwiftOpenAI", package: "Latchway"),
+                .product(name: "LatchwayFoundationModels", package: "Latchway"),
                 .product(name: "LatchwayTesting", package: "Latchway"),
             ],
             swiftSettings: [.swiftLanguageMode(.v6)]

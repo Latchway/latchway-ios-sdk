@@ -5,11 +5,13 @@ self-hosted gateway without embedding an upstream provider key. This package
 provides the Swift transport and platform-security integration for that client
 boundary.
 
-> **Project status:** intended `1.0.0` source candidate for contract 0.5.1 and wire
-> protocol 1, with server 1.0.0 as the minimum and 1.0.x as the maximum tested
-> series. The package builds and its fixture suite passes, but it is not a
-> supported release until server conformance and a real App Attest device run
-> are recorded.
+> **Project status:** intended `1.0.0` source candidate for draft contract 1.0.0
+> and current wire protocol 2, with server 1.0.0 as the minimum and 1.0.x as the
+> maximum tested series. The server continues to accept compatible wire-1
+> installation/session clients, and this SDK decodes their legacy root grants,
+> but new requests identify wire 2. The package is not a supported release until
+> the core contract is released and protected server, registry, provenance, and
+> physical App Attest evidence gates pass.
 
 ## Requirements
 
@@ -24,8 +26,13 @@ hardware attestation.
 - `Latchway`: handwritten public client API, Secure Enclave/Keychain DPoP,
   sessions, authorization, quota, revocation, and diagnostics
 - `LatchwayAppAttest`: `DCAppAttestService` registration/assertion lifecycle
+- `LatchwayAppExtensions`: extension-safe exports for independently keyed Client
+  Components provisioned by their containing application
 - `LatchwayFirebaseAuth`: optional closure adapter; the core target has no
   Firebase dependency
+- `LatchwaySwiftOpenAI`: audited SwiftOpenAI 4.6.0 async HTTP/streaming adapter
+- `LatchwayFoundationModels`: narrow OS 27 custom-executor adapter whose runtime
+  and physical-device gates remain pending
 - `LatchwayTesting`: deterministic signers, clocks, storage, transports,
   identity providers, and attestation doubles
 
@@ -171,15 +178,16 @@ tuist generate --path Examples/AppAttestConformance --no-open
 
 `verify-package.sh` parses the manifest, builds every library in release mode,
 runs the suite in parallel, compiles a separate consumer package importing all
-four products, and strictly lints the podspec when CocoaPods is installed.
+public products, and strictly lints the podspec when CocoaPods is installed.
 Pull requests and pushes to `main` run the same gate on the pinned macOS runner.
 
 Stable `vMAJOR.MINOR.PATCH` tags drive publication. The tag, public SDK version,
 podspec version, contract lock, repository cleanliness, and forbidden-file scan
 must all pass before the workflow creates a deterministic source archive,
 SHA-256 checksum, and GitHub release. CocoaPods publication runs only when the
-repository has a `COCOAPODS_TRUNK_TOKEN`; the token is never needed by builds or
-tests. Maintainers can run `scripts/release-preflight.sh vMAJOR.MINOR.PATCH`
+protected no-checkout publisher has a `COCOAPODS_TRUNK_TOKEN`; candidate builds,
+tests, archives, and podspec linting never receive it. Maintainers can run
+`scripts/release-preflight.sh vMAJOR.MINOR.PATCH`
 locally against an existing tag before pushing it.
 
 Pass the reproducible contract archive as the optional second argument to

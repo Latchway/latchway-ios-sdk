@@ -48,6 +48,32 @@ final class InstallationKeyTests: XCTestCase {
         }
     }
 
+    func testDisallowedSoftwareFallbackDoesNotRestorePersistedSoftwareKey() async throws {
+        let store = MemorySecureStore()
+        let permissive = LatchwayInstallationKeyManager(
+            softwareFallbackPolicy: .allowWhenSecureEnclaveUnavailable,
+            store: store,
+            preferSecureEnclave: false
+        )
+        _ = try await permissive.publicJWK()
+
+        let hardened = LatchwayInstallationKeyManager(
+            softwareFallbackPolicy: .disallow,
+            store: store,
+            preferSecureEnclave: false
+        )
+        do {
+            _ = try await hardened.publicJWK()
+            XCTFail("A hardened installation must not restore a software private key")
+        } catch let error as LatchwayError {
+            XCTAssertEqual(error, .secureEnclaveUnavailable)
+        }
+        let persistedKey = try await store.read(account: "installation-key")
+        let persistedKind = try await store.read(account: "installation-key-kind")
+        XCTAssertNil(persistedKey)
+        XCTAssertNil(persistedKind)
+    }
+
     func testCorruptPersistedKeyIsReplacedWithoutExportingIt() async throws {
         let store = MemorySecureStore(values: [
             "installation-key": Data("not-a-private-key".utf8),
@@ -63,6 +89,55 @@ final class InstallationKeyTests: XCTestCase {
         XCTAssertEqual(jwk.curve, "P-256")
         let persisted = try await store.read(account: "installation-key")
         XCTAssertEqual(persisted?.count, 32)
+    }
+
+    func testComponentKeyDoesNotRestoreSoftwareKeyAfterPolicyHardening() async throws {
+        let store = MemorySecureStore()
+        let permissive = LatchwayComponentKeyManager(
+            softwareFallbackPolicy: .allowWhenSecureEnclaveUnavailable,
+            store: store,
+            preferSecureEnclave: false
+        )
+        _ = try await permissive.publicJWK()
+        let permissiveKey = try await store.read(account: "component-key")
+        XCTAssertNotNil(permissiveKey)
+
+        let hardened = LatchwayComponentKeyManager(
+            softwareFallbackPolicy: .disallow,
+            store: store,
+            preferSecureEnclave: false
+        )
+        do {
+            _ = try await hardened.publicJWK()
+            XCTFail("A hardened component must not restore a software private key")
+        } catch let error as LatchwayComponentError {
+            XCTAssertEqual(error, .componentKeyUnavailable)
+        }
+        let persistedKey = try await store.read(account: "component-key")
+        let persistedKind = try await store.read(account: "component-key-kind")
+        XCTAssertNil(persistedKey)
+        XCTAssertNil(persistedKind)
+    }
+
+    func testExtensionBoundaryCannotCreateAMissingComponentKey() async throws {
+        let store = MemorySecureStore()
+        let extensionKey = LatchwayComponentKeyManager(
+            softwareFallbackPolicy: .allowWhenSecureEnclaveUnavailable,
+            store: store,
+            preferSecureEnclave: false,
+            allowCreation: false
+        )
+
+        do {
+            _ = try await extensionKey.publicJWK()
+            XCTFail("Only the containing application may create a component key")
+        } catch let error as LatchwayComponentError {
+            XCTAssertEqual(error, .componentKeyUnavailable)
+        }
+        let persistedKey = try await store.read(account: "component-key")
+        let persistedKind = try await store.read(account: "component-key-kind")
+        XCTAssertNil(persistedKey)
+        XCTAssertNil(persistedKind)
     }
 }
 

@@ -1020,8 +1020,8 @@ private actor SessionServerTransport: LatchwayHTTPTransport {
             return json(status: 200, object: [
                 "request_id": "request-12345678",
                 "server_version": "1.0.0",
-                "contract_version": "0.5.1",
-                "protocol_version": 1,
+                "contract_version": "1.0.0",
+                "protocol_version": 2,
                 "installation": installation,
                 "session": ["expires_at": iso(now.addingTimeInterval(600)), "refresh_available": true],
                 // Deliberately stronger than the accepted grant. Diagnostics

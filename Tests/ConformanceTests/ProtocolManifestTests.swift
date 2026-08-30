@@ -17,8 +17,11 @@ final class ProtocolManifestTests: XCTestCase {
         let wire = try XCTUnwrap(root["wire_protocol"] as? [String: Any])
 
         XCTAssertEqual(root["contract_version"] as? String, LatchwayVersion.contract)
+        XCTAssertEqual(root["contract_status"] as? String, "draft")
+        XCTAssertTrue(root.keys.contains("released_at"))
+        XCTAssertTrue(root["released_at"] is NSNull)
         XCTAssertEqual(wire["current"] as? Int, LatchwayVersion.protocolVersion)
-        XCTAssertEqual(wire["supported"] as? [Int], [LatchwayVersion.protocolVersion])
-        XCTAssertEqual(wire["minimum"] as? Int, LatchwayVersion.protocolVersion)
+        XCTAssertEqual(wire["supported"] as? [Int], LatchwayVersion.supportedProtocolVersions)
+        XCTAssertEqual(wire["minimum"] as? Int, LatchwayVersion.minimumProtocolVersion)
     }
 }

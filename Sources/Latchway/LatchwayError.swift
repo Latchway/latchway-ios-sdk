@@ -19,6 +19,23 @@ public enum LatchwayErrorCode: Sendable, Equatable, Hashable, CustomStringConver
     case sessionRevoked
     case refreshTokenReused
     case installationRevoked
+    case installationFamilyRevoked
+    case installationFamilyNotFound
+    case componentDefinitionNotFound
+    case componentNotConfigured
+    case componentNotProvisioned
+    case componentRevoked
+    case componentKeyInvalid
+    case componentKeyReplaced
+    case componentDelegationExpired
+    case componentFeatureNotGranted
+    case componentParentTrustExpired
+    case componentDirectAttestationRequired
+    case containingAppSetupRequired
+    case frameworkIntegrationUnsupported
+    case frameworkVersionUnsupported
+    case transportDestinationNotAllowed
+    case transportRequestNotReplayable
     case featureNotFound
     case featureNotAllowed
     case modelNotAllowed
@@ -68,6 +85,23 @@ public enum LatchwayErrorCode: Sendable, Equatable, Hashable, CustomStringConver
         "session_revoked": .sessionRevoked,
         "refresh_token_reused": .refreshTokenReused,
         "installation_revoked": .installationRevoked,
+        "installation_family_revoked": .installationFamilyRevoked,
+        "installation_family_not_found": .installationFamilyNotFound,
+        "component_definition_not_found": .componentDefinitionNotFound,
+        "component_not_configured": .componentNotConfigured,
+        "component_not_provisioned": .componentNotProvisioned,
+        "component_revoked": .componentRevoked,
+        "component_key_invalid": .componentKeyInvalid,
+        "component_key_replaced": .componentKeyReplaced,
+        "component_delegation_expired": .componentDelegationExpired,
+        "component_feature_not_granted": .componentFeatureNotGranted,
+        "component_parent_trust_expired": .componentParentTrustExpired,
+        "component_direct_attestation_required": .componentDirectAttestationRequired,
+        "containing_app_setup_required": .containingAppSetupRequired,
+        "framework_integration_unsupported": .frameworkIntegrationUnsupported,
+        "framework_version_unsupported": .frameworkVersionUnsupported,
+        "transport_destination_not_allowed": .transportDestinationNotAllowed,
+        "transport_request_not_replayable": .transportRequestNotReplayable,
         "feature_not_found": .featureNotFound,
         "feature_not_allowed": .featureNotAllowed,
         "model_not_allowed": .modelNotAllowed,

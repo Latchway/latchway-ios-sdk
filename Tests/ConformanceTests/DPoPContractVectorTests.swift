@@ -7,7 +7,9 @@ final class DPoPContractVectorTests: XCTestCase {
     func testEveryContractVector() throws {
         let root = try fixture(named: "dpop-v1")
         XCTAssertEqual(root["contract_version"] as? String, LatchwayVersion.contract)
-        XCTAssertEqual(root["wire_protocol_version"] as? Int, LatchwayVersion.protocolVersion)
+        let vectorWire = try XCTUnwrap(root["wire_protocol_version"] as? Int)
+        XCTAssertTrue(LatchwayVersion.supportedProtocolVersions.contains(vectorWire))
+        XCTAssertEqual(vectorWire, 1, "The stable RFC 9449 vector remains shared by wire 1 and wire 2")
         let accessToken = try string(root, "fixture_access_token")
         let expectedThumbprint = try string(root, "jwk_thumbprint_sha256_base64url")
         let referenceTime = try int(root, "reference_time")

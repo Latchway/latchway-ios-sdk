@@ -9,6 +9,7 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -147,7 +148,7 @@ class PromotionVerifierTests(unittest.TestCase):
                 "version": "1.0.0",
                 "status": "released",
                 "released_at": "2026-08-29T10:00:00Z",
-                "wire_protocol": 1,
+                "wire_protocol": 2,
                 "bundle_file_name": "latchway-contract-1.0.0.tar.gz",
                 "bundle_sha256": "b" * 64,
                 "core_release": CORE_TAG,
@@ -420,7 +421,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertLess(verifier, tag)
         publication_markers = {
             "javascript": 'npm publish "$RELEASE_TARBALL"',
-            "ios": "scripts/publish-or-verify-cocoapods.sh",
+            "ios": "https://trunk.cocoapods.org/api/v1/pods?allow_warnings=false",
             "android": "scripts/publish-central.sh",
             "react_native": "node scripts/publish-or-verify.mjs",
         }
@@ -431,25 +432,44 @@ class ReleaseWorkflowTests(unittest.TestCase):
         elif REPOSITORY_ID in ("ios", "android"):
             self.assertIn("needs: promote", workflow)
 
-    def test_release_remote_tag_reads_use_ephemeral_same_repository_auth(self) -> None:
+    def test_promotion_credentials_never_share_a_runner_with_candidate_code(self) -> None:
         workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
-        expected_steps = {"javascript": 1, "ios": 2, "android": 2, "react_native": 3}
-        expected_calls = {"javascript": 2, "ios": 3, "android": 3, "react_native": 4}
-        auth_steps = expected_steps[REPOSITORY_ID]
-        auth_calls = expected_calls[REPOSITORY_ID]
-        self.assertEqual(workflow.count("GIT_TAG_READ_TOKEN: ${{ github.token }}"), auth_steps)
-        self.assertEqual(workflow.count("git_with_auth() {"), auth_steps)
-        self.assertEqual(workflow.count('GIT_ASKPASS="$git_askpass"'), auth_steps)
-        self.assertEqual(workflow.count("GIT_TERMINAL_PROMPT=0"), auth_steps)
-        self.assertEqual(workflow.count('git -c credential.helper= "$@"'), auth_steps)
-        self.assertEqual(workflow.count('chmod 700 "$git_askpass"'), auth_steps)
-        self.assertEqual(workflow.count('trap \'rm -f -- "$git_askpass"\' EXIT'), auth_steps)
-        self.assertEqual(workflow.count("git_with_auth ls-remote"), 1)
-        self.assertEqual(workflow.count("git_with_auth fetch --force origin"), auth_calls - 1)
-        self.assertNotIn("git ls-remote", workflow)
-        self.assertNotIn("git fetch --force origin", workflow)
-        self.assertNotIn("https://x-access-token:", workflow)
-        self.assertNotIn("git config --global", workflow)
+        authorization = workflow.split("\n  authorize-promotion:\n", 1)[1].split(
+            "\n  verify-promotion:\n", 1
+        )[0]
+        verification = workflow.split("\n  verify-promotion:\n", 1)[1].split(
+            "\n  promote:\n", 1
+        )[0]
+        following_job = {
+            "javascript": "verify",
+            "react_native": "locked-sources",
+            "ios": "authorize-release",
+            "android": "publish",
+        }[REPOSITORY_ID]
+        tag_mutation = workflow.split("\n  promote:\n", 1)[1].split(
+            f"\n  {following_job}:\n", 1
+        )[0]
+
+        self.assertNotIn("actions/checkout", authorization)
+        self.assertNotIn("scripts/", authorization)
+        self.assertNotIn("python3 ", authorization)
+        self.assertNotIn("node ", authorization)
+        self.assertIn("LATCHWAY_SIBLING_REPOSITORIES_READ_TOKEN", authorization)
+        self.assertIn("gh attestation verify", authorization)
+
+        self.assertIn("actions/checkout", verification)
+        self.assertIn("python3 scripts/verify-release-promotion.py", verification)
+        self.assertNotIn("secrets.", verification)
+        self.assertNotIn("GH_TOKEN:", verification)
+
+        self.assertNotIn("actions/checkout", tag_mutation)
+        self.assertNotIn("scripts/", tag_mutation)
+        self.assertNotIn("python3 ", tag_mutation)
+        self.assertNotIn("node ", tag_mutation)
+        self.assertIn("GH_TOKEN: ${{ github.token }}", tag_mutation)
+        self.assertIn("gh api", tag_mutation)
+        self.assertNotIn("GIT_TAG_READ_TOKEN", workflow)
+        self.assertNotIn("git_with_auth()", workflow)
 
     def test_react_native_publication_still_waits_for_all_dependency_releases(self) -> None:
         if REPOSITORY_ID != "react_native":
@@ -464,18 +484,31 @@ class ReleaseWorkflowTests(unittest.TestCase):
         if REPOSITORY_ID != "ios":
             self.skipTest("iOS-only release recovery")
         workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
-        administration_preflight = workflow.index(
-            "Require immutable-release administration policy and attestation tooling"
+        package = workflow.index("Seal the closed CocoaPods publication candidate")
+        transfer = workflow.index(
+            "Transfer the closed candidate to the no-checkout CocoaPods publisher"
         )
-        registry = workflow.index("scripts/publish-or-verify-cocoapods.sh")
-        public_verification = workflow.index("scripts/verify-cocoapods-release.sh")
-        reconciliation = workflow.index("python3 scripts/reconcile-github-release.py")
-        self.assertLess(administration_preflight, registry)
+        registry = workflow.index(
+            "Upload the reviewed JSON podspec directly without executing package hooks"
+        )
+        public_verification = workflow.index(
+            "Wait for and retain the exact immutable CocoaPods metadata"
+        )
+        closure = workflow.index("Validate exact iOS asset closure before OIDC attestation")
+        attestation = workflow.index(
+            "Attest exact source archive and CocoaPods evidence without candidate checkout"
+        )
+        reconciliation = workflow.index(
+            "Reconcile, publish, and verify immutable release with fixed API calls"
+        )
+        self.assertLess(package, transfer)
+        self.assertLess(transfer, registry)
         self.assertLess(registry, public_verification)
         self.assertLess(public_verification, reconciliation)
+        self.assertLess(closure, attestation)
+        self.assertLess(attestation, reconciliation)
         self.assertNotIn("--clobber", workflow)
-        self.assertNotIn("gh release create", workflow)
-        self.assertIn("LATCHWAY_COCOAPODS_EVIDENCE_DIRECTORY", workflow)
+        self.assertIn("gh release create", workflow)
         self.assertIn("cocoapods-release-evidence.json", workflow)
         self.assertIn("cocoapods-published-podspec.json", workflow)
         self.assertIn("cocoapods-reviewed-podspec.json", workflow)
@@ -483,7 +516,74 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("gh release verify --help", workflow)
         self.assertIn("gh release verify-asset --help", workflow)
         self.assertIn("repos/$GITHUB_REPOSITORY/immutable-releases", workflow)
-        self.assertIn("--expected-commit \"$RELEASE_COMMIT\"", workflow)
+        self.assertNotIn("python3 scripts/reconcile-github-release.py", workflow)
+        trusted = workflow.split("\n  github-release:\n", 1)[1]
+        self.assertNotIn("actions/checkout", trusted)
+        self.assertNotIn("scripts/", trusted)
+        self.assertNotIn("python3 ", trusted)
+        self.assertNotIn("node ", trusted)
+        self.assertIn("RELEASE_TOKEN:", trusted)
+        self.assertIn("gh api", trusted)
+        self.assertIn("needs: [promote, publish-cocoapods, github-release-policy]", trusted)
+        administration = workflow.split("\n  authorize-release:\n", 1)[1].split(
+            "\n  package:\n", 1
+        )[0]
+        self.assertNotIn("actions/checkout", administration)
+        self.assertNotIn("scripts/", administration)
+        self.assertNotIn("python3 ", administration)
+        self.assertNotIn("node ", administration)
+        self.assertNotIn("id-token: write", administration)
+        self.assertNotIn("attestations: write", administration)
+        self.assertIn("LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN", administration)
+        self.assertIn("repos/$GITHUB_REPOSITORY/immutable-releases", administration)
+        final_policy = workflow.split("\n  github-release-policy:\n", 1)[1].split(
+            "\n  github-release:\n", 1
+        )[0]
+        self.assertNotIn("actions/checkout", final_policy)
+        self.assertNotIn("scripts/", final_policy)
+        self.assertNotIn("python3 ", final_policy)
+        self.assertNotIn("node ", final_policy)
+        self.assertNotIn("id-token: write", final_policy)
+        self.assertNotIn("attestations: write", final_policy)
+        self.assertIn("LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN", final_policy)
+        self.assertIn("repos/$GITHUB_REPOSITORY/immutable-releases", final_policy)
+        self.assertIn("needs: [promote, publish-cocoapods]", final_policy)
+        self.assertNotIn("LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN", trusted)
+        candidate = workflow.split("\n  package:\n", 1)[1].split(
+            "\n  publish-cocoapods:\n", 1
+        )[0]
+        publisher = workflow.split("\n  publish-cocoapods:\n", 1)[1].split(
+            "\n  github-release-policy:\n", 1
+        )[0]
+        self.assertIn("actions/checkout", candidate)
+        self.assertIn("scripts/verify-package.sh", candidate)
+        self.assertNotIn("secrets.", candidate)
+        self.assertNotIn("COCOAPODS_TRUNK_TOKEN", candidate)
+        self.assertNotIn("id-token: write", candidate)
+        self.assertNotIn("attestations: write", candidate)
+        self.assertNotIn("actions/checkout", publisher)
+        self.assertNotIn("scripts/", publisher)
+        self.assertNotIn("python3 ", publisher)
+        self.assertNotIn("pod trunk push", publisher)
+        self.assertNotIn("tar -", publisher)
+        self.assertNotIn("swift ", publisher)
+        self.assertIn("--data-binary", publisher)
+        self.assertIn("cocoapods-reviewed-podspec.json", publisher)
+        self.assertIn('has("prepare_command")', publisher)
+        self.assertIn('has("script_phase")', publisher)
+        self.assertIn('has("script_phases")', publisher)
+        self.assertIn("COCOAPODS_TRUNK_TOKEN", publisher)
+        self.assertNotIn("LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN", publisher)
+        self.assertNotIn("id-token: write", publisher)
+        self.assertNotIn("attestations: write", publisher)
+        self.assertIn("latchway-ios-release-${{ needs.promote.outputs.version }}", publisher)
+        self.assertIn('find "$root" -mindepth 1 -print', publisher)
+        self.assertIn('actual=("$asset_root"/*)', trusted)
+        self.assertIn('test "${#actual[@]}" = "${#expected[@]}"', trusted)
+        self.assertIn(
+            'cmp --silent "$RUNNER_TEMP/expected-assets.txt" "$RUNNER_TEMP/actual-assets.txt"',
+            trusted,
+        )
         reconciler = (ROOT / "scripts/reconcile-github-release.py").read_text(encoding="utf-8")
         self.assertIn("repos/{repository}/immutable-releases", reconciler)
         self.assertIn("repos/{repository}/git/ref/tags/{encoded_tag}", reconciler)
@@ -511,6 +611,28 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("source_commit", verifier)
         self.assertIn("reviewed_spec_sha256", verifier)
 
+
+
+    def test_oidc_permissions_are_confined_to_no_checkout_fixed_jobs(self) -> None:
+        workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+        headers = list(re.finditer(r"(?m)^  ([a-z0-9_-]+):\n", workflow))
+        oidc_jobs: list[tuple[str, str]] = []
+        for index, header in enumerate(headers):
+            end = headers[index + 1].start() if index + 1 < len(headers) else len(workflow)
+            block = workflow[header.start():end]
+            if "id-token: write" in block or "attestations: write" in block:
+                oidc_jobs.append((header.group(1), block))
+
+        self.assertGreaterEqual(len(oidc_jobs), 1)
+        for job_name, block in oidc_jobs:
+            self.assertNotIn("actions/checkout", block, job_name)
+            self.assertNotIn("scripts/", block, job_name)
+            self.assertNotIn("working-directory:", block, job_name)
+            self.assertNotIn("python3 ", block, job_name)
+            self.assertNotIn("node ", block, job_name)
+            self.assertNotIn("./gradlew", block, job_name)
+            self.assertNotIn("LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN", block, job_name)
+            self.assertNotIn("secrets.", block, job_name)
 
 if __name__ == "__main__":
     unittest.main()

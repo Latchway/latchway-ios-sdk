@@ -42,9 +42,13 @@ credential. The validator rejects secret-shaped values and unknown fields.
 ## Protected runner contract
 
 Create a GitHub environment named `app-attest-production` with reviewers. Its
-self-hosted runner must have the labels `self-hosted`, `macOS`, and
-`latchway-physical-ios`, an unlocked supported device, the pinned Xcode
-identity, and access to the exact signed app candidate.
+self-hosted runner must be a newly booted repository-scoped JIT runner
+registered with `--ephemeral`. It has the labels `self-hosted`, `macOS`,
+`latchway-physical-ios`, and `latchway-ephemeral-jit`; its one-run name is
+exactly `latchway-ios-<run-id>-<run-attempt>`. A reusable runner, a runner that
+can accept a second job, or a host with a surviving workspace is ineligible.
+The runner has one exclusively attached supported device, the pinned Xcode
+identity, and read-only access to the exact signed app candidate.
 
 Configure these protected non-secret variables:
 
@@ -79,6 +83,9 @@ LATCHWAY_IDENTITY_PROVIDER
 LATCHWAY_FEATURE
 LATCHWAY_ERROR_MAPPING_FEATURE     # canonical feature ID guaranteed absent
 LATCHWAY_MODEL
+LATCHWAY_COLLECTOR_TRUST_ROOT_PEM
+LATCHWAY_COLLECTOR_TRUST_ROOT_SHA256
+LATCHWAY_DEVICE_GRANT_SHA256
 ```
 
 `LATCHWAY_APPLICATION_ID` is the generated `app_` resource ID returned by
@@ -89,8 +96,85 @@ Configure only these protected secrets:
 
 ```text
 LATCHWAY_IOS_DEVICE_ID
-LATCHWAY_IDENTITY_TOKEN
+LATCHWAY_ONE_TIME_DEVICE_GRANT
 ```
+
+`LATCHWAY_ONE_TIME_DEVICE_GRANT` replaces a reusable identity token. The
+provisioner mints it after the workflow run ID and attempt exist. The gateway
+must accept it once only and bind its audience to
+`latchway-physical-evidence/ios-app-attest`, the source commit, run ID, run
+attempt, application, and a unique `jti`; its lifetime and the signed runner
+lease are at most one hour, while the grant itself records `issued_at_unix` and
+`expires_at_unix` and remains valid for at most five minutes. The protected
+SHA-256 is checked before the grant
+is exposed to the app. An organization token, PAT, registry credential, cloud
+credential, reusable Firebase credential, or OIDC authority is prohibited on
+the collector.
+
+## Ephemeral collector and supervisor contract
+
+Before a collector is eligible, the GitHub-hosted `authorize-source` job
+checks out the candidate only as data, executes no repository code, records
+the exact commit and Git tree for this run/attempt/audience, and creates a
+GitHub Sigstore attestation. The collector verifies that bundle with
+`--deny-self-hosted-runners` before checking out or executing candidate code.
+
+The JIT image must expose root-owned, non-writable files
+`/etc/latchway/physical-collector/lease.json` and `lease.sig`, plus the
+root-owned client `/usr/local/libexec/latchway-physical-collector-finalize`.
+The ECDSA/SHA-256 lease is signed outside the candidate VM. It binds the exact
+repository, commit, source-authorization hash, workflow run/attempt/job and
+audience, runner name/image/boot identity, one-job JIT and fresh-workspace
+flags, exact app digest, and the one-use grant hash/`jti`/issuance/expiry. It also
+asserts that no long-lived, organization, administration, registry, or OIDC
+credential exists in the collector.
+
+The finalizer is a client for an authenticated privileged supervisor, not a
+signing key or a general-purpose signing command. The private key and gateway
+observer capability stay outside the candidate VM. The service ignores
+caller-supplied claims, hashes the supplied source/evidence/wipe paths itself,
+independently queries the device and the gateway's server-side run receipt,
+allows one invocation for the signed lease, deregisters the runner, refuses a
+second job, and schedules VM destruction within ten minutes. Candidate code
+may cause a denial of service, but it cannot ask the service to sign arbitrary
+hashes or a synthetic physical/provider verdict.
+
+The supervisor also owns an out-of-band lease watchdog. Cancellation, timeout,
+runner crash, network loss, or a missing finalizer receipt must revoke the JIT
+registration, invalidate the one-use grant, wipe/reset the attached device, and
+destroy the VM without relying on another workflow step.
+
+Device uninstall and supervisor finalization are separate unconditional
+`if: always()` steps. The app is uninstalled and absence is checked even after
+a failed collection; finalization still runs if lease, source, toolchain,
+grant, collection, or wipe validation fails. Only a signed teardown with
+`evidence_eligible=true`, independent device/provider and gateway-receipt
+verification, successful app-data wipe, JIT deregistration, no further jobs,
+and bounded destruction scheduling can reach the signer. The unsigned
+isolation handoff contains the source authorization, signed lease, wipe
+receipt, signed teardown, and closed checksum manifests.
+
+Also create a reviewed `physical-evidence-signing` environment. It contains
+only the public collector trust root and non-secret expected hashes—no device,
+identity, application, runner, provider, or supervisor credential. After the
+protected JIT job has collected and validated the candidate, it uploads a
+one-day `app-attest-physical-unsigned-<run>-<attempt>` handoff with only
+repository-scoped `actions: read` and `contents: read`; that job has no OIDC, attestation, artifact-metadata,
+authority. A fresh GitHub-hosted Ubuntu job behind the signing environment
+downloads the handoff without checking out source, enforces the exact file set,
+per-file and total size limits, `SHA256SUMS`, candidate commit, run/attempt,
+platform, physical-device, production-provider, passing-test, and redaction
+coordinates using fixed inline shell and `jq`, and only then requests OIDC and
+creates the attestation. Protect this environment with independent reviewers
+and restrict deployments to `main`.
+
+The signer also verifies the GitHub-hosted source authorization, trust-root
+signature on the lease and teardown, exact grant/artifact/run coordinates,
+device-wipe receipt, evidence-manifest hash, independent supervisor verdict,
+and destruction deadline. It attests a
+`collector-isolation-validation.json` subject and retains the separate
+`app-attest-collector-isolation-<run>-<attempt>` artifact for 30 days; the
+observer-compatible physical artifact file set remains unchanged.
 
 The app candidate must be a non-debuggable Release build signed by the pinned
 Team ID/certificate with
@@ -135,11 +219,15 @@ gateway-deployment-statement.json
 gateway-deployment-statement.sig
 gateway-deployment-verification.json
 SHA256SUMS
+github-attestation.sigstore.json
 ```
 
-The workflow attests the accepted profile, evidence, and checksum manifest
-with GitHub Sigstore and retains the bundle. The dispatch commit must equal the
-protected commit and `GITHUB_SHA`.
+The final `app-attest-physical-<run>-<attempt>` artifact is produced only by
+the isolated signing job. It attests the accepted profile, evidence, and
+checksum manifest with GitHub Sigstore and retains the bundle at exactly
+`github-attestation.sigstore.json`, as required by the core observer. The
+dispatch must run from `main`, and its commit must equal the protected commit,
+the dispatch input, and `GITHUB_SHA`.
 
 Revalidate an extracted artifact offline:
 
@@ -152,6 +240,7 @@ python3 scripts/device-evidence.py verify \
   --summary /tmp/app-attest-validation.json
 
 python3 scripts/test-verify-gateway-deployment.py
+python3 scripts/test-physical-evidence-workflow.py
 ```
 
 The final cross-repository physical-device document is generated only after
@@ -159,7 +248,13 @@ this report, the Play Integrity report, and both React Native reports validate.
 The deterministic adapter lives in the React Native repository; hand-written
 `physical_devices.json` claims are not accepted as platform proof.
 
-Until the protected environment, signed candidate, device, identity, and live
-gateway exist, the exact remaining external action is to dispatch the workflow
-and retain its accepted artifact. Local builds and schema tests do not satisfy
-that gate.
+Repository code enforces the signed lease/receipt shapes and refuses evidence
+without them, but it does not provision hardware or prove that a hypervisor
+actually destroyed a VM after the job ended. Before this is a release gate,
+operators must supply and independently audit the JIT registration service,
+root supervisor, isolated signing key and observer capability, USB/device
+reset, one-use gateway grant issuer, post-job VM-destruction log, protected
+environments, signed candidate, physical device, and live gateway. The final
+artifact plus the external destruction log must refer to the same lease/run.
+None of that infrastructure exists merely because this workflow is checked in;
+local builds and schema tests never satisfy the physical gate.

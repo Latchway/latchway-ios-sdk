@@ -6,6 +6,25 @@ struct LatchwayControlPlane: Sendable {
     let proofFactory: LatchwayDPoPProofFactory
     let clock: any LatchwayClock
 
+    private enum Endpoint {
+        static let sessionChallenges = "client/v1/session-challenges"
+        static let sessions = "client/v1/sessions"
+        static let sessionRefresh = "client/v1/sessions/refresh"
+        static let currentInstallation = "client/v1/installations/current"
+        static let currentInstallationFamily = "client/v1/installation-families/current"
+        static let currentFamilyComponents = "client/v1/installation-families/current/components"
+        static let componentSessions = "client/v1/component-sessions"
+        static let diagnostics = "client/v1/diagnostics"
+
+        static func quota(feature: String) -> String {
+            "client/v1/features/\(feature)/quota"
+        }
+
+        static func component(_ componentID: String) -> String {
+            "\(currentFamilyComponents)/\(componentID)"
+        }
+    }
+
     private var encoder: JSONEncoder {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
@@ -30,7 +49,7 @@ struct LatchwayControlPlane: Sendable {
         )
         return try await sendJSON(
             method: "POST",
-            path: "client/v1/session-challenges",
+            path: Endpoint.sessionChallenges,
             body: body,
             accessToken: nil,
             expectedStatus: 201,
@@ -51,7 +70,7 @@ struct LatchwayControlPlane: Sendable {
         )
         return try await sendJSON(
             method: "POST",
-            path: "client/v1/sessions",
+            path: Endpoint.sessions,
             body: body,
             accessToken: nil,
             expectedStatus: 201,
@@ -62,7 +81,7 @@ struct LatchwayControlPlane: Sendable {
     func refresh(refreshToken: String) async throws -> SessionGrantWire {
         try await sendJSON(
             method: "POST",
-            path: "client/v1/sessions/refresh",
+            path: Endpoint.sessionRefresh,
             body: SessionRefreshRequest(refreshToken: refreshToken),
             accessToken: nil,
             expectedStatus: 200,
@@ -74,7 +93,7 @@ struct LatchwayControlPlane: Sendable {
         let encodedFeature = try Self.pathComponent(feature)
         return try await sendWithoutBody(
             method: "GET",
-            path: "client/v1/features/\(encodedFeature)/quota",
+            path: Endpoint.quota(feature: encodedFeature),
             accessToken: accessToken,
             expectedStatus: 200,
             as: LatchwayQuotaSnapshot.self
@@ -84,7 +103,7 @@ struct LatchwayControlPlane: Sendable {
     func diagnostics(accessToken: String) async throws -> ClientDiagnosticsWire {
         try await sendWithoutBody(
             method: "GET",
-            path: "client/v1/diagnostics",
+            path: Endpoint.diagnostics,
             accessToken: accessToken,
             expectedStatus: 200,
             as: ClientDiagnosticsWire.self
@@ -94,7 +113,77 @@ struct LatchwayControlPlane: Sendable {
     func revoke(accessToken: String) async throws {
         let response = try await sendAuthorized(
             method: "DELETE",
-            path: "client/v1/installations/current",
+            path: Endpoint.currentInstallation,
+            accessToken: accessToken,
+            body: nil
+        )
+        guard response.statusCode == 204, response.body.isEmpty else { throw try error(from: response) }
+    }
+
+    func revokeFamily(accessToken: String) async throws {
+        let response = try await sendAuthorized(
+            method: "DELETE",
+            path: Endpoint.currentInstallationFamily,
+            accessToken: accessToken,
+            body: nil
+        )
+        guard response.statusCode == 204, response.body.isEmpty else { throw try error(from: response) }
+    }
+
+    func provisionComponent(
+        definitionID: String,
+        publicJWK: LatchwayPublicJWK,
+        requestedFeatures: [String],
+        accessToken: String
+    ) async throws -> ComponentProvisioningWire {
+        try await sendJSON(
+            method: "POST",
+            path: Endpoint.currentFamilyComponents,
+            body: ComponentProvisioningRequest(
+                componentDefinitionID: definitionID,
+                publicJWK: publicJWK,
+                requestedFeatures: requestedFeatures,
+                clientMetadata: .init(
+                    appVersion: configuration.appVersion,
+                    sdkVersion: configuration.clientSDKVersion
+                )
+            ),
+            accessToken: accessToken,
+            expectedStatus: 201,
+            as: ComponentProvisioningWire.self
+        )
+    }
+
+    func createComponentSession(
+        componentID: String,
+        refreshGrant: String
+    ) async throws -> ComponentSessionGrantWire {
+        try await sendJSON(
+            method: "POST",
+            path: Endpoint.componentSessions,
+            body: ComponentSessionRequest(componentID: componentID, refreshGrant: refreshGrant),
+            accessToken: nil,
+            expectedStatus: 201,
+            as: ComponentSessionGrantWire.self
+        )
+    }
+
+    func refreshComponent(refreshToken: String) async throws -> ComponentSessionGrantWire {
+        try await sendJSON(
+            method: "POST",
+            path: Endpoint.sessionRefresh,
+            body: SessionRefreshRequest(refreshToken: refreshToken),
+            accessToken: nil,
+            expectedStatus: 200,
+            as: ComponentSessionGrantWire.self
+        )
+    }
+
+    func revokeComponent(componentID: String, accessToken: String) async throws {
+        let encodedID = try Self.resourceID(componentID, prefix: "cmp")
+        let response = try await sendAuthorized(
+            method: "DELETE",
+            path: Endpoint.component(encodedID),
             accessToken: accessToken,
             body: nil
         )
@@ -230,6 +319,16 @@ struct LatchwayControlPlane: Sendable {
     private static func pathComponent(_ value: String) throws -> String {
         guard value.range(of: "^[a-z][a-z0-9_-]{0,62}$", options: .regularExpression) != nil else {
             throw LatchwayError.invalidRequest("feature must be a valid Latchway identifier")
+        }
+        return value
+    }
+
+    private static func resourceID(_ value: String, prefix: String) throws -> String {
+        guard value.range(
+            of: "^\(prefix)_[A-Za-z0-9_-]{16,128}$",
+            options: .regularExpression
+        ) != nil else {
+            throw LatchwayError.invalidRequest("resource identifier is invalid")
         }
         return value
     }

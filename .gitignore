@@ -10,6 +10,9 @@ xcuserdata/
 Examples/AppAttestConformance/AppAttestConformance.xcodeproj/
 Examples/AppAttestConformance/AppAttestConformance.xcworkspace/
 Examples/AppAttestConformance/Derived/
+Examples/AppExtensionComponents/AppExtensionComponents.xcodeproj/
+Examples/AppExtensionComponents/AppExtensionComponents.xcworkspace/
+Examples/AppExtensionComponents/Derived/
 
 # Python conformance test cache
 __pycache__/

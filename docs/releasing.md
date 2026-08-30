@@ -5,25 +5,33 @@ The tag, `LatchwayVersion.sdk`, podspec version, changelog section, and checked
 out commit must agree. `contract.lock` must identify a published core contract
 with an exact commit and deterministic bundle digest.
 
-The protected `cocoapods-trunk` GitHub environment supplies
-`COCOAPODS_TRUNK_TOKEN` and a fine-grained
-`LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN` with read-only repository Administration
-permission; it should require an authorized reviewer. The latter preflights
-GitHub's immutable-release setting before any CocoaPods publication, draft, or
-asset mutation. This preflight also requires a GitHub CLI version that supports
-automatic immutable-release and asset verification. During reconciliation, the
-administration token is consumed only by the settings request and removed from
-the environment before later GitHub subprocesses run. The release workflow runs
-the complete SwiftPM build/test/consumer gate and a full CocoaPods lint, then
-builds the source archive twice and compares it byte for byte. If the coordinate
-is absent it publishes synchronously; if it already exists, the workflow
-requires the entire CDN podspec JSON to equal the reviewed local podspec before
-continuing. The retained CDN fetch permits HTTPS redirects only, requires TLS
-1.2 or newer, and enforces connection, total-time, and response-size bounds. It
-also verifies the public version, Git source tag, and all three subspecs. The
-exact CDN podspec, reviewed podspec, source-bound verification record, and
-checksum manifest are retained beside the source archive; every retained file
-receives a GitHub build-provenance attestation.
+Three protected GitHub environments keep release authority disjoint and should
+each require an authorized reviewer. `release-administration` supplies only a
+fine-grained `LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN` with read-only repository
+Administration permission. Its fresh no-checkout job proves GitHub immutable
+releases are enabled before either registry publication or release mutation.
+`cocoapods-trunk` supplies only `COCOAPODS_TRUNK_TOKEN`, and `github-release`
+protects the final GitHub-token/OIDC publication job. After the registry result
+is sealed, a second no-OIDC administration job rechecks the immutable-release
+policy before the final job validates the exact local asset closure and requests
+an attestation.
+
+The credential-free candidate job runs the complete SwiftPM
+build/test/consumer gate and full CocoaPods lint, builds the source archive
+twice, compares it byte for byte, and converts the reviewed Ruby podspec to a
+closed JSON artifact. A fresh no-checkout publisher validates the exact file
+set, sizes, hashes, commit/tag/version binding, source coordinates, subspecs,
+and the recursive absence of CocoaPods `prepare_command` and script-phase
+hooks. It never extracts or builds the source archive and posts only the
+reviewed JSON bytes directly to the Trunk API. Thus downloaded package content
+cannot execute while the Trunk token exists. If the coordinate already exists,
+the publisher requires the entire CDN podspec JSON to equal the reviewed JSON
+before adopting it. The retained CDN fetch permits HTTPS redirects only,
+requires TLS 1.2 or newer, and enforces connection, total-time, and
+response-size bounds. The exact CDN podspec, reviewed podspec, source-bound
+verification record, and checksum manifest are retained beside the source
+archive; every retained file receives a GitHub build-provenance attestation in
+a separate fresh no-checkout job.
 
 If the core repository is private, configure
 `LATCHWAY_SIBLING_REPOSITORIES_READ_TOKEN` as a fine-grained Contents: read

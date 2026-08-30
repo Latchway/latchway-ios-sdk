@@ -12,26 +12,19 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  promote:
-    name: Verify core promotion and create SDK tag
+  authorize-promotion:
+    name: Authenticate core promotion without candidate source
     if: github.repository == 'Latchway/latchway-ios-sdk'
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 10
     permissions:
       attestations: read
-      contents: write
+      contents: read
     outputs:
-      commit: ${{ steps.promotion.outputs.release_commit }}
-      tag: ${{ steps.promotion.outputs.release_tag }}
-      version: ${{ steps.promotion.outputs.release_version }}
+      commit: ${{ steps.coordinates.outputs.commit }}
     steps:
-      - name: Check out exact promoted iOS source
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          ref: ${{ github.event.client_payload.repository.commit }}
-          fetch-depth: 0
-          persist-credentials: false
       - name: Validate dispatch envelope before network access
+        id: coordinates
         shell: bash
         env:
           SDK_ID: ${{ github.event.client_payload.repository.id }}
@@ -46,14 +39,25 @@ jobs:
           set -euo pipefail
           test "$SDK_ID" = ios
           [[ "$SDK_COMMIT" =~ ^[0-9a-f]{40}$ ]]
-          [[ "$SDK_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          [[ "$SDK_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]
           test "$SDK_TAG" = "v$SDK_VERSION"
           [[ "$CORE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]
           [[ "$REPORT_SHA256" =~ ^[0-9a-f]{64}$ ]]
           [[ "$OCI_IMAGE_DIGEST" =~ ^ghcr\.io/latchway/latchway@sha256:[0-9a-f]{64}$ ]]
           test "$REPORT_URL" = "https://github.com/Latchway/latchway/releases/download/$CORE_TAG/latchway-cross-repository-promotion.json"
           test "$GITHUB_SHA" = "$SDK_COMMIT"
-          test "$(git rev-parse --verify HEAD)" = "$SDK_COMMIT"
+          printf 'commit=%s\n' "$SDK_COMMIT" >> "$GITHUB_OUTPUT"
+      - name: Require fixed GitHub attestation tooling without credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          version_line=$(gh version | head -n 1)
+          [[ "$version_line" =~ ^gh[[:space:]]version[[:space:]]([0-9]+)\.([0-9]+)\.([0-9]+)([[:space:]]\([^()]+\))?$ ]]
+          major=${BASH_REMATCH[1]}
+          minor=${BASH_REMATCH[2]}
+          patch=${BASH_REMATCH[3]}
+          (( major > 2 || (major == 2 && (minor > 97 || (minor == 97 && patch >= 0))) ))
+          gh attestation verify --help >/dev/null
       - name: Download and hash the exact core promotion report
         shell: bash
         env:
@@ -76,18 +80,52 @@ jobs:
           rm -f -- "$auth_config"
           trap - EXIT
           printf '%s  %s\n' "$REPORT_SHA256" "$report" | sha256sum --check --strict
-      - name: Verify the core workflow artifact attestation
+      - name: Verify the core workflow artifact attestation with read-only credentials
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.LATCHWAY_SIBLING_REPOSITORIES_READ_TOKEN || github.token }}
         run: |
-          python3 scripts/require-gh-version.py
+          set -euo pipefail
           gh attestation verify "$RUNNER_TEMP/latchway-cross-repository-promotion.json" \
             --repo Latchway/latchway \
             --signer-workflow Latchway/latchway/.github/workflows/cross-repository-conformance.yml \
             --source-ref refs/heads/main \
             --deny-self-hosted-runners
-      - name: Validate exact report, dispatch, and local source bindings
+      - name: Transfer authenticated promotion report to credential-free validation
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sdk-core-promotion-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/latchway-cross-repository-promotion.json
+          if-no-files-found: error
+          retention-days: 1
+
+  verify-promotion:
+    name: Validate candidate source against authenticated promotion
+    if: github.repository == 'Latchway/latchway-ios-sdk'
+    needs: authorize-promotion
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      commit: ${{ steps.promotion.outputs.release_commit }}
+      core_tag: ${{ steps.promotion.outputs.core_tag }}
+      report_sha256: ${{ steps.promotion.outputs.report_sha256 }}
+      tag: ${{ steps.promotion.outputs.release_tag }}
+      version: ${{ steps.promotion.outputs.release_version }}
+    steps:
+      - name: Check out exact promoted iOS SDK source without persisted credentials
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.authorize-promotion.outputs.commit }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Download authenticated core promotion report
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sdk-core-promotion-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/sdk-core-promotion
+      - name: Validate exact report, dispatch, and local source bindings without credentials
         id: promotion
         shell: bash
         env:
@@ -99,8 +137,10 @@ jobs:
           REPORT_SHA256: ${{ github.event.client_payload.promotion_evidence_sha256 }}
           OCI_IMAGE_DIGEST: ${{ github.event.client_payload.oci_image_digest }}
         run: |
+          set -euo pipefail
+          test "$(git rev-parse --verify HEAD)" = "$SDK_COMMIT"
           python3 scripts/verify-release-promotion.py \
-            --report "$RUNNER_TEMP/latchway-cross-repository-promotion.json" \
+            --report "$RUNNER_TEMP/sdk-core-promotion/latchway-cross-repository-promotion.json" \
             --report-url "$REPORT_URL" \
             --report-sha256 "$REPORT_SHA256" \
             --repository-id ios \
@@ -111,75 +151,106 @@ jobs:
             --core-tag "$CORE_TAG" \
             --oci-image-digest "$OCI_IMAGE_DIGEST" \
             --github-output "$GITHUB_OUTPUT"
-      - name: Create or verify evidence-gated annotated SDK tag
+
+  promote:
+    name: Create or verify evidence-gated SDK tag without checkout
+    if: github.repository == 'Latchway/latchway-ios-sdk'
+    needs: verify-promotion
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    outputs:
+      commit: ${{ needs.verify-promotion.outputs.commit }}
+      tag: ${{ needs.verify-promotion.outputs.tag }}
+      version: ${{ needs.verify-promotion.outputs.version }}
+      core_tag: ${{ needs.verify-promotion.outputs.core_tag }}
+      report_sha256: ${{ needs.verify-promotion.outputs.report_sha256 }}
+    steps:
+      - name: Create or verify evidence-gated annotated SDK tag using fixed API calls
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          GIT_TAG_READ_TOKEN: ${{ github.token }}
-          RELEASE_COMMIT: ${{ steps.promotion.outputs.release_commit }}
-          RELEASE_TAG: ${{ steps.promotion.outputs.release_tag }}
-          CORE_TAG: ${{ steps.promotion.outputs.core_tag }}
-          REPORT_SHA256: ${{ steps.promotion.outputs.report_sha256 }}
+          RELEASE_COMMIT: ${{ needs.verify-promotion.outputs.commit }}
+          RELEASE_TAG: ${{ needs.verify-promotion.outputs.tag }}
+          CORE_TAG: ${{ needs.verify-promotion.outputs.core_tag }}
+          REPORT_SHA256: ${{ needs.verify-promotion.outputs.report_sha256 }}
         run: |
           set -euo pipefail
-          git_askpass="$RUNNER_TEMP/latchway-git-askpass"
-          umask 077
-          cat > "$git_askpass" <<'EOF'
-          #!/usr/bin/env bash
-          set -euo pipefail
-          case "${1:-}" in
-            *github.com*Username*|*Username*github.com*) printf '%s\n' x-access-token ;;
-            *github.com*Password*|*Password*github.com*)
-              test -n "${GIT_TAG_READ_TOKEN:-}"
-              printf '%s\n' "$GIT_TAG_READ_TOKEN"
-              ;;
-            *) exit 1 ;;
-          esac
-          EOF
-          chmod 700 "$git_askpass"
-          trap 'rm -f -- "$git_askpass"' EXIT
-          git_with_auth() {
-            GIT_ASKPASS="$git_askpass" GIT_TERMINAL_PROMPT=0 git -c credential.helper= "$@"
-          }
+          [[ "$RELEASE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]
+          [[ "$REPORT_SHA256" =~ ^[0-9a-f]{64}$ ]]
           message="iOS SDK $RELEASE_TAG
 
           Core promotion: $CORE_TAG
           Promotion evidence SHA-256: $REPORT_SHA256"
-          remote=$(git_with_auth ls-remote --tags origin "refs/tags/$RELEASE_TAG")
-          if [[ -n "$remote" ]]; then
-            tag_object=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq .object.sha)
-            test "$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_object" --jq .object.type)" = commit
-            test "$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_object" --jq .object.sha)" = "$RELEASE_COMMIT"
-            test "$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_object" --jq .message)" = "$message"
-          else
+          set +e
+          gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" \
+            > "$RUNNER_TEMP/sdk-tag-ref.json" 2> "$RUNNER_TEMP/sdk-tag-error.txt"
+          lookup_status=$?
+          set -e
+          if [[ "$lookup_status" -ne 0 ]]; then
+            test "$lookup_status" -eq 1
+            grep --fixed-strings --quiet 'HTTP 404' "$RUNNER_TEMP/sdk-tag-error.txt"
             jq --null-input --arg tag "$RELEASE_TAG" --arg message "$message" \
               --arg object "$RELEASE_COMMIT" --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
               '{tag: $tag, message: $message, object: $object, type: "commit", tagger: {name: "github-actions[bot]", email: "41898282+github-actions[bot]@users.noreply.github.com", date: $date}}' \
-              > "$RUNNER_TEMP/sdk-tag-object.json"
-            gh api --method POST "repos/$GITHUB_REPOSITORY/git/tags" --input "$RUNNER_TEMP/sdk-tag-object.json" > "$RUNNER_TEMP/sdk-tag-result.json"
-            tag_object=$(jq --raw-output .sha "$RUNNER_TEMP/sdk-tag-result.json")
+              > "$RUNNER_TEMP/sdk-tag-object-create.json"
+            gh api --method POST "repos/$GITHUB_REPOSITORY/git/tags" \
+              --input "$RUNNER_TEMP/sdk-tag-object-create.json" > "$RUNNER_TEMP/sdk-tag-result.json"
+            tag_object=$(jq --raw-output '.sha | select(type == "string" and test("^[0-9a-f]{40}$"))' \
+              "$RUNNER_TEMP/sdk-tag-result.json")
             jq --null-input --arg ref "refs/tags/$RELEASE_TAG" --arg sha "$tag_object" \
-              '{ref: $ref, sha: $sha}' > "$RUNNER_TEMP/sdk-tag-ref.json"
-            gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" --input "$RUNNER_TEMP/sdk-tag-ref.json" >/dev/null
+              '{ref: $ref, sha: $sha}' > "$RUNNER_TEMP/sdk-tag-ref-create.json"
+            gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+              --input "$RUNNER_TEMP/sdk-tag-ref-create.json" >/dev/null
+            gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" > "$RUNNER_TEMP/sdk-tag-ref.json"
           fi
-          git_with_auth fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
-          rm -f -- "$git_askpass"
-          trap - EXIT
-          unset GIT_TAG_READ_TOKEN
-          test "$(git cat-file -t "refs/tags/$RELEASE_TAG")" = tag
-          test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$RELEASE_COMMIT"
+          tag_object=$(jq --raw-output '.object.sha | select(type == "string" and test("^[0-9a-f]{40}$"))' \
+            "$RUNNER_TEMP/sdk-tag-ref.json")
+          test "$(jq --raw-output .object.type "$RUNNER_TEMP/sdk-tag-ref.json")" = tag
+          gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_object" > "$RUNNER_TEMP/sdk-tag-object.json"
+          jq --exit-status --arg tag "$RELEASE_TAG" --arg commit "$RELEASE_COMMIT" --arg message "$message" \
+            '.tag == $tag and .object.type == "commit" and .object.sha == $commit and .message == $message' \
+            "$RUNNER_TEMP/sdk-tag-object.json" >/dev/null
 
-  publish:
+  authorize-release:
+    name: Require immutable GitHub releases without candidate source or OIDC
+    if: github.repository == 'Latchway/latchway-ios-sdk'
+    needs: promote
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    environment: release-administration
+    permissions: {}
+    steps:
+      - name: Verify immutable-release administration policy with the narrow token
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN }}
+        run: |
+          set -Eeuo pipefail
+          test -n "$GH_TOKEN"
+          settings=$(gh api \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/$GITHUB_REPOSITORY/immutable-releases")
+          unset GH_TOKEN
+          jq --exit-status '
+            type == "object" and
+            (keys | sort) == ["enabled", "enforced_by_owner"] and
+            .enabled == true and
+            (.enforced_by_owner | type) == "boolean"
+          ' <<<"$settings" >/dev/null
+
+  package:
+    name: Build and validate the iOS release without publication credentials
     if: github.repository == 'Latchway/latchway-ios-sdk'
     needs: promote
     runs-on: macos-26
     timeout-minutes: 90
-    environment: cocoapods-trunk
     permissions:
-      contents: write
-      id-token: write
-      attestations: write
-      artifact-metadata: write
+      actions: read
+      contents: read
     env:
       RELEASE_COMMIT: ${{ needs.promote.outputs.commit }}
       RELEASE_TAG: ${{ needs.promote.outputs.tag }}
@@ -189,96 +260,471 @@ jobs:
           ref: ${{ needs.promote.outputs.commit }}
           fetch-depth: 0
           persist-credentials: false
-      - name: Fetch and validate the promoted annotated tag
-        env:
-          GIT_TAG_READ_TOKEN: ${{ github.token }}
+      - name: Validate the promoted annotated tag and iOS release source without credentials
         run: |
           set -euo pipefail
-          git_askpass="$RUNNER_TEMP/latchway-git-askpass"
-          umask 077
-          cat > "$git_askpass" <<'EOF'
-          #!/usr/bin/env bash
-          set -euo pipefail
-          case "${1:-}" in
-            *github.com*Username*|*Username*github.com*) printf '%s\n' x-access-token ;;
-            *github.com*Password*|*Password*github.com*)
-              test -n "${GIT_TAG_READ_TOKEN:-}"
-              printf '%s\n' "$GIT_TAG_READ_TOKEN"
-              ;;
-            *) exit 1 ;;
-          esac
-          EOF
-          chmod 700 "$git_askpass"
-          trap 'rm -f -- "$git_askpass"' EXIT
-          git_with_auth() {
-            GIT_ASKPASS="$git_askpass" GIT_TERMINAL_PROMPT=0 git -c credential.helper= "$@"
-          }
-          git_with_auth fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
-          rm -f -- "$git_askpass"
-          trap - EXIT
-          unset GIT_TAG_READ_TOKEN
           test "$(git cat-file -t "refs/tags/$RELEASE_TAG")" = tag
           test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$RELEASE_COMMIT"
           scripts/release-preflight.sh "$RELEASE_TAG"
-      - name: Require immutable-release administration policy and attestation tooling
+      - name: Verify SwiftPM products and CocoaPods metadata
+        run: scripts/verify-package.sh
+      - name: Build deterministic source archive
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#v}"
+          scripts/build-release-archive.sh "$RELEASE_TAG" "$RUNNER_TEMP"
+      - name: Seal the closed CocoaPods publication candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#v}"
+          archive="${RUNNER_TEMP}/latchway-ios-sdk-${version}.tar.gz"
+          destination="$RUNNER_TEMP/ios-registry-candidate"
+          mkdir -m 700 "$destination"
+          reviewed="$destination/cocoapods-reviewed-podspec.json"
+          pod ipc spec Latchway.podspec > "$reviewed"
+          jq --exit-status --arg version "$version" '
+            type == "object" and .name == "Latchway" and .version == $version and
+            .source == {git: "https://github.com/Latchway/latchway-ios-sdk.git", tag: ("v" + $version)} and
+            ([.subspecs[].name] | sort) == ["AppAttest", "Core", "FirebaseAuth"] and
+            ([.. | objects | has("prepare_command") or has("script_phase") or has("script_phases")] | any | not)
+          ' "$reviewed" >/dev/null
+          install -m 600 -- "$archive" "${archive}.sha256" "$destination/"
+          archive_sha256=$(shasum -a 256 "$archive" | awk '{print $1}')
+          podspec_sha256=$(shasum -a 256 "$reviewed" | awk '{print $1}')
+          archive_bytes=$(wc -c < "$archive" | tr -d ' ')
+          podspec_bytes=$(wc -c < "$reviewed" | tr -d ' ')
+          jq --null-input \
+            --arg commit "$RELEASE_COMMIT" --arg tag "$RELEASE_TAG" --arg version "$version" \
+            --arg archive_sha256 "$archive_sha256" --arg podspec_sha256 "$podspec_sha256" \
+            --argjson archive_bytes "$archive_bytes" --argjson podspec_bytes "$podspec_bytes" '
+            {
+              schema: "latchway.ios-registry-candidate.v1",
+              repository: "Latchway/latchway-ios-sdk",
+              source_commit: $commit,
+              release_tag: $tag,
+              version: $version,
+              archive: {name: ("latchway-ios-sdk-" + $version + ".tar.gz"), sha256: $archive_sha256, bytes: $archive_bytes},
+              podspec: {name: "cocoapods-reviewed-podspec.json", sha256: $podspec_sha256, bytes: $podspec_bytes}
+            }
+          ' > "$destination/ios-registry-candidate.json"
+      - name: Transfer the closed candidate to the no-checkout CocoaPods publisher
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: latchway-ios-registry-candidate-${{ needs.promote.outputs.version }}
+          path: ${{ runner.temp }}/ios-registry-candidate
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  publish-cocoapods:
+    name: Publish or adopt CocoaPods metadata without candidate checkout
+    if: github.repository == 'Latchway/latchway-ios-sdk'
+    needs: [promote, package, authorize-release]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    environment: cocoapods-trunk
+    permissions:
+      actions: read
+    env:
+      RELEASE_COMMIT: ${{ needs.promote.outputs.commit }}
+      RELEASE_TAG: ${{ needs.promote.outputs.tag }}
+      RELEASE_VERSION: ${{ needs.promote.outputs.version }}
+    steps:
+      - name: Download the exact closed CocoaPods candidate
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: latchway-ios-registry-candidate-${{ needs.promote.outputs.version }}
+          path: ${{ runner.temp }}/ios-registry-candidate
+      - name: Validate the exact candidate without executing package content
+        id: candidate
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          [[ "$RELEASE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$RELEASE_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          test "$RELEASE_TAG" = "v$RELEASE_VERSION"
+          root="$RUNNER_TEMP/ios-registry-candidate"
+          archive="$root/latchway-ios-sdk-$RELEASE_VERSION.tar.gz"
+          checksum="$archive.sha256"
+          reviewed="$root/cocoapods-reviewed-podspec.json"
+          manifest="$root/ios-registry-candidate.json"
+          test -z "$(find "$root" -type l -print -quit)"
+          find "$root" -mindepth 1 -print | sed "s#^$root/##" | LC_ALL=C sort > "$RUNNER_TEMP/ios-candidate-files.txt"
+          printf '%s\n' \
+            "cocoapods-reviewed-podspec.json" \
+            "ios-registry-candidate.json" \
+            "latchway-ios-sdk-$RELEASE_VERSION.tar.gz" \
+            "latchway-ios-sdk-$RELEASE_VERSION.tar.gz.sha256" \
+            | LC_ALL=C sort > "$RUNNER_TEMP/ios-expected-files.txt"
+          cmp --silent "$RUNNER_TEMP/ios-expected-files.txt" "$RUNNER_TEMP/ios-candidate-files.txt"
+          for file in "$archive" "$checksum" "$reviewed" "$manifest"; do
+            test -f "$file" && test ! -L "$file" && test -s "$file"
+          done
+          test "$(wc -c < "$manifest" | tr -d ' ')" -le 65536
+          test "$(wc -c < "$reviewed" | tr -d ' ')" -le 1048576
+          expected_checksum="$(shasum -a 256 "$archive" | awk '{print $1}')  ${archive##*/}"
+          test "$(cat "$checksum")" = "$expected_checksum"
+          archive_sha256=$(shasum -a 256 "$archive" | awk '{print $1}')
+          podspec_sha256=$(shasum -a 256 "$reviewed" | awk '{print $1}')
+          archive_bytes=$(wc -c < "$archive" | tr -d ' ')
+          podspec_bytes=$(wc -c < "$reviewed" | tr -d ' ')
+          jq --exit-status \
+            --arg commit "$RELEASE_COMMIT" --arg tag "$RELEASE_TAG" --arg version "$RELEASE_VERSION" \
+            --arg archive_sha256 "$archive_sha256" --arg podspec_sha256 "$podspec_sha256" \
+            --argjson archive_bytes "$archive_bytes" --argjson podspec_bytes "$podspec_bytes" '
+            (keys | sort) == ["archive", "podspec", "release_tag", "repository", "schema", "source_commit", "version"] and
+            .schema == "latchway.ios-registry-candidate.v1" and
+            .repository == "Latchway/latchway-ios-sdk" and .source_commit == $commit and
+            .release_tag == $tag and .version == $version and
+            .archive == {name: ("latchway-ios-sdk-" + $version + ".tar.gz"), sha256: $archive_sha256, bytes: $archive_bytes} and
+            .podspec == {name: "cocoapods-reviewed-podspec.json", sha256: $podspec_sha256, bytes: $podspec_bytes}
+          ' "$manifest" >/dev/null
+          jq --exit-status --arg version "$RELEASE_VERSION" '
+            type == "object" and .name == "Latchway" and .version == $version and
+            .source == {git: "https://github.com/Latchway/latchway-ios-sdk.git", tag: ("v" + $version)} and
+            ([.subspecs[].name] | sort) == ["AppAttest", "Core", "FirebaseAuth"] and
+            ([.. | objects | has("prepare_command") or has("script_phase") or has("script_phases")] | any | not)
+          ' "$reviewed" >/dev/null
+          shard=$(printf '%s' Latchway | md5sum | cut -c1-3 | sed 's/./&\//g;s#/$##')
+          url="https://cdn.cocoapods.org/Specs/$shard/Latchway/$RELEASE_VERSION/Latchway.podspec.json"
+          printf 'registry_url=%s\n' "$url" >> "$GITHUB_OUTPUT"
+      - name: Determine whether the exact CocoaPods version already exists
+        id: registry
+        shell: bash
+        env:
+          REGISTRY_URL: ${{ steps.candidate.outputs.registry_url }}
+        run: |
+          set -Eeuo pipefail
+          output="$RUNNER_TEMP/cocoapods-published-podspec.json"
+          code=$(curl --proto '=https' --proto-redir '=https' --tlsv1.2 \
+            --connect-timeout 15 --max-time 60 --max-filesize 1048576 \
+            --silent --show-error --location --output "$output" --write-out '%{http_code}' "$REGISTRY_URL")
+          case "$code" in
+            200)
+              jq --sort-keys . "$output" > "$RUNNER_TEMP/published.sorted.json"
+              jq --sort-keys . "$RUNNER_TEMP/ios-registry-candidate/cocoapods-reviewed-podspec.json" > "$RUNNER_TEMP/reviewed.sorted.json"
+              cmp --silent "$RUNNER_TEMP/reviewed.sorted.json" "$RUNNER_TEMP/published.sorted.json"
+              printf 'upload_required=false\n' >> "$GITHUB_OUTPUT"
+              ;;
+            404)
+              rm -f -- "$output"
+              printf 'upload_required=true\n' >> "$GITHUB_OUTPUT"
+              ;;
+            *) echo "Could not prove CocoaPods registry state (HTTP $code)" >&2; exit 1 ;;
+          esac
+      - name: Upload the reviewed JSON podspec directly without executing package hooks
+        if: steps.registry.outputs.upload_required == 'true'
+        shell: bash
+        env:
+          COCOAPODS_TRUNK_TOKEN: ${{ secrets.COCOAPODS_TRUNK_TOKEN }}
+        run: |
+          set -Eeuo pipefail
+          test -n "$COCOAPODS_TRUNK_TOKEN"
+          auth_config="$RUNNER_TEMP/cocoapods-trunk-auth"
+          response="$RUNNER_TEMP/cocoapods-trunk-response.json"
+          trap 'rm -f -- "$auth_config"' EXIT
+          umask 077
+          printf 'header = "Authorization: Token %s"\n' "$COCOAPODS_TRUNK_TOKEN" > "$auth_config"
+          unset COCOAPODS_TRUNK_TOKEN
+          set +e
+          code=$(curl --proto '=https' --proto-redir '=https' --tlsv1.2 \
+            --config "$auth_config" --connect-timeout 15 --max-time 120 --max-filesize 2097152 \
+            --silent --show-error --request POST \
+            --header 'Content-Type: application/json; charset=utf-8' \
+            --header 'Accept: application/json; charset=utf-8' \
+            --header 'User-Agent: CocoaPods/1.16.2' \
+            --data-binary "@$RUNNER_TEMP/ios-registry-candidate/cocoapods-reviewed-podspec.json" \
+            --output "$response" --write-out '%{http_code}' \
+            'https://trunk.cocoapods.org/api/v1/pods?allow_warnings=false')
+          transport_status=$?
+          set -e
+          rm -f -- "$auth_config"
+          trap - EXIT
+          if [[ "$transport_status" -ne 0 ]]; then
+            echo "CocoaPods upload outcome is uncertain; exact CDN adoption will decide the result" >&2
+          elif [[ ! "$code" =~ ^(200|201|202)$ ]]; then
+            echo "CocoaPods upload returned HTTP $code; exact CDN adoption will decide the result" >&2
+          fi
+      - name: Wait for and retain the exact immutable CocoaPods metadata
+        shell: bash
+        env:
+          REGISTRY_URL: ${{ steps.candidate.outputs.registry_url }}
+        run: |
+          set -Eeuo pipefail
+          output="$RUNNER_TEMP/cocoapods-published-podspec.json"
+          reviewed="$RUNNER_TEMP/ios-registry-candidate/cocoapods-reviewed-podspec.json"
+          published=false
+          for attempt in $(seq 1 90); do
+            if curl --proto '=https' --proto-redir '=https' --tlsv1.2 \
+              --connect-timeout 15 --max-time 60 --max-filesize 1048576 \
+              --fail --silent --show-error --location --output "$output" "$REGISTRY_URL"; then
+              jq --sort-keys . "$output" > "$RUNNER_TEMP/published.sorted.json"
+              jq --sort-keys . "$reviewed" > "$RUNNER_TEMP/reviewed.sorted.json"
+              cmp --silent "$RUNNER_TEMP/reviewed.sorted.json" "$RUNNER_TEMP/published.sorted.json"
+              published=true
+              break
+            fi
+            test "$attempt" = 90 || sleep 20
+          done
+          test "$published" = true
+      - name: Seal exact CocoaPods evidence and GitHub release assets
+        shell: bash
+        env:
+          REGISTRY_URL: ${{ steps.candidate.outputs.registry_url }}
+        run: |
+          set -Eeuo pipefail
+          candidate="$RUNNER_TEMP/ios-registry-candidate"
+          destination="$RUNNER_TEMP/ios-release-assets"
+          mkdir -m 700 "$destination"
+          install -m 600 -- \
+            "$candidate/latchway-ios-sdk-$RELEASE_VERSION.tar.gz" \
+            "$candidate/latchway-ios-sdk-$RELEASE_VERSION.tar.gz.sha256" \
+            "$candidate/cocoapods-reviewed-podspec.json" \
+            "$RUNNER_TEMP/cocoapods-published-podspec.json" \
+            "$destination/"
+          archive_sha256=$(shasum -a 256 "$destination/latchway-ios-sdk-$RELEASE_VERSION.tar.gz" | awk '{print $1}')
+          published_sha256=$(shasum -a 256 "$destination/cocoapods-published-podspec.json" | awk '{print $1}')
+          reviewed_sha256=$(shasum -a 256 "$destination/cocoapods-reviewed-podspec.json" | awk '{print $1}')
+          jq --null-input --arg version "$RELEASE_VERSION" --arg commit "$RELEASE_COMMIT" \
+            --arg tag "$RELEASE_TAG" --arg url "$REGISTRY_URL" \
+            --arg archive_sha256 "$archive_sha256" --arg published_sha256 "$published_sha256" \
+            --arg reviewed_sha256 "$reviewed_sha256" \
+            --slurpfile published "$destination/cocoapods-published-podspec.json" '
+            {
+              schema_version: 1,
+              kind: "latchway_cocoapods_release_evidence",
+              status: "passed",
+              registry: "cocoapods",
+              package: "Latchway",
+              version: $version,
+              published_spec_sha256: $published_sha256,
+              reviewed_source_archive_sha256: $archive_sha256,
+              published_spec_equals_reviewed_podspec: true,
+              reviewed_source_archive_equals_release_tag: true,
+              reviewed_spec_sha256: $reviewed_sha256,
+              source_commit: $commit,
+              source_tag: $tag,
+              registry_url: $url,
+              source: $published[0].source
+            }
+          ' > "$destination/cocoapods-release-evidence.json"
+          (
+            cd "$destination"
+            sha256sum \
+              cocoapods-published-podspec.json \
+              cocoapods-release-evidence.json \
+              cocoapods-reviewed-podspec.json \
+              > cocoapods-release-evidence.SHA256SUMS
+          )
+      - name: Transfer exact registry evidence to immutable release publication
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: latchway-ios-release-${{ needs.promote.outputs.version }}
+          path: ${{ runner.temp }}/ios-release-assets
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 90
+
+  github-release-policy:
+    name: Re-verify immutable release policy without OIDC or candidate checkout
+    if: github.repository == 'Latchway/latchway-ios-sdk'
+    needs: [promote, publish-cocoapods]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    environment: release-administration
+    permissions: {}
+    steps:
+      - name: Verify immutable releases remain enforced with the narrow admin token
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN }}
         run: |
-          set -euo pipefail
+          set -Eeuo pipefail
           test -n "$GH_TOKEN"
-          python3 scripts/require-gh-version.py
-          verify_help=$(gh release verify --help)
-          verify_asset_help=$(gh release verify-asset --help)
-          grep --fixed-strings -- '--format' <<<"$verify_help" >/dev/null
-          grep --fixed-strings -- '--format' <<<"$verify_asset_help" >/dev/null
           settings=$(gh api \
             -H 'Accept: application/vnd.github+json' \
             -H 'X-GitHub-Api-Version: 2026-03-10' \
             "repos/$GITHUB_REPOSITORY/immutable-releases")
+          unset GH_TOKEN
           jq --exit-status '
             type == "object" and
             (keys | sort) == ["enabled", "enforced_by_owner"] and
             .enabled == true and
             (.enforced_by_owner | type) == "boolean"
           ' <<<"$settings" >/dev/null
-      - name: Verify SwiftPM products and CocoaPods metadata
-        run: scripts/verify-package.sh
-      - name: Build deterministic source archive
+
+  github-release:
+    name: Publish immutable GitHub release without candidate checkout
+    if: github.repository == 'Latchway/latchway-ios-sdk'
+    needs: [promote, publish-cocoapods, github-release-policy]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: github-release
+    permissions:
+      actions: read
+      attestations: write
+      contents: write
+      id-token: write
+    steps:
+      - name: Download exact iOS release assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: latchway-ios-release-${{ needs.promote.outputs.version }}
+          path: ${{ runner.temp }}/ios-release-assets
+      - name: Validate exact iOS asset closure before OIDC attestation
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.promote.outputs.version }}
         run: |
-          version="${RELEASE_TAG#v}"
-          scripts/build-release-archive.sh "$RELEASE_TAG" "$RUNNER_TEMP"
-      - name: Attest the exact source archive
+          set -Eeuo pipefail
+          [[ "$RELEASE_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]
+          asset_root="$RUNNER_TEMP/ios-release-assets"
+          expected=(
+            "latchway-ios-sdk-$RELEASE_VERSION.tar.gz"
+            "latchway-ios-sdk-$RELEASE_VERSION.tar.gz.sha256"
+            cocoapods-published-podspec.json
+            cocoapods-reviewed-podspec.json
+            cocoapods-release-evidence.json
+            cocoapods-release-evidence.SHA256SUMS
+          )
+          shopt -s dotglob nullglob
+          actual=("$asset_root"/*)
+          test "${#actual[@]}" = "${#expected[@]}"
+          for asset in "${actual[@]}"; do
+            test -f "$asset"
+            test ! -L "$asset"
+            test -s "$asset"
+          done
+          printf '%s\n' "${expected[@]}" | LC_ALL=C sort > "$RUNNER_TEMP/expected-assets.txt"
+          printf '%s\n' "${actual[@]##*/}" | LC_ALL=C sort > "$RUNNER_TEMP/actual-assets.txt"
+          cmp --silent "$RUNNER_TEMP/expected-assets.txt" "$RUNNER_TEMP/actual-assets.txt"
+      - name: Attest exact source archive and CocoaPods evidence without candidate checkout
         uses: actions/attest-build-provenance@e4d4f7c39adfa4c260fb5c147f0622000aa14b99 # v4.0.0
         with:
-          subject-path: ${{ runner.temp }}/latchway-ios-sdk-*.tar.gz
-      - name: Publish or verify exact CocoaPods metadata
+          subject-path: ${{ runner.temp }}/ios-release-assets/*
+      - name: Reconcile, publish, and verify immutable release with fixed API calls
+        shell: bash
         env:
-          COCOAPODS_TRUNK_TOKEN: ${{ secrets.COCOAPODS_TRUNK_TOKEN }}
-        run: scripts/publish-or-verify-cocoapods.sh "${RELEASE_TAG#v}"
-      - name: Verify the immutable CocoaPods release
-        env:
-          LATCHWAY_COCOAPODS_EXPECTED_ARCHIVE: ${{ runner.temp }}/latchway-ios-sdk-${{ needs.promote.outputs.version }}.tar.gz
-          LATCHWAY_COCOAPODS_EVIDENCE_DIRECTORY: ${{ runner.temp }}/cocoapods-evidence
-        run: scripts/verify-cocoapods-release.sh "${RELEASE_TAG#v}"
-      - name: Attest the exact retained CocoaPods registry evidence
-        uses: actions/attest-build-provenance@e4d4f7c39adfa4c260fb5c147f0622000aa14b99 # v4.0.0
-        with:
-          subject-path: ${{ runner.temp }}/cocoapods-evidence/*
-      - name: Reconcile immutable GitHub release assets after registry verification
-        env:
-          GH_TOKEN: ${{ github.token }}
-          LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN: ${{ secrets.LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN }}
+          RELEASE_TOKEN: ${{ github.token }}
+          RELEASE_COMMIT: ${{ needs.promote.outputs.commit }}
+          RELEASE_TAG: ${{ needs.promote.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.promote.outputs.version }}
         run: |
-          version="${RELEASE_TAG#v}"
-          archive="${RUNNER_TEMP}/latchway-ios-sdk-${version}.tar.gz"
-          python3 scripts/reconcile-github-release.py \
-            --repository "$GITHUB_REPOSITORY" \
-            --tag "$RELEASE_TAG" \
-            --expected-commit "$RELEASE_COMMIT" \
-            --title "$RELEASE_TAG" \
-            "$archive" \
-            "${archive}.sha256" \
-            "$RUNNER_TEMP/cocoapods-evidence/cocoapods-published-podspec.json" \
-            "$RUNNER_TEMP/cocoapods-evidence/cocoapods-reviewed-podspec.json" \
-            "$RUNNER_TEMP/cocoapods-evidence/cocoapods-release-evidence.json" \
-            "$RUNNER_TEMP/cocoapods-evidence/cocoapods-release-evidence.SHA256SUMS"
+          set -Eeuo pipefail
+          test -n "$RELEASE_TOKEN"
+          [[ "$RELEASE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$RELEASE_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]
+          test "$RELEASE_TAG" = "v$RELEASE_VERSION"
+          version_line=$(gh version | head -n 1)
+          [[ "$version_line" =~ ^gh[[:space:]]version[[:space:]]([0-9]+)\.([0-9]+)\.([0-9]+)([[:space:]]\([^()]+\))?$ ]]
+          major=${BASH_REMATCH[1]}; minor=${BASH_REMATCH[2]}; patch=${BASH_REMATCH[3]}
+          (( major > 2 || (major == 2 && (minor > 97 || (minor == 97 && patch >= 0))) ))
+          gh release verify --help | grep --fixed-strings -- '--format' >/dev/null
+          gh release verify-asset --help | grep --fixed-strings -- '--format' >/dev/null
+
+          export GH_TOKEN="$RELEASE_TOKEN"
+          unset RELEASE_TOKEN
+
+          asset_root="$RUNNER_TEMP/ios-release-assets"
+          assets=(
+            "$asset_root/latchway-ios-sdk-$RELEASE_VERSION.tar.gz"
+            "$asset_root/latchway-ios-sdk-$RELEASE_VERSION.tar.gz.sha256"
+            "$asset_root/cocoapods-published-podspec.json"
+            "$asset_root/cocoapods-reviewed-podspec.json"
+            "$asset_root/cocoapods-release-evidence.json"
+            "$asset_root/cocoapods-release-evidence.SHA256SUMS"
+          )
+          : > "$RUNNER_TEMP/expected-assets.txt"
+          for asset in "${assets[@]}"; do
+            test -f "$asset"
+            test ! -L "$asset"
+            test -s "$asset"
+            printf '%s\n' "${asset##*/}" >> "$RUNNER_TEMP/expected-assets.txt"
+          done
+          test "$(sort -u "$RUNNER_TEMP/expected-assets.txt" | wc -l | tr -d ' ')" = 6
+          expected_names=$(sort "$RUNNER_TEMP/expected-assets.txt" | jq --raw-input --slurp 'split("\n")[:-1]')
+
+          gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" > "$RUNNER_TEMP/tag-ref.json"
+          tag_object=$(jq --raw-output '.object.sha | select(type == "string" and test("^[0-9a-f]{40}$"))' "$RUNNER_TEMP/tag-ref.json")
+          test "$(jq --raw-output .object.type "$RUNNER_TEMP/tag-ref.json")" = tag
+          gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_object" > "$RUNNER_TEMP/tag-object.json"
+          jq --exit-status --arg tag "$RELEASE_TAG" --arg commit "$RELEASE_COMMIT" \
+            '.tag == $tag and .object.type == "commit" and .object.sha == $commit' \
+            "$RUNNER_TEMP/tag-object.json" >/dev/null
+
+          lookup_release() {
+            set +e
+            gh api -H 'X-GitHub-Api-Version: 2026-03-10' \
+              "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" \
+              > "$RUNNER_TEMP/release.json" 2> "$RUNNER_TEMP/release-error.txt"
+            local status=$?
+            set -e
+            return "$status"
+          }
+          if ! lookup_release; then
+            grep --fixed-strings --quiet 'HTTP 404' "$RUNNER_TEMP/release-error.txt"
+            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --verify-tag --draft --generate-notes --title "$RELEASE_TAG"
+            lookup_release
+          fi
+          validate_release() {
+            local allow_draft=$1
+            jq --exit-status --arg tag "$RELEASE_TAG" --arg title "$RELEASE_TAG" \
+              --argjson names "$expected_names" --argjson allow_draft "$allow_draft" '
+              .tag_name == $tag and .name == $title and .prerelease == false and
+              (.draft | type) == "boolean" and (.immutable | type) == "boolean" and
+              ($allow_draft or .draft == false) and
+              ((.draft == true and .immutable == false) or (.draft == false and .immutable == true)) and
+              ([.assets[].name] | sort) as $observed |
+              ($observed | length) == ($observed | unique | length) and
+              ($observed - $names | length) == 0
+            ' "$RUNNER_TEMP/release.json" >/dev/null
+          }
+          validate_release true
+          for asset in "${assets[@]}"; do
+            name=${asset##*/}
+            count=$(jq --arg name "$name" '[.assets[] | select(.name == $name)] | length' "$RUNNER_TEMP/release.json")
+            test "$count" -le 1
+            if [[ "$count" -eq 1 ]]; then
+              remote_id=$(jq --raw-output --arg name "$name" '.assets[] | select(.name == $name) | .id' "$RUNNER_TEMP/release.json")
+              remote_size=$(jq --raw-output --arg name "$name" '.assets[] | select(.name == $name) | .size' "$RUNNER_TEMP/release.json")
+              test "$remote_size" = "$(wc -c < "$asset" | tr -d ' ')"
+              downloaded="$RUNNER_TEMP/existing-$name"
+              gh api --method GET -H 'Accept: application/octet-stream' \
+                "repos/$GITHUB_REPOSITORY/releases/assets/$remote_id" > "$downloaded"
+              cmp --silent "$asset" "$downloaded"
+            else
+              test "$(jq --raw-output .draft "$RUNNER_TEMP/release.json")" = true
+              gh release upload "$RELEASE_TAG" "$asset" --repo "$GITHUB_REPOSITORY"
+            fi
+          done
+          lookup_release
+          validate_release true
+          test "$(jq --argjson names "$expected_names" '[.assets[].name] | sort == $names' "$RUNNER_TEMP/release.json")" = true
+          if [[ "$(jq --raw-output .draft "$RUNNER_TEMP/release.json")" == true ]]; then
+            gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --draft=false --prerelease=false --latest
+          fi
+          lookup_release
+          validate_release false
+          test "$(jq --argjson names "$expected_names" '[.assets[].name] | sort == $names' "$RUNNER_TEMP/release.json")" = true
+
+          verified=false
+          for attempt in $(seq 1 12); do
+            if gh release verify "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --format json \
+              > "$RUNNER_TEMP/release-attestation.json"; then verified=true; break; fi
+            test "$attempt" = 12 || sleep 10
+          done
+          test "$verified" = true
+          jq --exit-status '(type == "object" and length > 0) or (type == "array" and length > 0)' \
+            "$RUNNER_TEMP/release-attestation.json" >/dev/null
+          for asset in "${assets[@]}"; do
+            verified=false
+            for attempt in $(seq 1 12); do
+              if gh release verify-asset "$RELEASE_TAG" "$asset" --repo "$GITHUB_REPOSITORY" --format json \
+                > "$RUNNER_TEMP/${asset##*/}.attestation.json"; then verified=true; break; fi
+              test "$attempt" = 12 || sleep 10
+            done
+            test "$verified" = true
+          done

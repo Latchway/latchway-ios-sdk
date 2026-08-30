@@ -79,6 +79,100 @@ struct SessionRefreshRequest: Encodable {
     }
 }
 
+struct ComponentProvisioningRequest: Encodable {
+    struct ClientMetadata: Encodable {
+        let appVersion: String
+        let sdkVersion: String
+
+        enum CodingKeys: String, CodingKey {
+            case appVersion = "app_version"
+            case sdkVersion = "sdk_version"
+        }
+    }
+
+    let componentDefinitionID: String
+    let publicJWK: LatchwayPublicJWK
+    let requestedFeatures: [String]
+    let clientMetadata: ClientMetadata
+
+    enum CodingKeys: String, CodingKey {
+        case componentDefinitionID = "component_definition_id"
+        case publicJWK = "public_jwk"
+        case requestedFeatures = "requested_features"
+        case clientMetadata = "client_metadata"
+    }
+}
+
+struct ComponentProvisioningWire: Decodable, Sendable {
+    struct Trust: Decodable, Sendable {
+        let source: LatchwayComponentTrustSource
+        let expiresAt: Date
+        let parentComponentID: String?
+        let delegationID: String?
+
+        enum CodingKeys: String, CodingKey {
+            case source
+            case expiresAt = "expires_at"
+            case parentComponentID = "parent_component_id"
+            case delegationID = "delegation_id"
+        }
+    }
+
+    let componentID: String
+    let installationFamilyID: String
+    let componentDefinitionID: String?
+    let componentKind: String?
+    let trust: Trust
+    let grantedFeatures: [String]
+    let refreshGrant: String
+    let refreshGrantExpiresAt: Date
+
+    enum CodingKeys: String, CodingKey {
+        case trust
+        case componentID = "component_id"
+        case installationFamilyID = "installation_family_id"
+        case componentDefinitionID = "component_definition_id"
+        case componentKind = "component_kind"
+        case grantedFeatures = "granted_features"
+        case refreshGrant = "refresh_grant"
+        case refreshGrantExpiresAt = "refresh_grant_expires_at"
+    }
+}
+
+struct ComponentSessionRequest: Encodable {
+    let componentID: String
+    let refreshGrant: String
+
+    enum CodingKeys: String, CodingKey {
+        case componentID = "component_id"
+        case refreshGrant = "refresh_grant"
+    }
+}
+
+struct ComponentSessionGrantWire: Decodable, Sendable {
+    let accessToken: String
+    let tokenType: String?
+    let expiresIn: Int
+    let refreshToken: String
+    let refreshExpiresAt: Date?
+    let refreshExpiresIn: Int?
+    let installation: LatchwayInstallationSummary?
+    let installationFamily: LatchwayInstallationFamilySummary?
+    let component: LatchwayClientComponentSummary?
+    let trust: LatchwayTrustSummary?
+
+    enum CodingKeys: String, CodingKey {
+        case installation, component, trust
+        case accessToken = "access_token"
+        case tokenType = "token_type"
+        case expiresIn = "expires_in"
+        case refreshToken = "refresh_token"
+        case refreshExpiresAt = "refresh_expires_at"
+        case refreshExpiresIn = "refresh_expires_in"
+        case installationFamily = "installation_family"
+    }
+}
+
 struct SessionGrantWire: Decodable, Sendable {
     let accessToken: String
     let tokenType: String
@@ -86,15 +180,18 @@ struct SessionGrantWire: Decodable, Sendable {
     let refreshToken: String
     let refreshExpiresIn: Int
     let installation: LatchwayInstallationSummary
+    let installationFamily: LatchwayInstallationFamilySummary?
+    let component: LatchwayClientComponentSummary?
     let trust: LatchwayTrustSummary
 
     enum CodingKeys: String, CodingKey {
-        case installation, trust
+        case installation, component, trust
         case accessToken = "access_token"
         case tokenType = "token_type"
         case expiresIn = "expires_in"
         case refreshToken = "refresh_token"
         case refreshExpiresIn = "refresh_expires_in"
+        case installationFamily = "installation_family"
     }
 }
 
@@ -114,15 +211,18 @@ struct ClientDiagnosticsWire: Decodable, Sendable {
     let contractVersion: String
     let protocolVersion: Int
     let installation: LatchwayInstallationSummary
+    let installationFamily: LatchwayInstallationFamilySummary?
+    let component: LatchwayClientComponentSummary?
     let session: Session
     let trust: LatchwayTrustSummary
 
     enum CodingKeys: String, CodingKey {
-        case installation, session, trust
+        case installation, component, session, trust
         case requestID = "request_id"
         case serverVersion = "server_version"
         case contractVersion = "contract_version"
         case protocolVersion = "protocol_version"
+        case installationFamily = "installation_family"
     }
 }
 
@@ -220,6 +320,8 @@ struct RuntimeSession: Sendable, Equatable {
     let refreshToken: String
     let refreshExpiresAt: Date
     let installation: LatchwayInstallationSummary
+    let installationFamily: LatchwayInstallationFamilySummary?
+    let component: LatchwayClientComponentSummary?
     let trust: LatchwayTrustSummary
 
     func isUsable(at now: Date, leeway: TimeInterval = 30) -> Bool {
