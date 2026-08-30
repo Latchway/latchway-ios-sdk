@@ -10,34 +10,51 @@ public actor LatchwayInstallationKeyManager: LatchwayInstallationKey {
     private let policy: LatchwaySoftwareKeyFallbackPolicy
     private let store: any LatchwaySecureDataStoring
     private let preferSecureEnclave: Bool
+    private let rootKeychainPreflight: @Sendable () throws -> Void
     private var key: Key?
+    private var rootKeychainPreflightComplete = false
 
     public init(
         applicationID: String,
         environment: String,
+        rootKeychainAccessGroup: String,
+        legacySharedKeychainAccessGroups: [String] = [],
         clientRuntime: LatchwayClientRuntime = .iOS,
         softwareFallbackPolicy: LatchwaySoftwareKeyFallbackPolicy
     ) {
         self.policy = softwareFallbackPolicy
-        self.store = LatchwayKeychainStore(service: LatchwayKeychainNamespace.service(
+        let service = LatchwayKeychainNamespace.service(
             applicationID: applicationID,
             environment: environment,
             clientRuntime: clientRuntime
-        ))
+        )
+        self.store = LatchwayKeychainStore(
+            service: service,
+            accessGroup: rootKeychainAccessGroup
+        )
         self.preferSecureEnclave = true
+        self.rootKeychainPreflight = LatchwayRootKeychainPreflight.verifier(
+            rootKeychainAccessGroup: rootKeychainAccessGroup,
+            legacySharedKeychainAccessGroups: legacySharedKeychainAccessGroups,
+            service: service,
+            accounts: ["installation-key", "installation-key-kind"]
+        )
     }
 
     init(
         softwareFallbackPolicy: LatchwaySoftwareKeyFallbackPolicy,
         store: any LatchwaySecureDataStoring,
-        preferSecureEnclave: Bool
+        preferSecureEnclave: Bool,
+        rootKeychainPreflight: @escaping @Sendable () throws -> Void = {}
     ) {
         self.policy = softwareFallbackPolicy
         self.store = store
         self.preferSecureEnclave = preferSecureEnclave
+        self.rootKeychainPreflight = rootKeychainPreflight
     }
 
     public func publicJWK() async throws -> LatchwayPublicJWK {
+        try ensureRootKeychainPreflight()
         let representation: Data
         switch try await loadOrCreate() {
         case let .secureEnclave(key): representation = key.publicKey.x963Representation
@@ -51,6 +68,7 @@ public actor LatchwayInstallationKeyManager: LatchwayInstallationKey {
     }
 
     public func sign(_ message: Data) async throws -> Data {
+        try ensureRootKeychainPreflight()
         let digest = SHA256.hash(data: message)
         do {
             switch try await loadOrCreate() {
@@ -63,6 +81,7 @@ public actor LatchwayInstallationKeyManager: LatchwayInstallationKey {
 
     public func storage() async -> LatchwayKeyStorage {
         do {
+            try ensureRootKeychainPreflight()
             guard let existing = try await loadExisting() else { return .unavailable }
             switch existing {
             case .secureEnclave: return .secureEnclave
@@ -74,6 +93,7 @@ public actor LatchwayInstallationKeyManager: LatchwayInstallationKey {
     }
 
     public func reset() async throws {
+        try ensureRootKeychainPreflight()
         key = nil
         try await store.delete(account: "installation-key")
         try await store.delete(account: "installation-key-kind")
@@ -142,5 +162,11 @@ public actor LatchwayInstallationKeyManager: LatchwayInstallationKey {
             try? await store.delete(account: "installation-key")
             throw error
         }
+    }
+
+    private func ensureRootKeychainPreflight() throws {
+        guard !rootKeychainPreflightComplete else { return }
+        try rootKeychainPreflight()
+        rootKeychainPreflightComplete = true
     }
 }

@@ -4,6 +4,34 @@ import LatchwayTesting
 import XCTest
 
 final class ClientSessionTests: XCTestCase {
+    func testRootKeychainPreflightFailsBeforeIdentityAttestationOrTransport() async throws {
+        let fixture = try await makeFixture(rootKeychainPreflight: {
+            throw LatchwayError.rootKeychainMigrationRequired
+        })
+        var request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        request.httpMethod = "POST"
+
+        do {
+            try await fixture.client.authorize(&request, feature: "habit-assistant")
+            XCTFail("Expected root Keychain migration failure")
+        } catch let error as LatchwayError {
+            XCTAssertEqual(error, .rootKeychainMigrationRequired)
+        }
+
+        let diagnostics = await fixture.client.diagnostics()
+        let counts = await fixture.server.counts()
+        let identityCount = await fixture.identity.count()
+        let attestationCount = await fixture.attestation.challenges.count
+        XCTAssertEqual(counts.challenge, 0)
+        XCTAssertEqual(counts.exchange, 0)
+        XCTAssertEqual(identityCount, 0)
+        XCTAssertEqual(attestationCount, 0)
+        XCTAssertEqual(diagnostics.lastErrorCode, "root_keychain_migration_required")
+        XCTAssertEqual(diagnostics.keyStorage, .unavailable)
+        XCTAssertEqual(diagnostics.attestation.support, .unknown)
+        XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+    }
+
     func testConcurrentAuthorizationEstablishesOneSession() async throws {
         let fixture = try await makeFixture()
         try await withThrowingTaskGroup(of: URLRequest.self) { group in
@@ -1029,7 +1057,8 @@ final class ClientSessionTests: XCTestCase {
         applicationID: String = "app_01J00000000000000000000000",
         clientRuntime: LatchwayClientRuntime = .iOS,
         clientSDKVersion: String = LatchwayVersion.sdk,
-        baseURL: URL = URL(string: "https://gateway.example.test")!
+        baseURL: URL = URL(string: "https://gateway.example.test")!,
+        rootKeychainPreflight: @escaping @Sendable () throws -> Void = {}
     ) async throws -> Fixture {
         let raw = try decodeBase64URL("2ZFd1bc5bCB8zu8OEf5l7O9x_SxbsQNQMNn0si4NxxI")
         let key = try LatchwayDeterministicInstallationKey(rawPrivateKey: raw)
@@ -1079,6 +1108,7 @@ final class ClientSessionTests: XCTestCase {
             baseURL: baseURL,
             applicationID: applicationID,
             environment: "production",
+            rootKeychainAccessGroup: "ABCDE12345.com.example.latchway",
             clientRuntime: clientRuntime,
             clientSDKVersion: clientSDKVersion,
             appVersion: "1.2.3",
@@ -1091,7 +1121,8 @@ final class ClientSessionTests: XCTestCase {
             installationKey: key,
             sessionStorage: storage,
             transport: server,
-            clock: clock
+            clock: clock,
+            rootKeychainPreflight: rootKeychainPreflight
         )
         return Fixture(client: client, server: server, identity: identity, attestation: attestation, storage: storage, clock: clock)
     }

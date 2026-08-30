@@ -160,6 +160,7 @@ public struct LatchwayProblem: Sendable, Equatable, Error {
 public enum LatchwayError: Error, Sendable, Equatable, CustomStringConvertible, LocalizedError {
     case invalidConfiguration(String)
     case invalidRequest(String)
+    case rootKeychainMigrationRequired
     case secureEnclaveUnavailable
     case keyStorageFailure
     case attestationUnavailable
@@ -174,6 +175,8 @@ public enum LatchwayError: Error, Sendable, Equatable, CustomStringConvertible, 
         switch self {
         case let .invalidConfiguration(reason): "Latchway configuration is invalid: \(reason)"
         case let .invalidRequest(reason): "Latchway request is invalid: \(reason)"
+        case .rootKeychainMigrationRequired:
+            "Legacy Latchway root records exist in a shared Keychain access group. Reset the disposable development device Keychain or use a new test bundle identifier, then reinstall with the private app-ID group first. Latchway does not migrate or delete these records automatically."
         case .secureEnclaveUnavailable: "Secure Enclave is unavailable and software fallback is disabled."
         case .keyStorageFailure: "The installation key or session could not be stored securely."
         case .attestationUnavailable: "The required platform attestation provider is unavailable."

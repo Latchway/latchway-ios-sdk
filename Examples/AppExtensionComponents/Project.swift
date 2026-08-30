@@ -15,6 +15,7 @@ let applicationID = Environment.latchwayApplicationID.getString(
 )
 let environment = Environment.latchwayEnvironment.getString(default: "development")
 let identityProvider = Environment.latchwayIdentityProvider.getString(default: "firebase")
+let rootAccessGroup = "$(AppIdentifierPrefix)\(hostBundleID)"
 let accessGroup = "$(AppIdentifierPrefix)\(componentGroupSuffix)"
 
 var settings: SettingsDictionary = [
@@ -31,6 +32,7 @@ let commonInfo: [String: Plist.Value] = [
     "LatchwayEnvironment": .string(environment),
     "LatchwayIdentityProvider": .string(identityProvider),
     "LatchwayGatewayURL": .string(gatewayURL),
+    "LatchwayRootKeychainAccessGroup": .string(rootAccessGroup),
     "LatchwayHostComponentDefinitionID": "host_app",
     "LatchwayWidgetComponentDefinitionID": "home_widget",
     "LatchwayWidgetFeature": "weekly-summary",
@@ -55,7 +57,10 @@ let project = Project(
             sources: ["Host/**", "Shared/**"],
             entitlements: .dictionary([
                 "com.apple.developer.devicecheck.appattest-environment": "development",
-                "keychain-access-groups": [.string(accessGroup)],
+                "keychain-access-groups": [
+                    .string(rootAccessGroup),
+                    .string(accessGroup),
+                ],
             ]),
             dependencies: [
                 .target(name: "ComponentWidget"),

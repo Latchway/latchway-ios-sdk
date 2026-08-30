@@ -15,11 +15,20 @@ containing app creates or replaces component keys.
 
 ## Entitlements and runtime configuration
 
-Give each executable component a distinct Keychain access group. Put the same
-group in the containing app and the intended extension, and do not add it to a
-sibling extension:
+Give the containing app a private app-ID group and put it first. Give each
+executable component a distinct shared group. The containing app carries its
+private group plus every component group; an extension carries only its own
+group and no sibling group:
 
 ```xml
+<!-- Containing app -->
+<key>keychain-access-groups</key>
+<array>
+  <string>$(AppIdentifierPrefix)com.example.myapp</string>
+  <string>$(AppIdentifierPrefix)com.example.myapp.weekly-widget</string>
+</array>
+
+<!-- Widget extension -->
 <key>keychain-access-groups</key>
 <array>
   <string>$(AppIdentifierPrefix)com.example.myapp.weekly-widget</string>
@@ -30,6 +39,17 @@ Xcode expands `$(AppIdentifierPrefix)` while signing. The Swift runtime value
 must already be fully resolved, for example
 `ABCDE12345.com.example.myapp.weekly-widget`. Passing the literal build-setting
 token fails closed. Do not use one broad group for every extension.
+
+Pass the resolved private group to `LatchwayConfiguration` and every root
+`LatchwayAppAttestProvider`. Also pass every extension-shared group in
+`legacySharedKeychainAccessGroups`. The SDK proves the private group is the
+signed default and inspects each explicit shared group only at known root
+record coordinates. This catches state accidentally created when a shared
+group was previously first without enumerating or exposing component records.
+If such state exists, `rootKeychainMigrationRequired` is returned and the SDK
+does not migrate or delete it. For a disposable pre-release device, reset its
+Keychain or use a new test bundle identifier, correct the entitlement order,
+and reinstall.
 
 Define the descriptor identically in both processes:
 

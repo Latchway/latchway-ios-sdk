@@ -9,23 +9,24 @@ protocol LatchwaySecureDataStoring: Sendable {
 
 actor LatchwayKeychainStore: LatchwaySecureDataStoring {
     private let service: String
-    private let accessGroup: String?
+    private let accessGroup: String
 
-    init(service: String, accessGroup: String? = nil) {
+    init(service: String, accessGroup: String) {
         self.service = service
         self.accessGroup = accessGroup
     }
 
     func read(account: String) throws -> Data? {
-        var query: [CFString: Any] = [
-            kSecClass: kSecClassGenericPassword,
-            kSecAttrService: service,
-            kSecAttrAccount: account,
-            kSecAttrSynchronizable: kCFBooleanFalse as Any,
+        var query = LatchwayKeychainQuery.identity(
+            service: service,
+            account: account,
+            accessGroup: accessGroup,
+            synchronizable: kCFBooleanFalse as Any
+        )
+        query.merge([
             kSecMatchLimit: kSecMatchLimitOne,
             kSecReturnData: kCFBooleanTrue as Any,
-        ]
-        if let accessGroup { query[kSecAttrAccessGroup] = accessGroup }
+        ]) { _, new in new }
         var result: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         if status == errSecItemNotFound { return nil }
@@ -34,13 +35,12 @@ actor LatchwayKeychainStore: LatchwaySecureDataStoring {
     }
 
     func write(_ data: Data, account: String) throws {
-        var identity: [CFString: Any] = [
-            kSecClass: kSecClassGenericPassword,
-            kSecAttrService: service,
-            kSecAttrAccount: account,
-            kSecAttrSynchronizable: kCFBooleanFalse as Any,
-        ]
-        if let accessGroup { identity[kSecAttrAccessGroup] = accessGroup }
+        let identity = LatchwayKeychainQuery.identity(
+            service: service,
+            account: account,
+            accessGroup: accessGroup,
+            synchronizable: kCFBooleanFalse as Any
+        )
         let attributes: [CFString: Any] = [
             kSecValueData: data,
             kSecAttrAccessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
@@ -55,14 +55,30 @@ actor LatchwayKeychainStore: LatchwaySecureDataStoring {
     }
 
     func delete(account: String) throws {
-        var query: [CFString: Any] = [
+        let query = LatchwayKeychainQuery.identity(
+            service: service,
+            account: account,
+            accessGroup: accessGroup,
+            synchronizable: kSecAttrSynchronizableAny
+        )
+        let status = SecItemDelete(query as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else { throw LatchwayError.keyStorageFailure }
+    }
+}
+
+enum LatchwayKeychainQuery {
+    static func identity(
+        service: String,
+        account: String,
+        accessGroup: String,
+        synchronizable: Any
+    ) -> [CFString: Any] {
+        [
             kSecClass: kSecClassGenericPassword,
             kSecAttrService: service,
             kSecAttrAccount: account,
-            kSecAttrSynchronizable: kSecAttrSynchronizableAny,
+            kSecAttrAccessGroup: accessGroup,
+            kSecAttrSynchronizable: synchronizable,
         ]
-        if let accessGroup { query[kSecAttrAccessGroup] = accessGroup }
-        let status = SecItemDelete(query as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else { throw LatchwayError.keyStorageFailure }
     }
 }

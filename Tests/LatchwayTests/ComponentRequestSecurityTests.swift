@@ -6,7 +6,8 @@ final class ComponentRequestSecurityTests: XCTestCase {
     private let configuration = LatchwayConfiguration(
         baseURL: URL(string: "https://gateway.example.test/base")!,
         applicationID: "app_01J00000000000000000000000",
-        environment: "production"
+        environment: "production",
+        rootKeychainAccessGroup: "ABCDE12345.com.example.latchway"
     )
 
     func testFeatureScopedOpaqueRoutesAcceptOnlyContractMethodsAndSafeRelativePaths() throws {

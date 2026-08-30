@@ -41,7 +41,8 @@ import Testing
     let configuration = LatchwayConfiguration(
         baseURL: try #require(URL(string: "https://gateway.example.invalid")),
         applicationID: "app_0000000000000000",
-        environment: "development"
+        environment: "development",
+        rootKeychainAccessGroup: "ABCDE12345.com.example.latchway"
     )
     let component = LatchwayComponentConfiguration.widget(
         definitionID: "ios-widget",

@@ -16,6 +16,10 @@ public actor LatchwayAppAttestProvider: LatchwayAttestationProvider {
 
     private let service: any AppAttestServicing
     private let stateStore: any AppAttestStateStoring
+    private let legacyStateStores: [any AppAttestStateStoring]
+    private let rootKeychainAccessGroup: String
+    private let legacySharedKeychainAccessGroups: [String]
+    private let rootKeychainPreflight: @Sendable () throws -> Void
     private var state: State?
     private var lastOperation: String?
     private var lifecycleEpoch: UInt64 = 0
@@ -29,13 +33,33 @@ public actor LatchwayAppAttestProvider: LatchwayAttestationProvider {
     private var acceptanceKeyID: String?
     private var acceptanceTask: Task<Void, Error>?
     private var resetting = false
+    private var rootKeychainPreflightComplete = false
+    private var rootKeychainPreflightFailure: LatchwayError?
 
     /// Creates App Attest state in a caller-managed namespace. The namespace
     /// must be unique for every application, environment, and client runtime;
-    /// prefer ``init(applicationID:environment:clientRuntime:)``.
-    public init(storageNamespace: String = "default") {
+    /// prefer ``init(applicationID:environment:rootKeychainAccessGroup:legacySharedKeychainAccessGroups:clientRuntime:)``.
+    public init(
+        rootKeychainAccessGroup: String,
+        legacySharedKeychainAccessGroups: [String] = [],
+        storageNamespace: String = "default"
+    ) {
         self.service = SystemAppAttestService()
-        self.stateStore = AppAttestKeychainStateStore(namespace: storageNamespace)
+        self.stateStore = AppAttestKeychainStateStore(
+            namespace: storageNamespace,
+            accessGroup: rootKeychainAccessGroup
+        )
+        self.legacyStateStores = legacySharedKeychainAccessGroups.map {
+            AppAttestKeychainStateStore(namespace: storageNamespace, accessGroup: $0)
+        }
+        self.rootKeychainAccessGroup = rootKeychainAccessGroup
+        self.legacySharedKeychainAccessGroups = legacySharedKeychainAccessGroups
+        self.rootKeychainPreflight = {
+            try LatchwayRootKeychainPreflight.verifySignedDefaultAccessGroup(
+                rootKeychainAccessGroup,
+                legacySharedKeychainAccessGroups: legacySharedKeychainAccessGroups
+            )
+        }
     }
 
     /// Creates runtime-isolated App Attest state for an application
@@ -44,12 +68,27 @@ public actor LatchwayAppAttestProvider: LatchwayAttestationProvider {
     public init(
         applicationID: String,
         environment: String,
+        rootKeychainAccessGroup: String,
+        legacySharedKeychainAccessGroups: [String] = [],
         clientRuntime: LatchwayClientRuntime = .iOS
     ) {
+        let namespace = "\(clientRuntime.platformIdentifier).\(applicationID).\(environment)"
         self.service = SystemAppAttestService()
         self.stateStore = AppAttestKeychainStateStore(
-            namespace: "\(clientRuntime.platformIdentifier).\(applicationID).\(environment)"
+            namespace: namespace,
+            accessGroup: rootKeychainAccessGroup
         )
+        self.legacyStateStores = legacySharedKeychainAccessGroups.map {
+            AppAttestKeychainStateStore(namespace: namespace, accessGroup: $0)
+        }
+        self.rootKeychainAccessGroup = rootKeychainAccessGroup
+        self.legacySharedKeychainAccessGroups = legacySharedKeychainAccessGroups
+        self.rootKeychainPreflight = {
+            try LatchwayRootKeychainPreflight.verifySignedDefaultAccessGroup(
+                rootKeychainAccessGroup,
+                legacySharedKeychainAccessGroups: legacySharedKeychainAccessGroups
+            )
+        }
     }
 
     /// Creates App Attest state dedicated to one directly attested Client
@@ -64,17 +103,26 @@ public actor LatchwayAppAttestProvider: LatchwayAttestationProvider {
         applicationID: String,
         environment: String,
         clientRuntime: LatchwayClientRuntime = .iOS,
-        componentDefinitionID: String
+        componentDefinitionID: String,
+        keychainAccessGroup: String
     ) {
+        let namespace = Self.componentStorageNamespace(
+            applicationID: applicationID,
+            environment: environment,
+            clientRuntime: clientRuntime,
+            componentDefinitionID: componentDefinitionID
+        )
         self.service = SystemAppAttestService()
         self.stateStore = AppAttestKeychainStateStore(
-            namespace: Self.componentStorageNamespace(
-                applicationID: applicationID,
-                environment: environment,
-                clientRuntime: clientRuntime,
-                componentDefinitionID: componentDefinitionID
-            )
+            namespace: namespace,
+            accessGroup: keychainAccessGroup
         )
+        self.legacyStateStores = []
+        self.rootKeychainAccessGroup = keychainAccessGroup
+        self.legacySharedKeychainAccessGroups = []
+        self.rootKeychainPreflight = {
+            try LatchwayRootKeychainPreflight.verifySignedDefaultAccessGroup(keychainAccessGroup)
+        }
     }
 
     static func componentStorageNamespace(
@@ -89,11 +137,33 @@ public actor LatchwayAppAttestProvider: LatchwayAttestationProvider {
     init(service: any AppAttestServicing, stateStore: any AppAttestStateStoring) {
         self.service = service
         self.stateStore = stateStore
+        self.legacyStateStores = []
+        self.rootKeychainAccessGroup = "ABCDE12345.com.example.latchway"
+        self.legacySharedKeychainAccessGroups = []
+        self.rootKeychainPreflight = {}
+        self.rootKeychainPreflightComplete = true
+    }
+
+    init(
+        service: any AppAttestServicing,
+        stateStore: any AppAttestStateStoring,
+        legacyStateStores: [any AppAttestStateStoring],
+        rootKeychainAccessGroup: String,
+        legacySharedKeychainAccessGroups: [String],
+        rootKeychainPreflight: @escaping @Sendable () throws -> Void
+    ) {
+        self.service = service
+        self.stateStore = stateStore
+        self.legacyStateStores = legacyStateStores
+        self.rootKeychainAccessGroup = rootKeychainAccessGroup
+        self.legacySharedKeychainAccessGroups = legacySharedKeychainAccessGroups
+        self.rootKeychainPreflight = rootKeychainPreflight
     }
 
     public func evidence(for challenge: LatchwayAttestationChallenge) async throws -> LatchwayAttestationEvidence {
         guard !Task.isCancelled else { throw LatchwayError.cancelled }
         guard !resetting else { throw LatchwayError.cancelled }
+        try await ensureRootKeychainPreflight()
         let operationEpoch = lifecycleEpoch
         guard challenge.provider == "app_attest" else { throw LatchwayError.attestationUnavailable }
         guard challenge.clientDataHash.count == 32, challenge.expiresAt > Date() else {
@@ -145,6 +215,7 @@ public actor LatchwayAppAttestProvider: LatchwayAttestationProvider {
 
     public func didAccept(_ evidence: LatchwayAttestationEvidence) async {
         guard !resetting else { return }
+        guard (try? await ensureRootKeychainPreflight()) != nil else { return }
         let operationEpoch = lifecycleEpoch
         guard evidence.provider == "app_attest",
               case let .string(keyID)? = evidence.evidence["key_id"],
@@ -210,6 +281,7 @@ public actor LatchwayAppAttestProvider: LatchwayAttestationProvider {
 
     public func reset() async throws {
         guard !resetting else { throw LatchwayError.cancelled }
+        try await ensureRootKeychainPreflight()
         resetting = true
         lifecycleEpoch &+= 1
         state = nil
@@ -237,6 +309,16 @@ public actor LatchwayAppAttestProvider: LatchwayAttestationProvider {
     }
 
     public func status() async -> LatchwayAttestationStatus {
+        do {
+            try await ensureRootKeychainPreflight()
+        } catch {
+            lastOperation = "root_keychain_preflight_failed"
+            return LatchwayAttestationStatus(
+                support: .unknown,
+                keyID: nil,
+                lastOperation: lastOperation
+            )
+        }
         let supported = await service.isSupported()
         let operationEpoch = lifecycleEpoch
         let current = try? await loadState(expectedEpoch: operationEpoch)
@@ -433,6 +515,68 @@ public actor LatchwayAppAttestProvider: LatchwayAttestationProvider {
         }
     }
 
+    private func ensureRootKeychainPreflight() async throws {
+        if rootKeychainPreflightComplete { return }
+        if let rootKeychainPreflightFailure { throw rootKeychainPreflightFailure }
+
+        do {
+            try LatchwayRootKeychainPreflight.validateAccessGroups(
+                rootKeychainAccessGroup: rootKeychainAccessGroup,
+                legacySharedKeychainAccessGroups: legacySharedKeychainAccessGroups
+            )
+        } catch let error as LatchwayError {
+            rootKeychainPreflightFailure = error
+            throw error
+        }
+
+        do {
+            try rootKeychainPreflight()
+        } catch let error as LatchwayError {
+            if case .invalidConfiguration = error {
+                do {
+                    if try await containsState(in: [stateStore] + legacyStateStores) {
+                        rootKeychainPreflightFailure = .rootKeychainMigrationRequired
+                        throw LatchwayError.rootKeychainMigrationRequired
+                    }
+                } catch let scanError as LatchwayError {
+                    rootKeychainPreflightFailure = scanError
+                    throw scanError
+                } catch {
+                    rootKeychainPreflightFailure = .keyStorageFailure
+                    throw LatchwayError.keyStorageFailure
+                }
+            }
+            rootKeychainPreflightFailure = error
+            throw error
+        } catch {
+            rootKeychainPreflightFailure = .keyStorageFailure
+            throw LatchwayError.keyStorageFailure
+        }
+
+        do {
+            if try await containsState(in: legacyStateStores) {
+                rootKeychainPreflightFailure = .rootKeychainMigrationRequired
+                throw LatchwayError.rootKeychainMigrationRequired
+            }
+        } catch let error as LatchwayError {
+            rootKeychainPreflightFailure = error
+            throw error
+        } catch {
+            rootKeychainPreflightFailure = .keyStorageFailure
+            throw LatchwayError.keyStorageFailure
+        }
+        rootKeychainPreflightComplete = true
+    }
+
+    private func containsState(
+        in stores: [any AppAttestStateStoring]
+    ) async throws -> Bool {
+        for store in stores where try await store.containsRecord() {
+            return true
+        }
+        return false
+    }
+
     private static func base64URL(_ data: Data) -> String {
         data.base64EncodedString()
             .replacingOccurrences(of: "+", with: "-")
@@ -528,25 +672,36 @@ protocol AppAttestStateStoring: Sendable {
     func load() async throws -> LatchwayAppAttestProvider.State?
     func save(_ state: LatchwayAppAttestProvider.State) async throws
     func clear() async throws
+    func containsRecord() async throws -> Bool
+}
+
+extension AppAttestStateStoring {
+    func containsRecord() async throws -> Bool {
+        try await load() != nil
+    }
 }
 
 private actor AppAttestKeychainStateStore: AppAttestStateStoring {
     private let service: String
     private let account = "app-attest-state"
+    private let accessGroup: String
 
-    init(namespace: String) {
+    init(namespace: String, accessGroup: String) {
         service = "dev.latchway.sdk.app-attest.\(namespace)"
+        self.accessGroup = accessGroup
     }
 
     func load() async throws -> LatchwayAppAttestProvider.State? {
-        let query: [CFString: Any] = [
-            kSecClass: kSecClassGenericPassword,
-            kSecAttrService: service,
-            kSecAttrAccount: account,
-            kSecAttrSynchronizable: kCFBooleanFalse as Any,
+        var query = AppAttestKeychainQuery.identity(
+            service: service,
+            account: account,
+            accessGroup: accessGroup,
+            synchronizable: kCFBooleanFalse as Any
+        )
+        query.merge([
             kSecReturnData: kCFBooleanTrue as Any,
             kSecMatchLimit: kSecMatchLimitOne,
-        ]
+        ]) { _, new in new }
         var result: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         if status == errSecItemNotFound { return nil }
@@ -557,12 +712,12 @@ private actor AppAttestKeychainStateStore: AppAttestStateStoring {
 
     func save(_ state: LatchwayAppAttestProvider.State) async throws {
         let data = try JSONEncoder().encode(state)
-        let identity: [CFString: Any] = [
-            kSecClass: kSecClassGenericPassword,
-            kSecAttrService: service,
-            kSecAttrAccount: account,
-            kSecAttrSynchronizable: kCFBooleanFalse as Any,
-        ]
+        let identity = AppAttestKeychainQuery.identity(
+            service: service,
+            account: account,
+            accessGroup: accessGroup,
+            synchronizable: kCFBooleanFalse as Any
+        )
         let attributes: [CFString: Any] = [
             kSecValueData: data,
             kSecAttrAccessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
@@ -577,13 +732,46 @@ private actor AppAttestKeychainStateStore: AppAttestStateStoring {
     }
 
     func clear() async throws {
-        let query: [CFString: Any] = [
+        let query = AppAttestKeychainQuery.identity(
+            service: service,
+            account: account,
+            accessGroup: accessGroup,
+            synchronizable: kSecAttrSynchronizableAny
+        )
+        let status = SecItemDelete(query as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else { throw LatchwayError.keyStorageFailure }
+    }
+
+    func containsRecord() async throws -> Bool {
+        var query = AppAttestKeychainQuery.identity(
+            service: service,
+            account: account,
+            accessGroup: accessGroup,
+            synchronizable: kSecAttrSynchronizableAny
+        )
+        query.merge([
+            kSecMatchLimit: kSecMatchLimitOne,
+        ]) { _, new in new }
+        let status = SecItemCopyMatching(query as CFDictionary, nil)
+        if status == errSecItemNotFound { return false }
+        guard status == errSecSuccess else { throw LatchwayError.keyStorageFailure }
+        return true
+    }
+}
+
+enum AppAttestKeychainQuery {
+    static func identity(
+        service: String,
+        account: String,
+        accessGroup: String,
+        synchronizable: Any
+    ) -> [CFString: Any] {
+        [
             kSecClass: kSecClassGenericPassword,
             kSecAttrService: service,
             kSecAttrAccount: account,
-            kSecAttrSynchronizable: kSecAttrSynchronizableAny,
+            kSecAttrAccessGroup: accessGroup,
+            kSecAttrSynchronizable: synchronizable,
         ]
-        let status = SecItemDelete(query as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else { throw LatchwayError.keyStorageFailure }
     }
 }

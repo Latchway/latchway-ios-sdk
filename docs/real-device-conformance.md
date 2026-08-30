@@ -270,8 +270,11 @@ Build that installable candidate from a clean exact checkout with
 `scripts/build-physical-app-attest-candidate.sh`. The script accepts existing
 profile specifiers/UUIDs and signing identity pins from the environment, but
 does not import or create Apple assets and never uses
-`-allowProvisioningUpdates`. It verifies the host has its root Keychain group
-plus all three component groups, while each extension has only its own group;
+`-allowProvisioningUpdates`. It verifies the host's exact ordered Keychain
+groups are the private app-ID group first followed by all three component
+groups, while each extension has only its own group. The resolved private and
+shared values are embedded in the signed Info.plist for the SDK's default-group
+sentinel and exact legacy-coordinate scan;
 it rejects App Attest on Widget/Share/Action and requires production App Attest
 only on the host. The staged canonical JSON and checksum are the source for the
 protected candidate variables. Its `latchway.ios-app-bundle-tree.v1` digest

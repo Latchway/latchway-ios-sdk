@@ -12,6 +12,7 @@ export SWIFTPM_MODULECACHE_OVERRIDE="$module_cache"
 export CLANG_MODULE_CACHE_PATH="$clang_cache"
 
 cd "$repository_root"
+python3 scripts/test-keychain-source-invariants.py
 swift package --disable-sandbox dump-package >/dev/null
 swift build --disable-sandbox --configuration release
 swift test --disable-sandbox --parallel

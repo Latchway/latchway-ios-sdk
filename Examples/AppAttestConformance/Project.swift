@@ -102,6 +102,7 @@ let commonInfo: [String: Plist.Value] = [
     "LatchwayEnvironment": .string(latchwayEnvironment),
     "LatchwayIdentityProvider": .string(identityProvider),
     "LatchwayGatewayURL": .string(gatewayURL),
+    "LatchwayRootKeychainAccessGroup": .string(hostAccessGroup),
     "LatchwayHostComponentDefinitionID": .string(hostDefinitionID),
     "LatchwayShareBundleID": .string(shareBundleID),
     "LatchwayWidgetComponentDefinitionID": .string(widgetDefinitionID),

@@ -315,13 +315,15 @@ actual_executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$in
 actual_latchway_application_id="$(/usr/libexec/PlistBuddy -c 'Print :LatchwayApplicationID' "$info_plist")"
 actual_latchway_environment="$(/usr/libexec/PlistBuddy -c 'Print :LatchwayEnvironment' "$info_plist")"
 actual_identity_provider="$(/usr/libexec/PlistBuddy -c 'Print :LatchwayIdentityProvider' "$info_plist")"
+actual_root_keychain_access_group="$(/usr/libexec/PlistBuddy -c 'Print :LatchwayRootKeychainAccessGroup' "$info_plist")"
 if [[ "$actual_bundle_id" != "$LATCHWAY_BUNDLE_ID" || "$actual_version" != "$LATCHWAY_APP_VERSION" || "$actual_build" != "$LATCHWAY_BUILD_NUMBER" ]]; then
   echo "signed application identity does not match protected pins" >&2
   exit 1
 fi
 if [[ "$actual_latchway_application_id" != "$LATCHWAY_APPLICATION_ID" \
    || "$actual_latchway_environment" != "$LATCHWAY_ENVIRONMENT" \
-   || "$actual_identity_provider" != "$LATCHWAY_IDENTITY_PROVIDER" ]]; then
+   || "$actual_identity_provider" != "$LATCHWAY_IDENTITY_PROVIDER" \
+   || "$actual_root_keychain_access_group" != "$LATCHWAY_APP_ID_PREFIX.$LATCHWAY_BUNDLE_ID" ]]; then
   echo "signed Latchway tenant/auth configuration does not match protected pins" >&2
   exit 1
 fi
@@ -380,8 +382,8 @@ python3 - "$entitlements_path" \
 import pathlib, plistlib, sys
 value = plistlib.loads(pathlib.Path(sys.argv[1]).read_bytes())
 groups = value.get("keychain-access-groups")
-if not isinstance(groups, list) or len(groups) != len(set(groups)) or set(groups) != set(sys.argv[2:]):
-    raise SystemExit("host Keychain groups do not include exactly root, Widget, Share, and Action")
+if not isinstance(groups, list) or groups != list(sys.argv[2:]):
+    raise SystemExit("host Keychain groups must be ordered exactly root, Widget, Share, and Action")
 PY
 if [[ -n "$actual_get_task_allow" && "$actual_get_task_allow" != false ]]; then
   echo "release evidence rejects applications signed with get-task-allow" >&2
@@ -422,7 +424,7 @@ verify_component_extension() {
   fi
   local plist="$matched/Info.plist"
   local executable extension_point extension_version extension_build binary_hash extension_entitlements extension_team extension_application_id
-  local extension_latchway_application_id extension_latchway_environment extension_identity_provider
+  local extension_latchway_application_id extension_latchway_environment extension_identity_provider extension_root_keychain_access_group
   executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$plist")"
   extension_point="$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$plist")"
   extension_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist")"
@@ -430,13 +432,15 @@ verify_component_extension() {
   extension_latchway_application_id="$(/usr/libexec/PlistBuddy -c 'Print :LatchwayApplicationID' "$plist")"
   extension_latchway_environment="$(/usr/libexec/PlistBuddy -c 'Print :LatchwayEnvironment' "$plist")"
   extension_identity_provider="$(/usr/libexec/PlistBuddy -c 'Print :LatchwayIdentityProvider' "$plist")"
+  extension_root_keychain_access_group="$(/usr/libexec/PlistBuddy -c 'Print :LatchwayRootKeychainAccessGroup' "$plist")"
   if [[ "$extension_point" != "$expected_extension_point" || "$extension_version" != "$LATCHWAY_APP_VERSION" || "$extension_build" != "$LATCHWAY_BUILD_NUMBER" || ! -f "$matched/$executable" || -L "$matched/$executable" ]]; then
     echo "$label extension identity or executable is invalid" >&2
     exit 1
   fi
   if [[ "$extension_latchway_application_id" != "$LATCHWAY_APPLICATION_ID" \
      || "$extension_latchway_environment" != "$LATCHWAY_ENVIRONMENT" \
-     || "$extension_identity_provider" != "$LATCHWAY_IDENTITY_PROVIDER" ]]; then
+     || "$extension_identity_provider" != "$LATCHWAY_IDENTITY_PROVIDER" \
+     || "$extension_root_keychain_access_group" != "$LATCHWAY_APP_ID_PREFIX.$LATCHWAY_BUNDLE_ID" ]]; then
     echo "$label signed Latchway tenant/auth configuration does not match protected pins" >&2
     exit 1
   fi

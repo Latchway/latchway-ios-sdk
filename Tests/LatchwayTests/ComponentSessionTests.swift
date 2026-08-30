@@ -509,6 +509,7 @@ final class ComponentSessionTests: XCTestCase {
             baseURL: URL(string: "https://gateway.example.test")!,
             applicationID: "app_01J00000000000000000000000",
             environment: "production",
+            rootKeychainAccessGroup: "ABCDE12345.com.example.latchway",
             clientRuntime: clientRuntime,
             appVersion: "1.2.3"
         )
@@ -588,6 +589,7 @@ final class ComponentSessionTests: XCTestCase {
             baseURL: baseURL,
             applicationID: "app_01J00000000000000000000000",
             environment: "production",
+            rootKeychainAccessGroup: "ABCDE12345.com.example.latchway",
             clientRuntime: clientRuntime,
             appVersion: "1.2.3"
         )

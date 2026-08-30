@@ -35,10 +35,15 @@ tuist generate --path Examples/AppExtensionComponents --no-open
 Configure a `home_widget` component definition with the `weekly-summary`
 feature. Add a current identity token only to the host scheme's
 `LATCHWAY_IDENTITY_TOKEN` launch environment; never put it in source, the
-widget, entitlements, or build settings. The runtime access-group string comes
-from the signed, expanded Info.plist and must look like
+widget, entitlements, or build settings. The host's private app-ID group is
+first in its signed entitlements and the widget-shared group is second; the
+widget carries only the shared group. Both runtime strings come from the
+signed, expanded Info.plist and must look like
+`TEAMID.com.example.latchway.components` and
 `TEAMID.com.example.latchway.components.widget`; the SDK rejects the literal
-`$(AppIdentifierPrefix)` token.
+`$(AppIdentifierPrefix)` token. The shared group is also supplied as an exact
+legacy-scan boundary so a stale shared-first root record blocks without being
+migrated or deleted.
 
 The “Revoke family” action supplies the complete component descriptor list so
 the server revokes the family and the host erases each root/component Keychain

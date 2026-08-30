@@ -10,6 +10,7 @@ public actor LatchwayClient {
     private let clock: any LatchwayClock
     private let proofFactory: LatchwayDPoPProofFactory
     private let controlPlane: LatchwayControlPlane
+    private let rootKeychainPreflight: @Sendable () throws -> Void
 
     private var session: RuntimeSession?
     private var establishmentTask: Task<RuntimeSession, Error>?
@@ -19,6 +20,7 @@ public actor LatchwayClient {
     private var lastErrorCode: String?
     private var serverVersion: String?
     private var terminalError: LatchwayError?
+    private var rootKeychainPreflightComplete = false
 
     public init(
         configuration: LatchwayConfiguration,
@@ -27,12 +29,16 @@ public actor LatchwayClient {
         let key = LatchwayInstallationKeyManager(
             applicationID: configuration.applicationID,
             environment: configuration.environment,
+            rootKeychainAccessGroup: configuration.rootKeychainAccessGroup,
+            legacySharedKeychainAccessGroups: configuration.legacySharedKeychainAccessGroups,
             clientRuntime: configuration.clientRuntime,
             softwareFallbackPolicy: configuration.softwareKeyFallbackPolicy
         )
         let storage = LatchwayKeychainSessionStorage(
             applicationID: configuration.applicationID,
             environment: configuration.environment,
+            rootKeychainAccessGroup: configuration.rootKeychainAccessGroup,
+            legacySharedKeychainAccessGroups: configuration.legacySharedKeychainAccessGroups,
             clientRuntime: configuration.clientRuntime
         )
         let transport = LatchwayURLSessionTransport(session: LatchwayURLSessionFactory.make())
@@ -48,6 +54,13 @@ public actor LatchwayClient {
         self.transport = transport
         self.clock = clock
         self.proofFactory = proofFactory
+        self.rootKeychainPreflight = LatchwayRootKeychainPreflight.verifier(
+            rootKeychainAccessGroup: configuration.rootKeychainAccessGroup,
+            legacySharedKeychainAccessGroups: configuration.legacySharedKeychainAccessGroups,
+            applicationID: configuration.applicationID,
+            environment: configuration.environment,
+            clientRuntime: configuration.clientRuntime
+        )
         self.controlPlane = LatchwayControlPlane(
             configuration: configuration,
             transport: transport,
@@ -74,6 +87,41 @@ public actor LatchwayClient {
         self.transport = transport
         self.clock = clock
         self.proofFactory = proofFactory
+        self.rootKeychainPreflight = LatchwayRootKeychainPreflight.verifier(
+            rootKeychainAccessGroup: configuration.rootKeychainAccessGroup,
+            legacySharedKeychainAccessGroups: configuration.legacySharedKeychainAccessGroups,
+            applicationID: configuration.applicationID,
+            environment: configuration.environment,
+            clientRuntime: configuration.clientRuntime
+        )
+        self.controlPlane = LatchwayControlPlane(
+            configuration: configuration,
+            transport: transport,
+            proofFactory: proofFactory,
+            clock: clock
+        )
+    }
+
+    init(
+        configuration: LatchwayConfiguration,
+        identityTokenProvider: any LatchwayIdentityTokenProvider,
+        attestationProvider: any LatchwayAttestationProvider,
+        installationKey: any LatchwayInstallationKey,
+        sessionStorage: any LatchwaySessionStorage,
+        transport: any LatchwayHTTPTransport,
+        clock: any LatchwayClock,
+        rootKeychainPreflight: @escaping @Sendable () throws -> Void
+    ) {
+        let proofFactory = LatchwayDPoPProofFactory(key: installationKey, clock: clock)
+        self.configuration = configuration
+        self.identityTokenProvider = identityTokenProvider
+        self.attestationProvider = attestationProvider
+        self.installationKey = installationKey
+        self.sessionStorage = sessionStorage
+        self.transport = transport
+        self.clock = clock
+        self.proofFactory = proofFactory
+        self.rootKeychainPreflight = rootKeychainPreflight
         self.controlPlane = LatchwayControlPlane(
             configuration: configuration,
             transport: transport,
@@ -205,6 +253,7 @@ public actor LatchwayClient {
     /// validated, same-origin `session_expired` rejection.
     public func refresh() async throws {
         try validateConfiguration()
+        try ensureRootKeychainPreflight()
         _ = try await refreshSession(force: true)
     }
 
@@ -217,6 +266,7 @@ public actor LatchwayClient {
     ) async throws {
         guard !Task.isCancelled else { throw LatchwayError.cancelled }
         try validateConfiguration()
+        try ensureRootKeychainPreflight()
         try validateFeature(feature)
         try LatchwayComponentRequestSecurity.prepare(
             &request,
@@ -569,6 +619,58 @@ public actor LatchwayClient {
     }
 
     public func diagnostics() async -> LatchwayDiagnostics {
+        do {
+            try validateConfiguration()
+            try ensureRootKeychainPreflight()
+        } catch let error as LatchwayError {
+            state = .failed
+            lastErrorCode = error.stableLocalCode
+            return LatchwayDiagnostics(
+                sdkVersion: configuration.clientSDKVersion,
+                keyStorage: .unavailable,
+                keyThumbprint: nil,
+                attestation: LatchwayAttestationStatus(
+                    support: .unknown,
+                    lastOperation: "root_keychain_preflight_failed"
+                ),
+                sessionState: state,
+                sessionExpiresAt: nil,
+                installationID: nil,
+                installationFamilyID: nil,
+                componentID: nil,
+                componentDefinitionID: nil,
+                componentKind: nil,
+                serverVersion: serverVersion,
+                trustProvider: nil,
+                trustLevel: nil,
+                lastRequestID: lastRequestID,
+                lastErrorCode: lastErrorCode
+            )
+        } catch {
+            state = .failed
+            lastErrorCode = LatchwayError.keyStorageFailure.stableLocalCode
+            return LatchwayDiagnostics(
+                sdkVersion: configuration.clientSDKVersion,
+                keyStorage: .unavailable,
+                keyThumbprint: nil,
+                attestation: LatchwayAttestationStatus(
+                    support: .unknown,
+                    lastOperation: "root_keychain_preflight_failed"
+                ),
+                sessionState: state,
+                sessionExpiresAt: nil,
+                installationID: nil,
+                installationFamilyID: nil,
+                componentID: nil,
+                componentDefinitionID: nil,
+                componentKind: nil,
+                serverVersion: serverVersion,
+                trustProvider: nil,
+                trustLevel: nil,
+                lastRequestID: lastRequestID,
+                lastErrorCode: lastErrorCode
+            )
+        }
         let keyStorage = await installationKey.storage()
         let thumbprint = try? await proofFactory.thumbprint()
         let attestation = await attestationProvider.status()
@@ -617,6 +719,7 @@ public actor LatchwayClient {
 
     private func activeSession() async throws -> RuntimeSession {
         try validateConfiguration()
+        try ensureRootKeychainPreflight()
         if state == .revoked { throw terminalError ?? LatchwayError.sessionUnavailable }
         let now = await clock.now()
         if let session, session.isUsable(at: now) {
@@ -1340,6 +1443,10 @@ public actor LatchwayClient {
     }
 
     private func validateConfiguration() throws {
+        try LatchwayRootKeychainPreflight.validateAccessGroups(
+            rootKeychainAccessGroup: configuration.rootKeychainAccessGroup,
+            legacySharedKeychainAccessGroups: configuration.legacySharedKeychainAccessGroups
+        )
         guard configuration.applicationID.range(
             of: "^app_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
             options: .regularExpression
@@ -1382,6 +1489,12 @@ public actor LatchwayClient {
         guard (try? LatchwayDPoPProofFactory.normalizedHTU(configuration.baseURL)) != nil else {
             throw LatchwayError.invalidConfiguration("baseURL cannot be normalized for DPoP")
         }
+    }
+
+    private func ensureRootKeychainPreflight() throws {
+        guard !rootKeychainPreflightComplete else { return }
+        try rootKeychainPreflight()
+        rootKeychainPreflightComplete = true
     }
 
     private static func mediaType(_ value: String?) -> String? {
@@ -1574,6 +1687,7 @@ private extension LatchwayError {
         switch self {
         case .invalidConfiguration: "configuration_invalid"
         case .invalidRequest: "request_invalid"
+        case .rootKeychainMigrationRequired: "root_keychain_migration_required"
         case .secureEnclaveUnavailable, .keyStorageFailure: "key_unavailable"
         case .attestationUnavailable: "attestation_unsupported"
         case .invalidAttestationBinding: "attestation_invalid"

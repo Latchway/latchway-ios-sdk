@@ -1,9 +1,112 @@
 import Foundation
 import Latchway
 @testable import LatchwayAppAttest
+import Security
 import XCTest
 
 final class AppAttestLifecycleTests: XCTestCase {
+    func testPublicRootInitializersAcceptConcreteAndLegacyGroups() {
+        let root = "ABCDE12345.com.example.latchway"
+        let legacy = ["ABCDE12345.com.example.latchway.appintents"]
+        _ = LatchwayAppAttestProvider(
+            applicationID: "app_01J00000000000000000000000",
+            environment: "production",
+            rootKeychainAccessGroup: root,
+            legacySharedKeychainAccessGroups: legacy
+        )
+        _ = LatchwayAppAttestProvider(
+            rootKeychainAccessGroup: root,
+            legacySharedKeychainAccessGroups: legacy,
+            storageNamespace: "custom"
+        )
+    }
+
+    func testEveryAppAttestKeychainIdentityCarriesExplicitAccessGroup() {
+        let group = "ABCDE12345.com.example.latchway"
+        let identity = AppAttestKeychainQuery.identity(
+            service: "dev.latchway.sdk.app-attest.custom",
+            account: "app-attest-state",
+            accessGroup: group,
+            synchronizable: kCFBooleanFalse as Any
+        )
+        XCTAssertEqual(identity[kSecAttrAccessGroup] as? String, group)
+    }
+
+    func testCustomNamespaceLegacySharedStateBlocksBeforeDeviceCheck() async {
+        let service = FakeService()
+        let legacy = MemoryStateStore(
+            initial: .init(keyID: "legacy-key", acceptedByLatchway: true)
+        )
+        let provider = LatchwayAppAttestProvider(
+            service: service,
+            stateStore: MemoryStateStore(),
+            legacyStateStores: [legacy],
+            rootKeychainAccessGroup: "ABCDE12345.com.example.latchway",
+            legacySharedKeychainAccessGroups: [
+                "ABCDE12345.com.example.latchway.appintents",
+            ],
+            rootKeychainPreflight: {}
+        )
+
+        do {
+            _ = try await provider.evidence(for: fixtureChallenge())
+            XCTFail("Expected legacy shared App Attest state to block")
+        } catch let error as LatchwayError {
+            XCTAssertEqual(error, .rootKeychainMigrationRequired)
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+        let counts = await service.counts()
+        XCTAssertEqual(counts.generateKey, 0)
+        XCTAssertEqual(counts.attestation, 0)
+        XCTAssertEqual(counts.assertion, 0)
+    }
+
+    func testSentinelMismatchWithoutLegacyStateIsInvalidBeforeDeviceCheck() async {
+        let service = FakeService()
+        let provider = LatchwayAppAttestProvider(
+            service: service,
+            stateStore: MemoryStateStore(),
+            legacyStateStores: [],
+            rootKeychainAccessGroup: "ABCDE12345.com.example.latchway",
+            legacySharedKeychainAccessGroups: [],
+            rootKeychainPreflight: {
+                throw LatchwayError.invalidConfiguration("not the signed default group")
+            }
+        )
+
+        do {
+            _ = try await provider.evidence(for: fixtureChallenge())
+            XCTFail("Expected signed-default mismatch")
+        } catch let error as LatchwayError {
+            guard case .invalidConfiguration = error else {
+                return XCTFail("Expected invalid configuration, got \(error)")
+            }
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+        let counts = await service.counts()
+        XCTAssertEqual(counts.generateKey, 0)
+        XCTAssertEqual(counts.attestation, 0)
+        XCTAssertEqual(counts.assertion, 0)
+    }
+
+    func testAppAttestRootPreflightIsCached() async {
+        let counter = AppAttestPreflightCounter()
+        let provider = LatchwayAppAttestProvider(
+            service: FakeService(),
+            stateStore: MemoryStateStore(),
+            legacyStateStores: [],
+            rootKeychainAccessGroup: "ABCDE12345.com.example.latchway",
+            legacySharedKeychainAccessGroups: [],
+            rootKeychainPreflight: { counter.increment() }
+        )
+
+        _ = await provider.status()
+        _ = await provider.status()
+        XCTAssertEqual(counter.value, 1)
+    }
+
     func testComponentStorageNamespacesDoNotReuseRootOrSiblingMarkers() {
         let first = LatchwayAppAttestProvider.componentStorageNamespace(
             applicationID: "app_01J00000000000000000000000",
@@ -833,6 +936,21 @@ private actor MemoryStateStore: AppAttestStateStoring {
     func failNextSave() { saveFailures += 1 }
 
     private enum StoreFailure: Error { case planned }
+}
+
+private final class AppAttestPreflightCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    func increment() {
+        lock.lock()
+        count += 1
+        lock.unlock()
+    }
+    var value: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return count
+    }
 }
 
 private func XCTAssertThrowsErrorAsync(

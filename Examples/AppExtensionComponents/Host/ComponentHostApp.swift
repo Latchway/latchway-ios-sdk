@@ -76,7 +76,9 @@ private final class ComponentHostModel: ObservableObject {
         let environment = try requiredInfo("LatchwayEnvironment")
         let attestation = LatchwayAppAttestProvider(
             applicationID: applicationID,
-            environment: environment
+            environment: environment,
+            rootKeychainAccessGroup: try ComponentExampleConfiguration.rootKeychainAccessGroup(),
+            legacySharedKeychainAccessGroups: ComponentExampleConfiguration.legacySharedKeychainAccessGroups()
         )
         return LatchwayClient(
             configuration: try ComponentExampleConfiguration.latchway(

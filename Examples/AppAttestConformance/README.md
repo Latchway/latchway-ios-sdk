@@ -9,6 +9,12 @@ component keys and grants. Widget and Share consume delegated sessions only;
 Action also consumes only its independently keyed delegated session. Apple
 does not support `DCAppAttestService.generateKey` in iOS application
 extensions, so only the containing app carries the App Attest entitlement.
+The host's private app-ID Keychain group is first, followed by the three
+component groups; each extension carries exactly its own shared group. The
+resolved groups are read from the signed Info.plist. Before any identity,
+App Attest, installation-key, or session operation, the SDK proves the private
+group is the signed default and rejects stale root state at the explicit
+component groups without migrating or deleting it.
 
 An unsigned compile is a useful static gate only:
 

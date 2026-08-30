@@ -140,6 +140,8 @@ private final class ConformanceModel: ObservableObject {
         let appAttest = LatchwayAppAttestProvider(
             applicationID: values.applicationID,
             environment: values.environment,
+            rootKeychainAccessGroup: values.rootKeychainAccessGroup,
+            legacySharedKeychainAccessGroups: values.legacySharedKeychainAccessGroups,
             clientRuntime: .iOS
         )
         do {
@@ -149,12 +151,16 @@ private final class ConformanceModel: ObservableObject {
             try await LatchwayKeychainSessionStorage(
                 applicationID: values.applicationID,
                 environment: values.environment,
+                rootKeychainAccessGroup: values.rootKeychainAccessGroup,
+                legacySharedKeychainAccessGroups: values.legacySharedKeychainAccessGroups,
                 clientRuntime: .iOS
             ).clear()
             try await appAttest.reset()
             try await LatchwayInstallationKeyManager(
                 applicationID: values.applicationID,
                 environment: values.environment,
+                rootKeychainAccessGroup: values.rootKeychainAccessGroup,
+                legacySharedKeychainAccessGroups: values.legacySharedKeychainAccessGroups,
                 clientRuntime: .iOS,
                 softwareFallbackPolicy: .disallow
             ).reset()
@@ -211,11 +217,15 @@ private final class ConformanceModel: ObservableObject {
             try await LatchwayKeychainSessionStorage(
                 applicationID: values.applicationID,
                 environment: values.environment,
+                rootKeychainAccessGroup: values.rootKeychainAccessGroup,
+                legacySharedKeychainAccessGroups: values.legacySharedKeychainAccessGroups,
                 clientRuntime: .iOS
             ).clear()
             let assertionProvider = LatchwayAppAttestProvider(
                 applicationID: values.applicationID,
                 environment: values.environment,
+                rootKeychainAccessGroup: values.rootKeychainAccessGroup,
+                legacySharedKeychainAccessGroups: values.legacySharedKeychainAccessGroups,
                 clientRuntime: .iOS
             )
             let assertionClient = makeClient(
@@ -335,6 +345,8 @@ private final class ConformanceModel: ObservableObject {
                 baseURL: values.gateway,
                 applicationID: values.applicationID,
                 environment: values.environment,
+                rootKeychainAccessGroup: values.rootKeychainAccessGroup,
+                legacySharedKeychainAccessGroups: values.legacySharedKeychainAccessGroups,
                 identityProvider: values.identityProvider,
                 appVersion: values.appVersion,
                 softwareKeyFallbackPolicy: .disallow,
@@ -352,6 +364,8 @@ private final class ConformanceModel: ObservableObject {
         let appAttest = LatchwayAppAttestProvider(
             applicationID: values.applicationID,
             environment: values.environment,
+            rootKeychainAccessGroup: values.rootKeychainAccessGroup,
+            legacySharedKeychainAccessGroups: values.legacySharedKeychainAccessGroups,
             clientRuntime: .iOS
         )
         let client = makeClient(
@@ -505,6 +519,8 @@ private struct Values {
     let applicationID: String
     let environment: String
     let identityProvider: String
+    let rootKeychainAccessGroup: String
+    let legacySharedKeychainAccessGroups: [String]
     private var registrationIdentityToken: String?
     private var assertionIdentityToken: String?
     let feature: String
@@ -577,15 +593,48 @@ private struct Values {
               let signedIdentityProvider = Bundle.main.object(
                   forInfoDictionaryKey: "LatchwayIdentityProvider"
               ) as? String,
+              let rootKeychainAccessGroup = Bundle.main.object(
+                  forInfoDictionaryKey: "LatchwayRootKeychainAccessGroup"
+              ) as? String,
+              let widgetKeychainAccessGroup = Bundle.main.object(
+                  forInfoDictionaryKey: "LatchwayWidgetKeychainAccessGroup"
+              ) as? String,
+              let shareKeychainAccessGroup = Bundle.main.object(
+                  forInfoDictionaryKey: "LatchwayShareKeychainAccessGroup"
+              ) as? String,
+              let actionKeychainAccessGroup = Bundle.main.object(
+                  forInfoDictionaryKey: "LatchwayActionKeychainAccessGroup"
+              ) as? String,
               applicationID == signedApplicationID,
               environment == signedEnvironment,
               identityProvider == signedIdentityProvider,
               let identifier = Bundle.main.bundleIdentifier
         else { return nil }
+        let legacySharedKeychainAccessGroups = [
+            widgetKeychainAccessGroup,
+            shareKeychainAccessGroup,
+            actionKeychainAccessGroup,
+        ]
+        guard rootKeychainAccessGroup.range(
+            of: "^[A-Za-z0-9][A-Za-z0-9.-]{2,254}$",
+            options: .regularExpression
+        ) != nil,
+        !rootKeychainAccessGroup.contains("$("),
+        legacySharedKeychainAccessGroups.allSatisfy({
+            !$0.contains("$(") && $0.range(
+                of: "^[A-Za-z0-9][A-Za-z0-9.-]{2,254}$",
+                options: .regularExpression
+            ) != nil
+        }),
+        !legacySharedKeychainAccessGroups.contains(rootKeychainAccessGroup),
+        Set(legacySharedKeychainAccessGroups).count == legacySharedKeychainAccessGroups.count
+        else { return nil }
         self.gateway = gateway
         self.applicationID = signedApplicationID
         self.environment = signedEnvironment
         self.identityProvider = signedIdentityProvider
+        self.rootKeychainAccessGroup = rootKeychainAccessGroup
+        self.legacySharedKeychainAccessGroups = legacySharedKeychainAccessGroups
         let grantsAbsent = registrationIdentityToken == nil && assertionIdentityToken == nil
         let grantsValid = registrationIdentityToken.map { (16 ... 65_536).contains($0.utf8.count) } == true
             && assertionIdentityToken.map { (16 ... 65_536).contains($0.utf8.count) } == true
@@ -619,6 +668,7 @@ private struct Values {
             "latchway_application_id": signedApplicationID,
             "latchway_environment": signedEnvironment,
             "identity_provider": signedIdentityProvider,
+            "root_keychain_access_group": rootKeychainAccessGroup,
             "app_version": appVersion,
             "build_number": buildNumber,
             "team_id": teamID,
@@ -655,6 +705,7 @@ private struct Values {
             && observedPins["latchway_application_id"] == applicationID
             && observedPins["latchway_environment"] == environment
             && observedPins["identity_provider"] == identityProvider
+            && observedPins["root_keychain_access_group"] == rootKeychainAccessGroup
             && observedPins["app_version"] == appVersion
             && observedPins["build_number"] == buildNumber
             && appAttestEnvironment == "production"

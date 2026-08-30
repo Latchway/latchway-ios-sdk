@@ -142,7 +142,7 @@ def require_candidate_identity(
     role: str,
     bundle_id: str,
     extension_point: str | None,
-    expected_groups: set[str],
+    expected_groups: list[str],
     app_attest: bool,
     expected_profile_uuid: str,
     team_id: str,
@@ -192,7 +192,7 @@ def require_candidate_identity(
     if entitlements.get("get-task-allow") not in {None, False}:
         raise CandidateError(f"{role} candidate is debuggable")
     groups = entitlements.get("keychain-access-groups")
-    if not isinstance(groups, list) or len(groups) != len(set(groups)) or set(groups) != expected_groups:
+    if not isinstance(groups, list) or groups != expected_groups:
         raise CandidateError(f"{role} Keychain groups do not prove the required isolation")
     attest_value = entitlements.get("com.apple.developer.devicecheck.appattest-environment")
     if app_attest and attest_value != "production":
@@ -360,6 +360,7 @@ def main() -> int:
         "LatchwayApplicationID": application_id,
         "LatchwayEnvironment": environment,
         "LatchwayIdentityProvider": identity_provider,
+        "LatchwayRootKeychainAccessGroup": access_groups["host"],
         "LatchwayGatewayURL": gateway_origin,
         "LatchwayHostComponentDefinitionID": definitions["host"],
         "LatchwayShareBundleID": identifiers["share"],
@@ -385,7 +386,12 @@ def main() -> int:
                 role="host",
                 bundle_id=identifiers["host"],
                 extension_point=None,
-                expected_groups=set(access_groups.values()),
+                expected_groups=[
+                    access_groups["host"],
+                    access_groups["widget"],
+                    access_groups["share"],
+                    access_groups["action"],
+                ],
                 app_attest=True,
                 expected_profile_uuid=profile_uuids["host"],
                 team_id=team_id,
@@ -402,7 +408,7 @@ def main() -> int:
                 role="widget",
                 bundle_id=identifiers["widget"],
                 extension_point="com.apple.widgetkit-extension",
-                expected_groups={access_groups["widget"]},
+                expected_groups=[access_groups["widget"]],
                 app_attest=False,
                 expected_profile_uuid=profile_uuids["widget"],
                 team_id=team_id,
@@ -419,7 +425,7 @@ def main() -> int:
                 role="share",
                 bundle_id=identifiers["share"],
                 extension_point="com.apple.share-services",
-                expected_groups={access_groups["share"]},
+                expected_groups=[access_groups["share"]],
                 app_attest=False,
                 expected_profile_uuid=profile_uuids["share"],
                 team_id=team_id,
@@ -436,7 +442,7 @@ def main() -> int:
                 role="action",
                 bundle_id=identifiers["action"],
                 extension_point="com.apple.ui-services",
-                expected_groups={access_groups["action"]},
+                expected_groups=[access_groups["action"]],
                 app_attest=False,
                 expected_profile_uuid=profile_uuids["action"],
                 team_id=team_id,

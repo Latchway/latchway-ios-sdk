@@ -4,15 +4,18 @@ import LatchwayAppAttest
 
 func performRequest(identity: any LatchwayIdentityTokenProvider, body: Data) async throws -> Data {
     let baseURL = URL(string: "https://gateway.example.com")!
+    let rootKeychainAccessGroup = "ABCDE12345.com.example.app"
     let appAttest = LatchwayAppAttestProvider(
         applicationID: "app_01J00000000000000000000000",
-        environment: "production"
+        environment: "production",
+        rootKeychainAccessGroup: rootKeychainAccessGroup
     )
     let client = LatchwayClient(
         configuration: LatchwayConfiguration(
             baseURL: baseURL,
             applicationID: "app_01J00000000000000000000000",
             environment: "production",
+            rootKeychainAccessGroup: rootKeychainAccessGroup,
             appVersion: "1.0.0",
             attestationProvider: appAttest
         ),

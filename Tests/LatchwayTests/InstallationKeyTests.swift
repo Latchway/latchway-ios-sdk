@@ -3,6 +3,41 @@ import Foundation
 import XCTest
 
 final class InstallationKeyTests: XCTestCase {
+    func testRootPreflightIsCachedBeforeInstallationKeyStorageAccess() async throws {
+        let counter = LockedPreflightCounter()
+        let manager = LatchwayInstallationKeyManager(
+            softwareFallbackPolicy: .allowWhenSecureEnclaveUnavailable,
+            store: MemorySecureStore(),
+            preferSecureEnclave: false,
+            rootKeychainPreflight: { counter.increment() }
+        )
+
+        _ = try await manager.publicJWK()
+        _ = try await manager.publicJWK()
+        XCTAssertEqual(counter.value, 1)
+    }
+
+    func testRootPreflightFailureDoesNotReadOrMutateInstallationKeyStorage() async {
+        let store = CountingSecureStore()
+        let manager = LatchwayInstallationKeyManager(
+            softwareFallbackPolicy: .allowWhenSecureEnclaveUnavailable,
+            store: store,
+            preferSecureEnclave: false,
+            rootKeychainPreflight: { throw LatchwayError.rootKeychainMigrationRequired }
+        )
+
+        do {
+            _ = try await manager.publicJWK()
+            XCTFail("Expected migration failure")
+        } catch let error as LatchwayError {
+            XCTAssertEqual(error, .rootKeychainMigrationRequired)
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+        let operationCount = await store.operationCount()
+        XCTAssertEqual(operationCount, 0)
+    }
+
     func testSoftwareFallbackPersistsAndRotatesKey() async throws {
         let store = MemorySecureStore()
         let first = LatchwayInstallationKeyManager(
@@ -147,4 +182,27 @@ private actor MemorySecureStore: LatchwaySecureDataStoring {
     func read(account: String) async throws -> Data? { values[account] }
     func write(_ data: Data, account: String) async throws { values[account] = data }
     func delete(account: String) async throws { values[account] = nil }
+}
+
+private actor CountingSecureStore: LatchwaySecureDataStoring {
+    private var operations = 0
+    func read(account: String) async throws -> Data? { operations += 1; return nil }
+    func write(_ data: Data, account: String) async throws { operations += 1 }
+    func delete(account: String) async throws { operations += 1 }
+    func operationCount() -> Int { operations }
+}
+
+private final class LockedPreflightCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    func increment() {
+        lock.lock()
+        count += 1
+        lock.unlock()
+    }
+    var value: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return count
+    }
 }

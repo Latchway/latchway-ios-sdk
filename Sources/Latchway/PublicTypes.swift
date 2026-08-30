@@ -33,6 +33,13 @@ public struct LatchwayConfiguration: Sendable {
     public let baseURL: URL
     public let applicationID: String
     public let environment: String
+    /// The fully resolved, private app-ID Keychain access group that appears
+    /// first in the containing application's signed entitlements.
+    public let rootKeychainAccessGroup: String
+    /// Explicit shared groups that may contain pre-v1 root records created by
+    /// an earlier shared-first entitlement order. These groups are inspected
+    /// only at Latchway's exact root record coordinates and are never mutated.
+    public let legacySharedKeychainAccessGroups: [String]
     public let identityProvider: String
     public let clientRuntime: LatchwayClientRuntime
     public let clientSDKVersion: String
@@ -45,6 +52,8 @@ public struct LatchwayConfiguration: Sendable {
         baseURL: URL,
         applicationID: String,
         environment: String,
+        rootKeychainAccessGroup: String,
+        legacySharedKeychainAccessGroups: [String] = [],
         identityProvider: String = "firebase",
         clientRuntime: LatchwayClientRuntime = .iOS,
         clientSDKVersion: String = LatchwayVersion.sdk,
@@ -56,6 +65,8 @@ public struct LatchwayConfiguration: Sendable {
         self.baseURL = baseURL
         self.applicationID = applicationID
         self.environment = environment
+        self.rootKeychainAccessGroup = rootKeychainAccessGroup
+        self.legacySharedKeychainAccessGroups = legacySharedKeychainAccessGroups
         self.identityProvider = identityProvider
         self.clientRuntime = clientRuntime
         self.clientSDKVersion = clientSDKVersion

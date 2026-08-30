@@ -86,6 +86,17 @@ namespaced by application, environment, and client runtime. This prevents a
 native iOS client and a React Native client in the same host application from
 sharing a platform-bound grant or refresh-token rotation state.
 
+Every root Keychain read, update, add, and delete includes the caller's fully
+resolved private `rootKeychainAccessGroup`. Before identity, attestation, key,
+or session work, a random sentinel written through the signed default group is
+read only through that exact explicit group. Extension-shared groups are
+provided separately in `legacySharedKeychainAccessGroups` and scanned only at
+known Latchway root service/account coordinates, including when the private
+group correctly passes the sentinel. A stale shared-first record fails with
+`rootKeychainMigrationRequired`; v1 does not perform an implicit migration or
+destructive cleanup. The sentinel itself is the only group-less Keychain item,
+and its random coordinate is deleted immediately after the check.
+
 ## Transport boundary
 
 Authorization mutates ordinary `URLRequest` values so existing HTTP

@@ -242,6 +242,9 @@ class PhysicalEvidenceWorkflowTests(unittest.TestCase):
             1,
         )
         self.assertIn('.string(hostAccessGroup)', self.project)
+        self.assertIn('"LatchwayRootKeychainAccessGroup": .string(hostAccessGroup)', self.project)
+        self.assertIn("groups != list(sys.argv[2:])", self.runner)
+        self.assertIn('expected_groups=[\n                    access_groups["host"]', self.inspector)
         self.assertIn('.string(widgetAccessGroup)', self.project)
         self.assertIn('.string(shareAccessGroup)', self.project)
         self.assertIn('.string(actionAccessGroup)', self.project)

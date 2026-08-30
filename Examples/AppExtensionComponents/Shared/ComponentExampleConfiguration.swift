@@ -9,10 +9,18 @@ enum ComponentExampleConfiguration {
         let applicationID = try requiredString("LatchwayApplicationID")
         let environment = try requiredString("LatchwayEnvironment")
         let identityProvider = try requiredString("LatchwayIdentityProvider")
+        let rootKeychainAccessGroup = try requiredString("LatchwayRootKeychainAccessGroup")
+        let legacySharedKeychainAccessGroups = [
+            optionalString("LatchwayWidgetKeychainAccessGroup"),
+            optionalString("LatchwayShareKeychainAccessGroup"),
+            optionalString("LatchwayActionKeychainAccessGroup"),
+        ].compactMap { $0 }
         return LatchwayConfiguration(
             baseURL: gateway,
             applicationID: applicationID,
             environment: environment,
+            rootKeychainAccessGroup: rootKeychainAccessGroup,
+            legacySharedKeychainAccessGroups: legacySharedKeychainAccessGroups,
             identityProvider: identityProvider,
             softwareKeyFallbackPolicy: .disallow,
             attestationProvider: attestationProvider
@@ -54,6 +62,18 @@ enum ComponentExampleConfiguration {
         try [widget(), share(), action()]
     }
 
+    static func rootKeychainAccessGroup() throws -> String {
+        try requiredString("LatchwayRootKeychainAccessGroup")
+    }
+
+    static func legacySharedKeychainAccessGroups() -> [String] {
+        [
+            optionalString("LatchwayWidgetKeychainAccessGroup"),
+            optionalString("LatchwayShareKeychainAccessGroup"),
+            optionalString("LatchwayActionKeychainAccessGroup"),
+        ].compactMap { $0 }
+    }
+
     static func feature(for component: LatchwayComponentConfiguration) throws -> String {
         guard let feature = component.requestedFeatures.first,
               component.requestedFeatures.count == 1
@@ -77,6 +97,13 @@ enum ComponentExampleConfiguration {
             keychainAccessGroup: accessGroup,
             requestedFeatures: [try requiredString(featureKey)]
         )
+    }
+
+    private static func optionalString(_ key: String) -> String? {
+        guard let value = Bundle.main.object(forInfoDictionaryKey: key) as? String,
+              !value.isEmpty
+        else { return nil }
+        return value
     }
 
     private static func requiredString(_ key: String) throws -> String {

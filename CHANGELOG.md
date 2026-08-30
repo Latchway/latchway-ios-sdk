@@ -7,6 +7,13 @@ Versioning once package publication begins.
 
 ## [Unreleased]
 
+### Changed
+
+- Require a fully resolved private root Keychain access group, prove it is the
+  signed default before root work, explicitly scope every root/App Attest
+  Security query, and fail closed when known root records remain in declared
+  extension-shared groups.
+
 ## [1.0.0] - 2026-08-29
 
 ### Added
