@@ -50,6 +50,7 @@ final class ComponentSessionTests: XCTestCase {
                     var request = URLRequest(
                         url: URL(string: "https://gateway.example.test/v1/responses")!
                     )
+                    request.httpMethod = "POST"
                     try await fixture.client.authorize(&request, feature: "habit-assistant")
                     return request
                 }
@@ -75,6 +76,7 @@ final class ComponentSessionTests: XCTestCase {
             var request = URLRequest(
                 url: URL(string: "https://gateway.example.test/v1/responses")!
             )
+            request.httpMethod = "POST"
             try await fixture.client.authorize(&request, feature: "habit-assistant")
             return request
         }
@@ -90,6 +92,7 @@ final class ComponentSessionTests: XCTestCase {
         var next = URLRequest(
             url: URL(string: "https://gateway.example.test/v1/responses")!
         )
+        next.httpMethod = "POST"
         try await fixture.client.authorize(&next, feature: "habit-assistant")
         XCTAssertNotNil(next.value(forHTTPHeaderField: "DPoP"))
         let exchanges = await fixture.server.requestCount(path: "/client/v1/component-sessions")
@@ -104,6 +107,7 @@ final class ComponentSessionTests: XCTestCase {
         var first = URLRequest(
             url: URL(string: "https://gateway.example.test/v1/responses")!
         )
+        first.httpMethod = "POST"
         do {
             try await fixture.client.authorize(&first, feature: "habit-assistant")
             XCTFail("The rotated response must not escape before persistence")
@@ -114,6 +118,7 @@ final class ComponentSessionTests: XCTestCase {
         var recovered = URLRequest(
             url: URL(string: "https://gateway.example.test/v1/responses")!
         )
+        recovered.httpMethod = "POST"
         try await fixture.client.authorize(&recovered, feature: "habit-assistant")
 
         let refreshes = await fixture.server.requests(path: "/client/v1/sessions/refresh")
@@ -144,6 +149,7 @@ final class ComponentSessionTests: XCTestCase {
         var request = URLRequest(
             url: URL(string: "https://gateway.example.test/v1/responses")!
         )
+        request.httpMethod = "POST"
 
         do {
             try await fixture.client.authorize(&request, feature: "habit-assistant")
@@ -158,6 +164,101 @@ final class ComponentSessionTests: XCTestCase {
         XCTAssertNil(request.value(forHTTPHeaderField: "DPoP"))
     }
 
+    func testExtensionRuntimeCannotConsumeAnotherPlatformCredential() async throws {
+        let cases: [(runtime: LatchwayClientRuntime, storedPlatform: String)] = [
+            (.iOS, "react_native_ios"),
+            (.reactNativeIOS, "ios"),
+        ]
+
+        for testCase in cases {
+            let fixture = try await makeFixture(
+                kind: .sessionRefreshToken,
+                storedPlatform: testCase.storedPlatform,
+                refreshPlatform: testCase.storedPlatform,
+                clientRuntime: testCase.runtime
+            )
+            var request = URLRequest(
+                url: URL(string: "https://gateway.example.test/v1/responses")!
+            )
+            request.httpMethod = "POST"
+
+            do {
+                try await fixture.client.authorize(&request, feature: "habit-assistant")
+                XCTFail("A component credential from another runtime must fail closed")
+            } catch let error as LatchwayComponentError {
+                XCTAssertEqual(error, .componentKeyUnavailable)
+            }
+
+            let requestCount = await fixture.server.requestCount()
+            XCTAssertEqual(requestCount, 0)
+            XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+            XCTAssertNil(request.value(forHTTPHeaderField: "DPoP"))
+        }
+    }
+
+    func testReactNativeIOSExtensionAcceptsOnlyMatchingRuntimePlatform() async throws {
+        let fixture = try await makeFixture(
+            kind: .sessionRefreshToken,
+            storedPlatform: "react_native_ios",
+            refreshPlatform: "react_native_ios",
+            clientRuntime: .reactNativeIOS
+        )
+        var request = URLRequest(
+            url: URL(string: "https://gateway.example.test/v1/responses")!
+        )
+        request.httpMethod = "POST"
+
+        try await fixture.client.authorize(&request, feature: "habit-assistant")
+
+        let stored = await fixture.storage.load()
+        let refreshCount = await fixture.server.requestCount(
+            path: "/client/v1/sessions/refresh"
+        )
+        XCTAssertEqual(request.value(forHTTPHeaderField: "X-Latchway-SDK"), "react-native")
+        XCTAssertEqual(stored?.component.platform, "react_native_ios")
+        XCTAssertEqual(refreshCount, 1)
+    }
+
+    func testRefreshGrantCannotCrossIOSAndReactNativeIOSPlatforms() async throws {
+        let cases: [(
+            runtime: LatchwayClientRuntime,
+            storedPlatform: String,
+            responsePlatform: String
+        )] = [
+            (.iOS, "ios", "react_native_ios"),
+            (.reactNativeIOS, "react_native_ios", "ios"),
+        ]
+
+        for testCase in cases {
+            let fixture = try await makeFixture(
+                kind: .sessionRefreshToken,
+                storedPlatform: testCase.storedPlatform,
+                refreshPlatform: testCase.responsePlatform,
+                clientRuntime: testCase.runtime
+            )
+            var request = URLRequest(
+                url: URL(string: "https://gateway.example.test/v1/responses")!
+            )
+            request.httpMethod = "POST"
+
+            do {
+                try await fixture.client.authorize(&request, feature: "habit-assistant")
+                XCTFail("A refresh grant for another runtime must fail closed")
+            } catch let error as LatchwayError {
+                XCTAssertEqual(error, .invalidServerResponse)
+            }
+
+            let stored = await fixture.storage.load()
+            let refreshCount = await fixture.server.requestCount(
+                path: "/client/v1/sessions/refresh"
+            )
+            XCTAssertEqual(stored?.component.platform, testCase.storedPlatform)
+            XCTAssertEqual(stored?.rotationToken, String(repeating: "s", count: 64))
+            XCTAssertEqual(refreshCount, 1)
+            XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+        }
+    }
+
     func testRefreshReuseRetiresComponentCredential() async throws {
         let fixture = try await makeFixture(
             kind: .sessionRefreshToken,
@@ -166,6 +267,7 @@ final class ComponentSessionTests: XCTestCase {
         var request = URLRequest(
             url: URL(string: "https://gateway.example.test/v1/responses")!
         )
+        request.httpMethod = "POST"
 
         do {
             try await fixture.client.authorize(&request, feature: "habit-assistant")
@@ -187,6 +289,7 @@ final class ComponentSessionTests: XCTestCase {
         var request = URLRequest(
             url: URL(string: "https://gateway.example.test/v1/responses")!
         )
+        request.httpMethod = "POST"
         await XCTAssertComponentThrowsError {
             try await fixture.client.authorize(&request, feature: "habit-assistant")
         }
@@ -262,6 +365,146 @@ final class ComponentSessionTests: XCTestCase {
         XCTAssertNil(request.value(forHTTPHeaderField: "DPoP"))
     }
 
+    func testConcurrentDirectComponentAttestationUsesOneChallengeAndPersistsCompositeTrust() async throws {
+        let fixture = try await makeDirectAttestationFixture()
+
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for _ in 0 ..< 12 {
+                group.addTask {
+                    try await fixture.client.establishDirectAttestation()
+                }
+            }
+            try await group.waitForAll()
+        }
+        try await fixture.client.establishDirectAttestation()
+
+        let challengePath = "/client/v1/installation-families/current/components/"
+            + "cmp_01J00000000000000000000000/attestation-challenges"
+        let exchangePath = "/client/v1/installation-families/current/components/"
+            + "cmp_01J00000000000000000000000/attestation-exchanges"
+        let requests = await fixture.server.requests
+        XCTAssertEqual(requests.filter { $0.url?.path == challengePath }.count, 1)
+        XCTAssertEqual(requests.filter { $0.url?.path == exchangePath }.count, 1)
+        for request in requests where [challengePath, exchangePath].contains(request.url?.path) {
+            XCTAssertTrue(request.value(forHTTPHeaderField: "Authorization")?.hasPrefix("DPoP ") == true)
+            XCTAssertNotNil(request.value(forHTTPHeaderField: "DPoP"))
+            XCTAssertEqual(request.httpMethod, "POST")
+        }
+
+        let exchange = try XCTUnwrap(requests.first { $0.url?.path == exchangePath })
+        let exchangeObject = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: try XCTUnwrap(exchange.httpBody)) as? [String: Any]
+        )
+        XCTAssertEqual(exchangeObject["challenge_id"] as? String, "chl_01J00000000000000000000003")
+        let evidence = try XCTUnwrap(exchangeObject["attestation"] as? [String: Any])
+        XCTAssertEqual(evidence["provider"] as? String, "app_attest")
+
+        let challenges = await fixture.provider.challenges
+        let accepted = await fixture.provider.acceptedEvidence
+        XCTAssertEqual(challenges.count, 1)
+        XCTAssertEqual(challenges[0].provider, "app_attest")
+        XCTAssertEqual(challenges[0].clientDataHash, Data(repeating: 7, count: 32))
+        XCTAssertEqual(challenges[0].options["bundle_id"], .string("com.example.action"))
+        XCTAssertEqual(accepted.count, 1)
+
+        let stored = await fixture.storage.load()
+        XCTAssertEqual(stored?.trustSource, .delegatedDirectAttested)
+        XCTAssertEqual(stored?.rotationToken, String(repeating: "d", count: 64))
+        let diagnostics = await fixture.client.diagnostics()
+        XCTAssertEqual(diagnostics.trustSource, .delegatedDirectAttested)
+        XCTAssertTrue(diagnostics.sessionAvailable)
+        XCTAssertFalse(diagnostics.containingAppActionRequired)
+    }
+
+    func testReactNativeIOSDirectAttestationRetainsExactComponentPlatform() async throws {
+        let fixture = try await makeDirectAttestationFixture(
+            clientRuntime: .reactNativeIOS,
+            componentPlatform: "react_native_ios"
+        )
+
+        try await fixture.client.establishDirectAttestation()
+
+        let stored = await fixture.storage.load()
+        let requests = await fixture.server.requests
+        XCTAssertEqual(stored?.component.platform, "react_native_ios")
+        XCTAssertEqual(stored?.trustSource, .delegatedDirectAttested)
+        XCTAssertTrue(requests.allSatisfy {
+            $0.value(forHTTPHeaderField: "X-Latchway-SDK") == "react-native"
+        })
+    }
+
+    private struct DirectAttestationFixture {
+        let client: LatchwayExtensionClient
+        let storage: ComponentMemoryStorage
+        let server: DirectComponentAttestationServer
+        let provider: DirectComponentAttestationProvider
+    }
+
+    private func makeDirectAttestationFixture(
+        clientRuntime: LatchwayClientRuntime = .iOS,
+        componentPlatform: String = "ios"
+    ) async throws -> DirectAttestationFixture {
+        let raw = try decodeBase64URL("2ZFd1bc5bCB8zu8OEf5l7O9x_SxbsQNQMNn0si4NxxI")
+        let key = try LatchwayDeterministicInstallationKey(rawPrivateKey: raw)
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let clock = LatchwayTestClock(now: now)
+        let thumbprint = try await LatchwayDPoPProofFactory(key: key, clock: clock).thumbprint()
+        let component = LatchwayComponentConfiguration(
+            definitionID: "action_extension",
+            kind: "action_extension",
+            keychainAccessGroup: "TEAM123456.com.example.latchway.action",
+            requestedFeatures: ["habit-assistant"]
+        )
+        let stored = LatchwayStoredComponentCredential(
+            family: .init(id: "fam_01J00000000000000000000000", status: "active"),
+            component: .init(
+                id: "cmp_01J00000000000000000000000",
+                definitionID: component.definitionID,
+                kind: component.kind,
+                platform: componentPlatform,
+                isRoot: false,
+                dpopJKT: thumbprint,
+                status: "active",
+                grantedFeatures: component.requestedFeatures
+            ),
+            requestedFeatures: component.requestedFeatures,
+            trustSource: .delegatedFromAttestedRoot,
+            trustExpiresAt: now.addingTimeInterval(7_200),
+            keyThumbprint: thumbprint,
+            rotationToken: String(repeating: "s", count: 64),
+            rotationExpiresAt: now.addingTimeInterval(7_200),
+            kind: .sessionRefreshToken
+        )
+        let storage = ComponentMemoryStorage(credential: stored)
+        let server = DirectComponentAttestationServer(
+            thumbprint: thumbprint,
+            now: now,
+            componentPlatform: componentPlatform
+        )
+        let provider = DirectComponentAttestationProvider()
+        let configuration = LatchwayConfiguration(
+            baseURL: URL(string: "https://gateway.example.test")!,
+            applicationID: "app_01J00000000000000000000000",
+            environment: "production",
+            clientRuntime: clientRuntime,
+            appVersion: "1.2.3"
+        )
+        return DirectAttestationFixture(
+            client: try LatchwayExtensionClient(
+                configuration: configuration,
+                component: component,
+                key: key,
+                storage: storage,
+                transport: server,
+                clock: clock,
+                directAttestationProvider: provider
+            ),
+            storage: storage,
+            server: server,
+            provider: provider
+        )
+    }
+
     private struct Fixture {
         let client: LatchwayExtensionClient
         let storage: ComponentMemoryStorage
@@ -272,9 +515,11 @@ final class ComponentSessionTests: XCTestCase {
         kind: LatchwayComponentCredentialKind,
         failingSaveCalls: Set<Int> = [],
         serverDelay: Duration? = nil,
+        storedPlatform: String = "ios",
         refreshPlatform: String = "ios",
         refreshRejection: String? = nil,
-        baseURL: URL = URL(string: "https://gateway.example.test")!
+        baseURL: URL = URL(string: "https://gateway.example.test")!,
+        clientRuntime: LatchwayClientRuntime = .iOS
     ) async throws -> Fixture {
         let raw = try decodeBase64URL("2ZFd1bc5bCB8zu8OEf5l7O9x_SxbsQNQMNn0si4NxxI")
         let key = try LatchwayDeterministicInstallationKey(rawPrivateKey: raw)
@@ -291,7 +536,7 @@ final class ComponentSessionTests: XCTestCase {
                 id: "cmp_01J00000000000000000000000",
                 definitionID: component.definitionID,
                 kind: component.kind,
-                platform: "ios",
+                platform: storedPlatform,
                 isRoot: false,
                 dpopJKT: thumbprint,
                 status: "active",
@@ -320,6 +565,7 @@ final class ComponentSessionTests: XCTestCase {
             baseURL: baseURL,
             applicationID: "app_01J00000000000000000000000",
             environment: "production",
+            clientRuntime: clientRuntime,
             appVersion: "1.2.3"
         )
         return Fixture(
@@ -334,6 +580,151 @@ final class ComponentSessionTests: XCTestCase {
             storage: storage,
             server: server
         )
+    }
+}
+
+private actor DirectComponentAttestationProvider: LatchwayAttestationProvider {
+    private(set) var challenges: [LatchwayAttestationChallenge] = []
+    private(set) var acceptedEvidence: [LatchwayAttestationEvidence] = []
+
+    func evidence(
+        for challenge: LatchwayAttestationChallenge
+    ) -> LatchwayAttestationEvidence {
+        challenges.append(challenge)
+        return LatchwayAttestationEvidence(provider: "app_attest", evidence: [
+            "key_id": .string("component-app-attest-key"),
+            "attestation_object": .string("Y29tcG9uZW50LWF0dGVzdGF0aW9u"),
+            "client_data_hash": .string(Base64URL.encode(challenge.clientDataHash)),
+        ])
+    }
+
+    func didAccept(_ evidence: LatchwayAttestationEvidence) {
+        acceptedEvidence.append(evidence)
+    }
+
+    func reset() {
+        challenges = []
+        acceptedEvidence = []
+    }
+
+    func status() -> LatchwayAttestationStatus {
+        .init(support: .supported, keyID: "component-app-attest-key")
+    }
+}
+
+private actor DirectComponentAttestationServer: LatchwayHTTPTransport {
+    private let thumbprint: String
+    private let now: Date
+    private let componentPlatform: String
+    private(set) var requests: [URLRequest] = []
+
+    init(thumbprint: String, now: Date, componentPlatform: String) {
+        self.thumbprint = thumbprint
+        self.now = now
+        self.componentPlatform = componentPlatform
+    }
+
+    func send(_ request: URLRequest) throws -> LatchwayHTTPResponse {
+        requests.append(request)
+        let componentBase = "/client/v1/installation-families/current/components/"
+            + "cmp_01J00000000000000000000000"
+        switch request.url?.path {
+        case "/client/v1/sessions/refresh":
+            return try grant(
+                statusCode: 200,
+                accessTokenByte: "a",
+                refreshTokenByte: "r",
+                trustSource: "delegated_from_attested_root"
+            )
+        case componentBase + "/attestation-challenges":
+            return try jsonResponse(statusCode: 201, object: [
+                "challenge_id": "chl_01J00000000000000000000003",
+                "challenge_nonce": Base64URL.encode(Data(repeating: 0x22, count: 32)),
+                "binding_version": 2,
+                "issued_at": Int64(now.timeIntervalSince1970),
+                "expires_at": dateString(now.addingTimeInterval(300)),
+                "attestation": [
+                    "provider": "app_attest",
+                    "mode": "required",
+                    "client_data_hash": Base64URL.encode(Data(repeating: 7, count: 32)),
+                    "provider_options": [
+                        "app_id_prefix": "TEAM123456",
+                        "bundle_id": "com.example.action",
+                    ],
+                ],
+            ])
+        case componentBase + "/attestation-exchanges":
+            return try grant(
+                statusCode: 201,
+                accessTokenByte: "b",
+                refreshTokenByte: "d",
+                trustSource: "delegated_direct_attested"
+            )
+        default:
+            return try jsonResponse(statusCode: 500, object: [:])
+        }
+    }
+
+    private func grant(
+        statusCode: Int,
+        accessTokenByte: String,
+        refreshTokenByte: String,
+        trustSource: String
+    ) throws -> LatchwayHTTPResponse {
+        try jsonResponse(statusCode: statusCode, object: [
+            "access_token": String(repeating: accessTokenByte, count: 96),
+            "token_type": "DPoP",
+            "expires_in": 900,
+            "refresh_token": String(repeating: refreshTokenByte, count: 64),
+            "refresh_expires_in": 3_600,
+            "installation": [
+                "id": "ins_01J00000000000000000000000",
+                "platform": componentPlatform,
+                "dpop_jkt": thumbprint,
+                "status": "active",
+            ],
+            "installation_family": [
+                "id": "fam_01J00000000000000000000000",
+                "status": "active",
+            ],
+            "component": [
+                "id": "cmp_01J00000000000000000000000",
+                "definition_id": "action_extension",
+                "kind": "action_extension",
+                "platform": componentPlatform,
+                "is_root": false,
+                "dpop_jkt": thumbprint,
+                "status": "active",
+                "granted_features": ["habit-assistant"],
+            ],
+            "trust": [
+                "provider": "app_attest",
+                "level": "app_verified",
+                "source": trustSource,
+                "parent_component_id": "cmp_01J00000000000000000000001",
+                "parent_attestation_provider": "app_attest",
+                "delegation_id": "dlg_01J00000000000000000000000",
+                "verified_at": dateString(now),
+                "expires_at": dateString(now.addingTimeInterval(7_200)),
+            ],
+        ])
+    }
+
+    private func jsonResponse(
+        statusCode: Int,
+        object: [String: Any]
+    ) throws -> LatchwayHTTPResponse {
+        LatchwayHTTPResponse(
+            statusCode: statusCode,
+            headers: ["Content-Type": "application/json"],
+            body: try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        )
+    }
+
+    private func dateString(_ date: Date) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.string(from: date)
     }
 }
 
@@ -442,7 +833,7 @@ private actor ComponentServerTransport: LatchwayHTTPTransport {
                     "id": "cmp_01J00000000000000000000000",
                     "definition_id": "home_widget",
                     "kind": "widget",
-                    "platform": "ios",
+                    "platform": refreshPlatform,
                     "is_root": false,
                     "dpop_jkt": thumbprint,
                     "status": "active",

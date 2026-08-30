@@ -31,5 +31,8 @@ tuist generate --path Examples/AppAttestConformance --no-open
 
 Use the protected workflow and `../../docs/real-device-conformance.md` for the
 actual run. The app writes only `Documents/latchway-device-observation.json`.
-That observation is deliberately not a pass until the external signature,
-profile, schema, redaction, and physical-run validator accepts it.
+The root-owned physical collector separately produces
+`component-observation.json` from the signed host/Widget/Share/Action candidate;
+the app never fabricates component lifecycle claims. Neither observation is a
+pass until the external signature, profile, schema, redaction, and physical-run
+validator accepts both exact files.

@@ -75,10 +75,13 @@ public struct LatchwaySwiftOpenAIHTTPClient: HTTPClient, Sendable {
                         try Task.checkCancellation()
                         try await Self.yieldWithBackpressure(line, to: continuation)
                     }
+                    response.finish()
                     continuation.finish()
                 } catch is CancellationError {
+                    response.cancel()
                     continuation.finish(throwing: LatchwayError.cancelled)
                 } catch {
+                    response.cancel()
                     continuation.finish(throwing: error)
                 }
             }

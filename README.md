@@ -27,7 +27,8 @@ hardware attestation.
   sessions, authorization, quota, revocation, and diagnostics
 - `LatchwayAppAttest`: `DCAppAttestService` registration/assertion lifecycle
 - `LatchwayAppExtensions`: extension-safe exports for independently keyed Client
-  Components provisioned by their containing application
+  Components provisioned by their containing application, including native
+  Action/SSO component App Attest step-up
 - `LatchwayFirebaseAuth`: optional closure adapter; the core target has no
   Firebase dependency
 - `LatchwaySwiftOpenAI`: audited SwiftOpenAI 4.6.0 async HTTP/streaming adapter
@@ -88,29 +89,37 @@ var request = URLRequest(
 request.httpMethod = "POST"
 request.httpBody = requestBody
 request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-try await client.authorize(&request, feature: "habit-assistant")
-
-let (bytes, response) = try await client.makeURLSession().bytes(for: request)
-for try await byte in bytes {
-    consume(byte)
+let stream = try await client
+    .transport(feature: "habit-assistant")
+    .bytes(for: request)
+do {
+    for try await byte in stream.bytes {
+        consume(byte)
+    }
+    stream.finish()
+} catch {
+    stream.cancel()
+    throw error
 }
 ```
 
-For buffered requests, `client.send(_:feature:)` performs at most one automatic
-retry and only after the stable `session_expired` or `dpop_nonce_required`
-pre-dispatch rejection. Before replay, the SDK requires the canonical seven-key
-problem document, registry type/title/status/detail/retryability, a response
-request ID matching the original request, and either no nonce for
-`session_expired` or exactly one printable-ASCII nonce for
-`dpop_nonce_required`. Duplicate JSON members, extra metadata, folded nonce
-headers, commas, whitespace, and non-ASCII nonce values all fail closed. It
-never replays an input stream or an ambiguous upstream failure. The built-in
-buffered transport rejects responses larger than 1 MiB. Streaming callers
-authorize once and receive bytes directly; the SDK does not buffer or replay
-their request.
+`client.send(_:feature:)` and `LatchwayFeatureTransport.bytes(for:)` perform at
+most one automatic retry and only after the stable `session_expired` or
+`dpop_nonce_required` pre-dispatch rejection. Before replay, the SDK requires
+the canonical seven-key problem document, registry
+type/title/status/detail/retryability, a response request ID matching the
+original request, and either no nonce for `session_expired` or exactly one
+printable-ASCII nonce for `dpop_nonce_required`. Duplicate JSON members, extra
+metadata, folded nonce headers, commas, whitespace, and non-ASCII nonce values
+all fail closed. It never replays an input stream or an ambiguous upstream
+failure. The built-in buffered transport rejects responses larger than 1 MiB.
+The streaming transport buffers only a first retry-candidate 401 problem body,
+with a 64 KiB limit; successful and post-retry response bytes remain native,
+incremental `URLSession.AsyncBytes`. Call `finish()` after EOF or `cancel()`
+when stopping early to release the request's private URL session.
 
-Caller-owned transports that validate a same-origin rejection may use
-`authorize(_:feature:nonce:)` for `dpop_nonce_required` and `refresh()` for
+Lower-level caller-owned transports that validate a same-origin rejection may
+use `authorize(_:feature:nonce:)` for `dpop_nonce_required` and `refresh()` for
 `session_expired`, then replay at most once while preserving the request ID.
 The v1 refresh request contains only `refresh_token`. If the gateway requires
 identity reauthentication or attestation step-up, the SDK clears the old

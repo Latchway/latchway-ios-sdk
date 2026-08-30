@@ -4,6 +4,8 @@ enum SafeRetryDirective: Sendable, Equatable {
     case sessionExpired
     case dpopNonceRequired(String)
 
+    static let maximumProblemBytes = 65_536
+
     private static let requiredProblemMembers: Set<String> = [
         "type", "title", "status", "detail", "code", "request_id", "retryable",
     ]
@@ -27,12 +29,11 @@ enum SafeRetryDirective: Sendable, Equatable {
         response: LatchwayHTTPResponse,
         expectedRequestID: String?
     ) -> Self? {
-        guard response.statusCode == 401,
-              response.body.count <= 65_536,
-              mediaType(uniqueHeader("Content-Type", in: response)) == "application/problem+json",
-              let expectedRequestID,
-              isValidRequestID(expectedRequestID),
-              uniqueHeader("X-Latchway-Request-ID", in: response) == expectedRequestID
+        guard hasCandidateResponseHead(
+            response: response,
+            expectedRequestID: expectedRequestID
+        ),
+              response.body.count <= maximumProblemBytes
         else { return nil }
 
         do { try StrictJSON.validate(response.body) }
@@ -65,6 +66,22 @@ enum SafeRetryDirective: Sendable, Equatable {
         default:
             return nil
         }
+    }
+
+    /// Performs the body-independent portion of safe-retry classification.
+    /// Streaming transports use this to avoid consuming ordinary error bodies;
+    /// `parse` remains the sole authority for the complete directive.
+    static func hasCandidateResponseHead(
+        response: LatchwayHTTPResponse,
+        expectedRequestID: String?
+    ) -> Bool {
+        guard response.statusCode == 401,
+              mediaType(uniqueHeader("Content-Type", in: response)) == "application/problem+json",
+              let expectedRequestID,
+              isValidRequestID(expectedRequestID),
+              uniqueHeader("X-Latchway-Request-ID", in: response) == expectedRequestID
+        else { return false }
+        return true
     }
 
     static func isValidNonce(_ nonce: String) -> Bool {

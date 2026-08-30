@@ -14,11 +14,21 @@ required_variables=(
   LATCHWAY_IOS_APP_BUNDLE_PATH
   LATCHWAY_IOS_INSTALL_MODE
   LATCHWAY_BUNDLE_ID
+  LATCHWAY_IOS_WIDGET_BUNDLE_ID
+  LATCHWAY_IOS_SHARE_BUNDLE_ID
+  LATCHWAY_IOS_ACTION_BUNDLE_ID
+  LATCHWAY_HOST_COMPONENT_DEFINITION_ID
+  LATCHWAY_WIDGET_COMPONENT_DEFINITION_ID
+  LATCHWAY_SHARE_COMPONENT_DEFINITION_ID
+  LATCHWAY_ACTION_COMPONENT_DEFINITION_ID
   LATCHWAY_APP_VERSION
   LATCHWAY_BUILD_NUMBER
   LATCHWAY_TEAM_ID
   LATCHWAY_SIGNING_CERTIFICATE_SHA256
   LATCHWAY_APP_BINARY_SHA256
+  LATCHWAY_IOS_WIDGET_BINARY_SHA256
+  LATCHWAY_IOS_SHARE_BINARY_SHA256
+  LATCHWAY_IOS_ACTION_BINARY_SHA256
   LATCHWAY_DISTRIBUTION
   LATCHWAY_SOURCE_COMMIT
   LATCHWAY_CORE_COMMIT
@@ -56,6 +66,11 @@ source "$repository_root/scripts/gateway-deployment-evidence.sh"
 for tool in cmp curl install openssl; do
   command -v "$tool" >/dev/null || { echo "required tool is unavailable: $tool" >&2; exit 2; }
 done
+component_observer_hook=/usr/local/libexec/latchway-ios-component-evidence-observer
+if [[ ! -f "$component_observer_hook" || -L "$component_observer_hook" || ! -x "$component_observer_hook" ]]; then
+  echo "the root-owned iOS component evidence observer is unavailable" >&2
+  exit 2
+fi
 
 [[ "$LATCHWAY_IOS_INSTALL_MODE" == install ]] || {
   echo "physical evidence requires installing the pinned app bundle" >&2
@@ -65,6 +80,44 @@ case "$LATCHWAY_DISTRIBUTION" in
   ad_hoc|testflight|app_store) ;;
   *) echo "LATCHWAY_DISTRIBUTION is not release eligible" >&2; exit 2 ;;
 esac
+for identifier in \
+  "$LATCHWAY_BUNDLE_ID" \
+  "$LATCHWAY_IOS_WIDGET_BUNDLE_ID" \
+  "$LATCHWAY_IOS_SHARE_BUNDLE_ID" \
+  "$LATCHWAY_IOS_ACTION_BUNDLE_ID"; do
+  [[ "$identifier" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{2,254}$ ]] || {
+    echo "invalid protected component bundle identifier" >&2
+    exit 2
+  }
+done
+if [[ "$(printf '%s\n' \
+  "$LATCHWAY_BUNDLE_ID" \
+  "$LATCHWAY_IOS_WIDGET_BUNDLE_ID" \
+  "$LATCHWAY_IOS_SHARE_BUNDLE_ID" \
+  "$LATCHWAY_IOS_ACTION_BUNDLE_ID" | LC_ALL=C sort -u | wc -l | tr -d ' ')" != 4 ]]; then
+  echo "protected component bundle identifiers must be distinct" >&2
+  exit 2
+fi
+for definition in \
+  "$LATCHWAY_HOST_COMPONENT_DEFINITION_ID" \
+  "$LATCHWAY_WIDGET_COMPONENT_DEFINITION_ID" \
+  "$LATCHWAY_SHARE_COMPONENT_DEFINITION_ID" \
+  "$LATCHWAY_ACTION_COMPONENT_DEFINITION_ID"; do
+  [[ "$definition" =~ ^[a-z][a-z0-9_-]{0,62}$ ]] || {
+    echo "invalid protected component definition identifier" >&2
+    exit 2
+  }
+done
+for digest in \
+  "$LATCHWAY_APP_BINARY_SHA256" \
+  "$LATCHWAY_IOS_WIDGET_BINARY_SHA256" \
+  "$LATCHWAY_IOS_SHARE_BINARY_SHA256" \
+  "$LATCHWAY_IOS_ACTION_BINARY_SHA256"; do
+  [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || {
+    echo "invalid protected component executable hash" >&2
+    exit 2
+  }
+done
 [[ "$LATCHWAY_BASE_URL" == "$LATCHWAY_GATEWAY_ORIGIN" ]] || {
   echo "application base URL must exactly match the signed gateway origin" >&2
   exit 2
@@ -155,6 +208,79 @@ if [[ "$actual_certificate_sha256" != "$LATCHWAY_SIGNING_CERTIFICATE_SHA256" || 
   exit 1
 fi
 
+verify_component_extension() {
+  local label="$1"
+  local expected_bundle_id="$2"
+  local expected_binary_sha256="$3"
+  local expected_extension_point="$4"
+  local require_app_attest="$5"
+  local matched=""
+  local count=0
+  local candidate candidate_plist candidate_bundle_id
+  for candidate in "$LATCHWAY_IOS_APP_BUNDLE_PATH"/PlugIns/*.appex; do
+    [[ -d "$candidate" && ! -L "$candidate" ]] || continue
+    candidate_plist="$candidate/Info.plist"
+    [[ -f "$candidate_plist" && ! -L "$candidate_plist" ]] || continue
+    candidate_bundle_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$candidate_plist" 2>/dev/null || true)"
+    if [[ "$candidate_bundle_id" == "$expected_bundle_id" ]]; then
+      matched="$candidate"
+      count=$((count + 1))
+    fi
+  done
+  if [[ "$count" != 1 || -z "$matched" ]]; then
+    echo "signed candidate must contain exactly one $label component" >&2
+    exit 1
+  fi
+  local plist="$matched/Info.plist"
+  local executable extension_point binary_hash extension_entitlements extension_team extension_application_id
+  executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$plist")"
+  extension_point="$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$plist")"
+  if [[ "$extension_point" != "$expected_extension_point" || ! -f "$matched/$executable" || -L "$matched/$executable" ]]; then
+    echo "$label extension identity or executable is invalid" >&2
+    exit 1
+  fi
+  codesign --verify --strict "$matched"
+  extension_entitlements="$temporary_root/$label-entitlements.plist"
+  codesign -d --entitlements :- "$matched" >"$extension_entitlements" 2>/dev/null
+  extension_team="$(/usr/libexec/PlistBuddy -c 'Print :com.apple.developer.team-identifier' "$extension_entitlements")"
+  extension_application_id="$(/usr/libexec/PlistBuddy -c 'Print :application-identifier' "$extension_entitlements")"
+  if [[ "$extension_team" != "$LATCHWAY_TEAM_ID" || "$extension_application_id" != "$LATCHWAY_TEAM_ID.$expected_bundle_id" ]]; then
+    echo "$label extension signing identity does not match protected pins" >&2
+    exit 1
+  fi
+  local extension_certificate_prefix extension_certificate_sha256
+  extension_certificate_prefix="$temporary_root/$label-signing-certificate"
+  codesign -d --extract-certificates "$extension_certificate_prefix" "$matched" 2>/dev/null
+  extension_certificate_sha256="$(shasum -a 256 "${extension_certificate_prefix}0" | awk '{print $1}')"
+  if [[ "$extension_certificate_sha256" != "$LATCHWAY_SIGNING_CERTIFICATE_SHA256" ]]; then
+    echo "$label extension signing certificate does not match the protected candidate" >&2
+    exit 1
+  fi
+  binary_hash="$(shasum -a 256 "$matched/$executable" | awk '{print $1}')"
+  if [[ "$binary_hash" != "$expected_binary_sha256" ]]; then
+    echo "$label extension executable hash does not match the protected candidate" >&2
+    exit 1
+  fi
+  if [[ "$require_app_attest" == true ]]; then
+    local extension_app_attest
+    extension_app_attest="$(/usr/libexec/PlistBuddy -c 'Print :com.apple.developer.devicecheck.appattest-environment' "$extension_entitlements" 2>/dev/null || true)"
+    if [[ "$extension_app_attest" != production ]]; then
+      echo "direct Action evidence requires its own production App Attest entitlement" >&2
+      exit 1
+    fi
+  fi
+}
+
+verify_component_extension \
+  widget "$LATCHWAY_IOS_WIDGET_BUNDLE_ID" "$LATCHWAY_IOS_WIDGET_BINARY_SHA256" \
+  com.apple.widgetkit-extension false
+verify_component_extension \
+  share "$LATCHWAY_IOS_SHARE_BUNDLE_ID" "$LATCHWAY_IOS_SHARE_BINARY_SHA256" \
+  com.apple.share-services false
+verify_component_extension \
+  action "$LATCHWAY_IOS_ACTION_BUNDLE_ID" "$LATCHWAY_IOS_ACTION_BINARY_SHA256" \
+  com.apple.ui-services true
+
 client_policy_path="$temporary_root/gateway-client-policy.json"
 python3 - "$client_policy_path" <<'PY'
 import json, os, pathlib, sys
@@ -187,6 +313,37 @@ xcrun devicectl device info details \
   --timeout 30 \
   --json-output "$raw_device_inventory" \
   --omit-deprecated-fields-in-json >/dev/null
+
+# A previous container must never be able to contribute a component claim.
+xcrun devicectl device uninstall app \
+  --device "$LATCHWAY_IOS_DEVICE_ID" \
+  --timeout 60 \
+  --omit-deprecated-fields-in-json \
+  "$LATCHWAY_BUNDLE_ID" >/dev/null 2>&1 || true
+preinstall_inventory="$temporary_root/preinstall-apps.json"
+xcrun devicectl device info apps \
+  --device "$LATCHWAY_IOS_DEVICE_ID" \
+  --bundle-id "$LATCHWAY_BUNDLE_ID" \
+  --include-all-apps \
+  --timeout 30 \
+  --json-output "$preinstall_inventory" \
+  --omit-deprecated-fields-in-json >/dev/null
+python3 - "$preinstall_inventory" "$LATCHWAY_BUNDLE_ID" <<'PY'
+import json, pathlib, sys
+def _strings(value):
+    if isinstance(value, dict):
+        for child in value.values():
+            yield from _strings(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _strings(child)
+    elif isinstance(value, str):
+        yield value
+
+value = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+if any(item == sys.argv[2] for item in _strings(value)):
+    raise SystemExit("stale application data remained before the physical run")
+PY
 
 xcrun devicectl device install app \
   --device "$LATCHWAY_IOS_DEVICE_ID" \
@@ -222,6 +379,28 @@ xcrun devicectl device process launch \
   --terminate-existing \
   --timeout 30 \
   "$LATCHWAY_BUNDLE_ID" >/dev/null
+
+component_observation_path="$output_dir/component-observation.json"
+"$component_observer_hook" \
+  --device-id "$LATCHWAY_IOS_DEVICE_ID" \
+  --host-bundle-id "$LATCHWAY_BUNDLE_ID" \
+  --widget-bundle-id "$LATCHWAY_IOS_WIDGET_BUNDLE_ID" \
+  --share-bundle-id "$LATCHWAY_IOS_SHARE_BUNDLE_ID" \
+  --action-bundle-id "$LATCHWAY_IOS_ACTION_BUNDLE_ID" \
+  --host-definition-id "$LATCHWAY_HOST_COMPONENT_DEFINITION_ID" \
+  --widget-definition-id "$LATCHWAY_WIDGET_COMPONENT_DEFINITION_ID" \
+  --share-definition-id "$LATCHWAY_SHARE_COMPONENT_DEFINITION_ID" \
+  --action-definition-id "$LATCHWAY_ACTION_COMPONENT_DEFINITION_ID" \
+  --host-binary-sha256 "$LATCHWAY_APP_BINARY_SHA256" \
+  --widget-binary-sha256 "$LATCHWAY_IOS_WIDGET_BINARY_SHA256" \
+  --share-binary-sha256 "$LATCHWAY_IOS_SHARE_BINARY_SHA256" \
+  --action-binary-sha256 "$LATCHWAY_IOS_ACTION_BINARY_SHA256" \
+  --run-id "$LATCHWAY_RUN_ID" \
+  --output "$component_observation_path"
+if [[ ! -f "$component_observation_path" || -L "$component_observation_path" ]]; then
+  echo "the independent component observer did not emit a real observation" >&2
+  exit 1
+fi
 
 observation_path="$output_dir/app-attest-observation.json"
 observation_ready=false
@@ -313,9 +492,21 @@ expected = {
     "gateway_deployment_statement_sha256": os.environ["LATCHWAY_GATEWAY_DEPLOYMENT_STATEMENT_SHA256"],
     "gateway_deployment_public_key_sha256": os.environ["LATCHWAY_GATEWAY_DEPLOYMENT_PUBLIC_KEY_SHA256"],
     "error_mapping_feature": os.environ["LATCHWAY_ERROR_MAPPING_FEATURE"],
+    "host_bundle_identifier": os.environ["LATCHWAY_BUNDLE_ID"],
+    "widget_bundle_identifier": os.environ["LATCHWAY_IOS_WIDGET_BUNDLE_ID"],
+    "share_bundle_identifier": os.environ["LATCHWAY_IOS_SHARE_BUNDLE_ID"],
+    "action_bundle_identifier": os.environ["LATCHWAY_IOS_ACTION_BUNDLE_ID"],
+    "host_definition_id": os.environ["LATCHWAY_HOST_COMPONENT_DEFINITION_ID"],
+    "widget_definition_id": os.environ["LATCHWAY_WIDGET_COMPONENT_DEFINITION_ID"],
+    "share_definition_id": os.environ["LATCHWAY_SHARE_COMPONENT_DEFINITION_ID"],
+    "action_definition_id": os.environ["LATCHWAY_ACTION_COMPONENT_DEFINITION_ID"],
+    "host_binary_sha256": os.environ["LATCHWAY_APP_BINARY_SHA256"],
+    "widget_binary_sha256": os.environ["LATCHWAY_IOS_WIDGET_BINARY_SHA256"],
+    "share_binary_sha256": os.environ["LATCHWAY_IOS_SHARE_BINARY_SHA256"],
+    "action_binary_sha256": os.environ["LATCHWAY_IOS_ACTION_BINARY_SHA256"],
 }
 profile = {
-    "schema_version": "latchway.physical-device-profile.v1",
+    "schema_version": "latchway.physical-device-profile.v2",
     "platform": "ios_app_attest",
     "repository": "Latchway/latchway-ios-sdk",
     "source": {
@@ -337,7 +528,7 @@ profile = {
         "runner_arch": os.environ["LATCHWAY_RUNNER_ARCH"],
         "compiler": os.environ["LATCHWAY_COMPILER"],
         "build_tool": os.environ["LATCHWAY_BUILD_TOOL"],
-        "collector_version": "1",
+        "collector_version": "2",
     },
     "expected_pins": expected,
     "application_binary_sha256": os.environ["LATCHWAY_APP_BINARY_SHA256"],
@@ -353,6 +544,7 @@ python3 "$repository_root/scripts/device-evidence.py" finalize \
   --schema "$schema_path" \
   --profile "$profile_path" \
   --observation "$observation_path" \
+  --component-observation "$component_observation_path" \
   --evidence "$evidence_path" \
   --junit "$junit_path" \
   --summary "$summary_path"
@@ -365,6 +557,7 @@ python3 "$repository_root/scripts/device-evidence.py" finalize \
     app-attest-observation.json \
     app-attest-profile.json \
     app-attest-validation.json \
+    component-observation.json \
     gateway-client-policy.json \
     gateway-deployment-public-key.pem \
     gateway-deployment-statement.json \

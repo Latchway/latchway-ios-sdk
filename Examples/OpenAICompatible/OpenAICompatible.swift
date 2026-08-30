@@ -10,11 +10,19 @@ func streamChat(
     request.httpMethod = "POST"
     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
     request.httpBody = Data(#"{"stream":true,"messages":[{"role":"user","content":"Hello"}]}"#.utf8)
-    try await client.authorize(&request, feature: "habit-assistant")
-    let (bytes, response) = try await client.makeURLSession().bytes(for: request)
-    guard let http = response as? HTTPURLResponse, (200 ..< 300).contains(http.statusCode) else {
+    let stream = try await client
+        .transport(feature: "habit-assistant")
+        .bytes(for: request)
+    guard (200 ..< 300).contains(stream.response.statusCode) else {
+        stream.cancel()
         throw LatchwayError.invalidServerResponse
     }
-    for try await byte in bytes { try await receiveByte(byte) }
-    return http
+    do {
+        for try await byte in stream.bytes { try await receiveByte(byte) }
+        stream.finish()
+        return stream.response
+    } catch {
+        stream.cancel()
+        throw error
+    }
 }

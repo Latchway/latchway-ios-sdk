@@ -8,7 +8,7 @@ if [ -z "$contract_dir" ]; then
 fi
 bundle_archive=${2:-}
 
-for required in client.openapi.yaml protocol-version.json test-vectors/dpop/v1.json test-vectors/attestation-binding/v1.json test-vectors/installation-family/v2.json; do
+for required in client.openapi.yaml protocol-version.json component-attestation-binding.schema.json test-vectors/dpop/v1.json test-vectors/attestation-binding/v1.json test-vectors/component-attestation-binding/v2.json test-vectors/installation-family/v2.json; do
   if [ ! -f "$contract_dir/$required" ]; then
     echo "missing contract entry: $required" >&2
     exit 1
@@ -49,6 +49,7 @@ fi
 
 cmp "$contract_dir/test-vectors/dpop/v1.json" Tests/ConformanceTests/Fixtures/dpop-v1.json
 cmp "$contract_dir/test-vectors/attestation-binding/v1.json" Tests/ConformanceTests/Fixtures/attestation-binding-v1.json
+cmp "$contract_dir/test-vectors/component-attestation-binding/v2.json" Tests/ConformanceTests/Fixtures/component-attestation-binding-v2.json
 cmp "$contract_dir/test-vectors/installation-family/v2.json" Tests/ConformanceTests/Fixtures/installation-family-v2.json
 cmp "$contract_dir/protocol-version.json" Tests/ConformanceTests/Fixtures/protocol-version.json
 

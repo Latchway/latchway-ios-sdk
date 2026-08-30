@@ -35,6 +35,7 @@ final class ClientSessionTests: XCTestCase {
     func testExpiredAccessTokenRefreshesOnceAcrossConcurrentCallers() async throws {
         let fixture = try await makeFixture()
         var first = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        first.httpMethod = "POST"
         try await fixture.client.authorize(&first, feature: "habit-assistant")
         await fixture.clock.advance(by: 3_601)
 
@@ -42,6 +43,7 @@ final class ClientSessionTests: XCTestCase {
             for _ in 0 ..< 24 {
                 group.addTask {
                     var request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+                    request.httpMethod = "POST"
                     try await fixture.client.authorize(&request, feature: "habit-assistant")
                 }
             }
@@ -58,6 +60,7 @@ final class ClientSessionTests: XCTestCase {
     func testExpiredCallersRecheckSessionAfterActorReentrancy() async throws {
         let fixture = try await makeFixture()
         var first = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        first.httpMethod = "POST"
         try await fixture.client.authorize(&first, feature: "habit-assistant")
         await fixture.clock.advance(by: 3_601)
         await fixture.clock.suspendReads()
@@ -65,6 +68,7 @@ final class ClientSessionTests: XCTestCase {
         let callers = (0 ..< 24).map { _ in
             Task {
                 var request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+                request.httpMethod = "POST"
                 try await fixture.client.authorize(&request, feature: "habit-assistant")
             }
         }
@@ -101,6 +105,7 @@ final class ClientSessionTests: XCTestCase {
     func testDPoPNonceChallengeRetriesControlRequestOnlyOnce() async throws {
         let fixture = try await makeFixture(requireNonce: true)
         var request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        request.httpMethod = "POST"
         try await fixture.client.authorize(&request, feature: "habit-assistant")
         let counts = await fixture.server.counts()
         XCTAssertEqual(counts.challenge, 2)
@@ -120,6 +125,7 @@ final class ClientSessionTests: XCTestCase {
             safeRetryProblemMutation: .commaNonce
         )
         var request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        request.httpMethod = "POST"
 
         await XCTAssertThrowsErrorAsync {
             try await fixture.client.authorize(&request, feature: "habit-assistant")
@@ -135,6 +141,7 @@ final class ClientSessionTests: XCTestCase {
         let fixture = try await makeFixture(delayNanoseconds: 250_000_000)
         let task = Task { () throws -> URLRequest in
             var request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+            request.httpMethod = "POST"
             try await fixture.client.authorize(&request, feature: "habit-assistant")
             return request
         }
@@ -227,6 +234,7 @@ final class ClientSessionTests: XCTestCase {
         var request = URLRequest(
             url: URL(string: "https://gateway.example.test/v1/responses?cursor=next-page&include=usage")!
         )
+        request.httpMethod = "POST"
 
         try await fixture.client.authorize(&request, feature: "habit-assistant")
 
@@ -254,6 +262,7 @@ final class ClientSessionTests: XCTestCase {
     func testExpiredChallengeFailsBeforeAttestationOrExchange() async throws {
         let fixture = try await makeFixture(challengeExpired: true)
         var request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        request.httpMethod = "POST"
         do {
             try await fixture.client.authorize(&request, feature: "habit-assistant")
             XCTFail("Expired challenge must fail closed")
@@ -269,6 +278,7 @@ final class ClientSessionTests: XCTestCase {
     func testServerClientDataHashIsPassedDirectlyToAttestationProvider() async throws {
         let fixture = try await makeFixture()
         var request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        request.httpMethod = "POST"
 
         try await fixture.client.authorize(&request, feature: "habit-assistant")
 
@@ -281,6 +291,7 @@ final class ClientSessionTests: XCTestCase {
     func testChallengeBeyondAllowedClockSkewFailsClosed() async throws {
         let fixture = try await makeFixture(challengeClockOffset: 301)
         var request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        request.httpMethod = "POST"
         do {
             try await fixture.client.authorize(&request, feature: "habit-assistant")
             XCTFail("A future-issued challenge beyond the skew allowance must fail")
@@ -296,9 +307,11 @@ final class ClientSessionTests: XCTestCase {
     func testRefreshIdentityReauthenticationStartsFreshAttestedExchange() async throws {
         let fixture = try await makeFixture(refreshRejection: "identity_reauthentication_required")
         var first = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        first.httpMethod = "POST"
         try await fixture.client.authorize(&first, feature: "habit-assistant")
         try await fixture.client.refresh()
         var second = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        second.httpMethod = "POST"
         try await fixture.client.authorize(&second, feature: "habit-assistant")
         let counts = await fixture.server.counts()
         let identityCount = await fixture.identity.count()
@@ -315,9 +328,11 @@ final class ClientSessionTests: XCTestCase {
     func testRefreshAttestationStepUpStartsFreshAttestedExchange() async throws {
         let fixture = try await makeFixture(refreshRejection: "attestation_step_up_required")
         var first = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        first.httpMethod = "POST"
         try await fixture.client.authorize(&first, feature: "habit-assistant")
         try await fixture.client.refresh()
         var second = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        second.httpMethod = "POST"
         try await fixture.client.authorize(&second, feature: "habit-assistant")
 
         let counts = await fixture.server.counts()
@@ -336,6 +351,7 @@ final class ClientSessionTests: XCTestCase {
             failSecondAttestation: true
         )
         var first = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        first.httpMethod = "POST"
         try await fixture.client.authorize(&first, feature: "habit-assistant")
 
         do {
@@ -350,6 +366,7 @@ final class ClientSessionTests: XCTestCase {
         XCTAssertNil(retiredStorage)
 
         var recovered = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        recovered.httpMethod = "POST"
         try await fixture.client.authorize(&recovered, feature: "habit-assistant")
         let counts = await fixture.server.counts()
         XCTAssertEqual(counts.refresh, 1)
@@ -360,9 +377,11 @@ final class ClientSessionTests: XCTestCase {
     func testRefreshTokenReuseClearsRotatedState() async throws {
         let fixture = try await makeFixture(refreshRejection: "refresh_token_reused")
         var first = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        first.httpMethod = "POST"
         try await fixture.client.authorize(&first, feature: "habit-assistant")
         await fixture.clock.advance(by: 3_601)
         var second = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        second.httpMethod = "POST"
         do {
             try await fixture.client.authorize(&second, feature: "habit-assistant")
             XCTFail("Reused refresh token must fail")
@@ -376,10 +395,12 @@ final class ClientSessionTests: XCTestCase {
     func testFailedRotatedTokenPersistenceCannotReplayOldRefreshToken() async throws {
         let fixture = try await makeFixture(failingSaveCalls: [2])
         var first = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        first.httpMethod = "POST"
         try await fixture.client.authorize(&first, feature: "habit-assistant")
         await fixture.clock.advance(by: 3_601)
 
         var second = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        second.httpMethod = "POST"
         do {
             try await fixture.client.authorize(&second, feature: "habit-assistant")
             XCTFail("The unsaved rotated session must fail")
@@ -389,6 +410,7 @@ final class ClientSessionTests: XCTestCase {
 
         await fixture.clock.set(Date(timeIntervalSince1970: 1_700_000_000))
         var recovered = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        recovered.httpMethod = "POST"
         try await fixture.client.authorize(&recovered, feature: "habit-assistant")
         let counts = await fixture.server.counts()
         XCTAssertEqual(counts.refresh, 1, "The consumed refresh token must never be retried")
@@ -399,6 +421,7 @@ final class ClientSessionTests: XCTestCase {
     func testCorruptPersistedRefreshStateIsClearedBeforeNetworkUse() async throws {
         let fixture = try await makeFixture(storedRefreshToken: "short")
         var request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        request.httpMethod = "POST"
 
         try await fixture.client.authorize(&request, feature: "habit-assistant")
 
@@ -413,12 +436,15 @@ final class ClientSessionTests: XCTestCase {
     func testServerRevokedInstallationBlocksFurtherSessionUse() async throws {
         let fixture = try await makeFixture(refreshRejection: "installation_revoked")
         var first = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        first.httpMethod = "POST"
         try await fixture.client.authorize(&first, feature: "habit-assistant")
         await fixture.clock.advance(by: 3_601)
         var second = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        second.httpMethod = "POST"
         await XCTAssertThrowsErrorAsync { try await fixture.client.authorize(&second, feature: "habit-assistant") }
         let before = await fixture.server.counts()
         var third = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        third.httpMethod = "POST"
         await XCTAssertThrowsErrorAsync { try await fixture.client.authorize(&third, feature: "habit-assistant") }
         let after = await fixture.server.counts()
         let diagnostics = await fixture.client.diagnostics()
@@ -465,7 +491,8 @@ final class ClientSessionTests: XCTestCase {
             dataPlaneRejection: "session_expired",
             dataPlaneRetryable: false
         )
-        let request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        var request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        request.httpMethod = "POST"
         do {
             _ = try await fixture.client.send(request, feature: "habit-assistant")
             XCTFail("A non-retryable problem must not be replayed")
@@ -480,7 +507,8 @@ final class ClientSessionTests: XCTestCase {
 
     func testBufferedSendRetriesDPoPNonceOnceWithoutRefreshing() async throws {
         let fixture = try await makeFixture(dataPlaneRejection: "dpop_nonce_required")
-        let request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        var request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        request.httpMethod = "POST"
         let response = try await fixture.client.send(request, feature: "habit-assistant")
         XCTAssertEqual(response.statusCode, 200)
         let counts = await fixture.server.counts()
@@ -519,6 +547,7 @@ final class ClientSessionTests: XCTestCase {
                 safeRetryProblemMutation: mutation
             )
             var request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+            request.httpMethod = "POST"
             request.setValue("request-retry-0001", forHTTPHeaderField: "X-Latchway-Request-ID")
 
             do {
@@ -538,6 +567,7 @@ final class ClientSessionTests: XCTestCase {
             safeRetryProblemMutation: .sessionNonce
         )
         var request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        request.httpMethod = "POST"
         request.setValue("request-retry-0001", forHTTPHeaderField: "X-Latchway-Request-ID")
 
         await XCTAssertThrowsErrorAsync {
@@ -551,7 +581,8 @@ final class ClientSessionTests: XCTestCase {
 
     func testBufferedSendNeverRetriesAmbiguousUpstreamFailure() async throws {
         let fixture = try await makeFixture(dataPlaneRejection: "upstream_unavailable")
-        let request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        var request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        request.httpMethod = "POST"
         do {
             _ = try await fixture.client.send(request, feature: "habit-assistant")
             XCTFail("Ambiguous upstream failure must not be replayed")
@@ -572,7 +603,8 @@ final class ClientSessionTests: XCTestCase {
             dataPlaneRejection: "operation_indeterminate",
             dataPlaneOperationID: operationID
         )
-        let request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        var request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        request.httpMethod = "POST"
 
         do {
             _ = try await fixture.client.send(request, feature: "habit-assistant")
@@ -602,7 +634,8 @@ final class ClientSessionTests: XCTestCase {
                 dataPlaneRejection: testCase.code,
                 dataPlaneOperationID: testCase.operationID
             )
-            let request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+            var request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+            request.httpMethod = "POST"
 
             do {
                 _ = try await fixture.client.send(request, feature: "habit-assistant")
@@ -618,7 +651,8 @@ final class ClientSessionTests: XCTestCase {
 
     func testBufferedSendRejectsMalformedErrorWithoutRetry() async throws {
         let fixture = try await makeFixture(dataPlaneRejection: "malformed")
-        let request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        var request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        request.httpMethod = "POST"
         do {
             _ = try await fixture.client.send(request, feature: "habit-assistant")
             XCTFail("A malformed gateway error must fail closed")
@@ -644,12 +678,218 @@ final class ClientSessionTests: XCTestCase {
         XCTAssertNotNil(request.value(forHTTPHeaderField: "Authorization"))
     }
 
+    func testFeatureTransportStreamingRetriesSessionExpiryOnceWithoutBufferingSuccess() async throws {
+        StreamingRetryURLProtocol.reset(mode: .sessionExpiredThenSuccess)
+        let fixture = try await makeFixture()
+        let session = makeStreamingSession()
+        let transport = fixture.client.transport(
+            feature: "habit-assistant",
+            session: session
+        )
+        var request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        request.httpMethod = "POST"
+        request.httpBody = Data(#"{"stream":true}"#.utf8)
+
+        let stream = try await transport.bytes(for: request)
+        defer { stream.cancel() }
+        XCTAssertEqual(stream.response.statusCode, 200)
+        let body = try await collect(stream.bytes)
+        XCTAssertEqual(body, Data("data: streamed\n\n".utf8))
+        stream.finish()
+
+        let captured = StreamingRetryURLProtocol.snapshot()
+        let counts = await fixture.server.counts()
+        XCTAssertEqual(captured.requests.count, 2)
+        XCTAssertEqual(captured.requests[0].requestID, captured.requests[1].requestID)
+        XCTAssertNotEqual(captured.requests[0].authorization, captured.requests[1].authorization)
+        XCTAssertEqual(counts.refresh, 1)
+    }
+
+    func testFeatureTransportStreamingRetriesDPoPNonceOnceWithoutRefresh() async throws {
+        StreamingRetryURLProtocol.reset(mode: .nonceRequiredThenSuccess)
+        let fixture = try await makeFixture()
+        let session = makeStreamingSession()
+        let transport = fixture.client.transport(
+            feature: "habit-assistant",
+            session: session
+        )
+        var request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        request.httpMethod = "POST"
+
+        let stream = try await transport.bytes(for: request)
+        defer { stream.cancel() }
+        XCTAssertEqual(stream.response.statusCode, 200)
+        _ = try await collect(stream.bytes)
+        stream.finish()
+
+        let captured = StreamingRetryURLProtocol.snapshot()
+        let counts = await fixture.server.counts()
+        XCTAssertEqual(captured.requests.count, 2)
+        XCTAssertEqual(captured.requests[0].requestID, captured.requests[1].requestID)
+        XCTAssertEqual(counts.refresh, 0)
+        XCTAssertEqual(
+            try proofPayload(XCTUnwrap(captured.requests[1].proof))["nonce"] as? String,
+            "nonce-fixture-0123456789abcdef"
+        )
+    }
+
+    func testFeatureTransportStreamingRequiresCanonicalDirectiveBeforeRetry() async throws {
+        StreamingRetryURLProtocol.reset(mode: .noncanonicalNonceProblem)
+        let fixture = try await makeFixture()
+        let session = makeStreamingSession()
+        let transport = fixture.client.transport(
+            feature: "habit-assistant",
+            session: session
+        )
+        var request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        request.httpMethod = "POST"
+
+        let stream = try await transport.bytes(for: request)
+        defer { stream.cancel() }
+        XCTAssertEqual(stream.response.statusCode, 401)
+        let body = try await collect(stream.bytes)
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: body) as? [String: Any]
+        )
+        XCTAssertEqual(object["extra"] as? Bool, true)
+        stream.finish()
+
+        let captured = StreamingRetryURLProtocol.snapshot()
+        let counts = await fixture.server.counts()
+        XCTAssertEqual(captured.requests.count, 1)
+        XCTAssertEqual(counts.refresh, 0)
+    }
+
+    func testFeatureTransportStreamingReturnsNonRetryableProblemBody() async throws {
+        StreamingRetryURLProtocol.reset(mode: .nonRetryableNonceProblem)
+        let fixture = try await makeFixture()
+        let transport = fixture.client.transport(
+            feature: "habit-assistant",
+            session: makeStreamingSession()
+        )
+        var request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        request.httpMethod = "POST"
+
+        let stream = try await transport.bytes(for: request)
+        defer { stream.cancel() }
+        XCTAssertEqual(stream.response.statusCode, 401)
+        let body = try await collect(stream.bytes)
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: body) as? [String: Any]
+        )
+        XCTAssertEqual(object["retryable"] as? Bool, false)
+        stream.finish()
+
+        let captured = StreamingRetryURLProtocol.snapshot()
+        let counts = await fixture.server.counts()
+        XCTAssertEqual(captured.requests.count, 1)
+        XCTAssertEqual(counts.refresh, 0)
+    }
+
+    func testFeatureTransportStreamingReturnsMalformedCandidateBody() async throws {
+        StreamingRetryURLProtocol.reset(mode: .malformedProblem)
+        let fixture = try await makeFixture()
+        let transport = fixture.client.transport(
+            feature: "habit-assistant",
+            session: makeStreamingSession()
+        )
+        var request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        request.httpMethod = "POST"
+
+        let stream = try await transport.bytes(for: request)
+        defer { stream.cancel() }
+        XCTAssertEqual(stream.response.statusCode, 401)
+        let body = try await collect(stream.bytes)
+        XCTAssertEqual(body, Data(#"{"code":"dpop_nonce_required""#.utf8))
+        stream.finish()
+
+        let captured = StreamingRetryURLProtocol.snapshot()
+        let counts = await fixture.server.counts()
+        XCTAssertEqual(captured.requests.count, 1)
+        XCTAssertEqual(counts.refresh, 0)
+    }
+
+    func testFeatureTransportStreamingDoesNotClassifyMoreThanBoundedProblemBody() async throws {
+        StreamingRetryURLProtocol.reset(mode: .oversizedChunkedProblem)
+        let fixture = try await makeFixture()
+        let session = makeStreamingSession()
+        let transport = fixture.client.transport(
+            feature: "habit-assistant",
+            session: session
+        )
+        var request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        request.httpMethod = "POST"
+
+        let stream = try await transport.bytes(for: request)
+        defer { stream.cancel() }
+        XCTAssertEqual(stream.response.statusCode, 401)
+        XCTAssertLessThanOrEqual(stream.response.expectedContentLength, 0)
+        let body = try await collect(stream.bytes)
+        XCTAssertEqual(
+            body,
+            Data(
+                repeating: 0x41,
+                count: SafeRetryDirective.maximumProblemBytes + 1
+            )
+        )
+        stream.finish()
+
+        let captured = StreamingRetryURLProtocol.snapshot()
+        let counts = await fixture.server.counts()
+        XCTAssertEqual(captured.requests.count, 1)
+        XCTAssertEqual(counts.refresh, 0)
+    }
+
+    func testFeatureTransportStreamingNeverRetriesSecondSafeRejection() async throws {
+        StreamingRetryURLProtocol.reset(mode: .nonceRequiredTwice)
+        let fixture = try await makeFixture()
+        let session = makeStreamingSession()
+        let transport = fixture.client.transport(
+            feature: "habit-assistant",
+            session: session
+        )
+        var request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        request.httpMethod = "POST"
+
+        let stream = try await transport.bytes(for: request)
+        defer { stream.cancel() }
+        XCTAssertEqual(stream.response.statusCode, 401)
+        let body = try await collect(stream.bytes)
+        XCTAssertFalse(body.isEmpty)
+
+        let captured = StreamingRetryURLProtocol.snapshot()
+        let counts = await fixture.server.counts()
+        XCTAssertEqual(captured.requests.count, 2)
+        XCTAssertEqual(counts.refresh, 0)
+    }
+
+    func testStreamingResponseCancelOwnsAndCancelsPrivateSession() async throws {
+        StreamingRetryURLProtocol.reset(mode: .unfinishedSuccess)
+        let fixture = try await makeFixture()
+        let transport = fixture.client.transport(
+            feature: "habit-assistant",
+            session: makeStreamingSession()
+        )
+        var request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        request.httpMethod = "POST"
+
+        let stream = try await transport.bytes(for: request)
+        stream.cancel()
+        for _ in 0 ..< 10_000 {
+            if StreamingRetryURLProtocol.snapshot().stopCount == 1 { break }
+            await Task.yield()
+        }
+
+        XCTAssertEqual(StreamingRetryURLProtocol.snapshot().stopCount, 1)
+    }
+
     func testReactNativeRuntimeUsesPairedSDKAndPlatformIdentifiers() async throws {
         let fixture = try await makeFixture(
             clientRuntime: .reactNativeIOS,
             clientSDKVersion: "0.1.0-dev.0"
         )
         var request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        request.httpMethod = "POST"
 
         try await fixture.client.authorize(&request, feature: "habit-assistant")
 
@@ -670,6 +910,7 @@ final class ClientSessionTests: XCTestCase {
     func testCallerOwnedTransportCanAuthorizeNonceRetry() async throws {
         let fixture = try await makeFixture()
         var request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        request.httpMethod = "POST"
 
         try await fixture.client.authorize(
             &request,
@@ -687,6 +928,7 @@ final class ClientSessionTests: XCTestCase {
     func testCallerOwnedTransportCanForceSingleFlightRefresh() async throws {
         let fixture = try await makeFixture()
         var request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        request.httpMethod = "POST"
         try await fixture.client.authorize(&request, feature: "habit-assistant")
 
         try await withThrowingTaskGroup(of: Void.self) { group in
@@ -864,6 +1106,18 @@ final class ClientSessionTests: XCTestCase {
         var value = value.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
         value += String(repeating: "=", count: (4 - value.count % 4) % 4)
         return try XCTUnwrap(Data(base64Encoded: value))
+    }
+
+    private func makeStreamingSession() -> URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StreamingRetryURLProtocol.self]
+        return URLSession(configuration: configuration)
+    }
+
+    private func collect(_ bytes: LatchwayAsyncBytes) async throws -> Data {
+        var data = Data()
+        for try await byte in bytes { data.append(byte) }
+        return data
     }
 }
 
@@ -1223,6 +1477,214 @@ private actor SessionServerTransport: LatchwayHTTPTransport {
 
 private extension LatchwayError {
     static var dpopTestFailure: LatchwayError { .invalidServerResponse }
+}
+
+private final class StreamingRetryURLProtocol: URLProtocol, @unchecked Sendable {
+    enum Mode: Sendable {
+        case sessionExpiredThenSuccess
+        case nonceRequiredThenSuccess
+        case noncanonicalNonceProblem
+        case nonRetryableNonceProblem
+        case malformedProblem
+        case oversizedChunkedProblem
+        case nonceRequiredTwice
+        case unfinishedSuccess
+    }
+
+    struct CapturedRequest: Sendable {
+        let requestID: String?
+        let authorization: String?
+        let proof: String?
+    }
+
+    struct Snapshot: Sendable {
+        let requests: [CapturedRequest]
+        let stopCount: Int
+    }
+
+    private struct Output {
+        let statusCode: Int
+        let headers: [String: String]
+        let body: Data
+        let finishes: Bool
+    }
+
+    private static let state = State()
+
+    static func reset(mode: Mode) {
+        state.reset(mode: mode)
+    }
+
+    static func snapshot() -> Snapshot {
+        state.snapshot()
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        request.url?.host == "gateway.example.test"
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        let output = Self.state.output(for: request)
+        guard let url = request.url,
+              let response = HTTPURLResponse(
+                  url: url,
+                  statusCode: output.statusCode,
+                  httpVersion: "HTTP/1.1",
+                  headerFields: output.headers
+              )
+        else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+            return
+        }
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        if !output.body.isEmpty {
+            client?.urlProtocol(self, didLoad: output.body)
+        }
+        if output.finishes {
+            client?.urlProtocolDidFinishLoading(self)
+        }
+    }
+
+    override func stopLoading() {
+        Self.state.recordStop()
+    }
+
+    private final class State: @unchecked Sendable {
+        private let lock = NSLock()
+        private var mode: Mode = .sessionExpiredThenSuccess
+        private var requests: [CapturedRequest] = []
+        private var stopCount = 0
+
+        func reset(mode: Mode) {
+            lock.lock()
+            defer { lock.unlock() }
+            self.mode = mode
+            requests = []
+            stopCount = 0
+        }
+
+        func snapshot() -> Snapshot {
+            lock.lock()
+            defer { lock.unlock() }
+            return Snapshot(requests: requests, stopCount: stopCount)
+        }
+
+        func recordStop() {
+            lock.lock()
+            defer { lock.unlock() }
+            stopCount += 1
+        }
+
+        func output(for request: URLRequest) -> Output {
+            lock.lock()
+            defer { lock.unlock() }
+            requests.append(CapturedRequest(
+                requestID: request.value(forHTTPHeaderField: "X-Latchway-Request-ID"),
+                authorization: request.value(forHTTPHeaderField: "Authorization"),
+                proof: request.value(forHTTPHeaderField: "DPoP")
+            ))
+            let attempt = requests.count
+            let requestID = request.value(forHTTPHeaderField: "X-Latchway-Request-ID")
+                ?? "request-missing"
+
+            switch mode {
+            case .sessionExpiredThenSuccess where attempt == 1:
+                return problem(code: "session_expired", requestID: requestID)
+            case .nonceRequiredThenSuccess where attempt == 1,
+                 .nonceRequiredTwice:
+                return problem(code: "dpop_nonce_required", requestID: requestID)
+            case .noncanonicalNonceProblem:
+                return problem(
+                    code: "dpop_nonce_required",
+                    requestID: requestID,
+                    extraMember: true
+                )
+            case .nonRetryableNonceProblem:
+                return problem(
+                    code: "dpop_nonce_required",
+                    requestID: requestID,
+                    retryable: false
+                )
+            case .malformedProblem:
+                return Output(
+                    statusCode: 401,
+                    headers: [
+                        "Content-Type": "application/problem+json",
+                        "X-Latchway-Request-ID": requestID,
+                    ],
+                    body: Data(#"{"code":"dpop_nonce_required""#.utf8),
+                    finishes: true
+                )
+            case .oversizedChunkedProblem:
+                return Output(
+                    statusCode: 401,
+                    headers: [
+                        "Content-Type": "application/problem+json",
+                        "Transfer-Encoding": "chunked",
+                        "X-Latchway-Request-ID": requestID,
+                    ],
+                    body: Data(
+                        repeating: 0x41,
+                        count: SafeRetryDirective.maximumProblemBytes + 1
+                    ),
+                    finishes: true
+                )
+            case .unfinishedSuccess:
+                return Output(
+                    statusCode: 200,
+                    headers: ["Content-Type": "text/event-stream"],
+                    body: Data("x".utf8),
+                    finishes: false
+                )
+            default:
+                return Output(
+                    statusCode: 200,
+                    headers: ["Content-Type": "text/event-stream"],
+                    body: Data("data: streamed\n\n".utf8),
+                    finishes: true
+                )
+            }
+        }
+
+        private func problem(
+            code: String,
+            requestID: String,
+            extraMember: Bool = false,
+            retryable: Bool = true
+        ) -> Output {
+            let isNonce = code == "dpop_nonce_required"
+            var object: [String: Any] = [
+                "type": "https://latchway.dev/problems/\(code)",
+                "title": isNonce ? "DPoP nonce required" : "Session expired",
+                "status": 401,
+                "detail": isNonce
+                    ? "A fresh server DPoP nonce is required."
+                    : "The Latchway session is expired.",
+                "code": code,
+                "request_id": requestID,
+                "retryable": retryable,
+            ]
+            if extraMember { object["extra"] = true }
+            var headers = [
+                "Content-Type": "application/problem+json",
+                "X-Latchway-Request-ID": requestID,
+            ]
+            if isNonce {
+                headers["DPoP-Nonce"] = "nonce-fixture-0123456789abcdef"
+            }
+            return Output(
+                statusCode: 401,
+                headers: headers,
+                body: try! JSONSerialization.data(
+                    withJSONObject: object,
+                    options: [.sortedKeys]
+                ),
+                finishes: true
+            )
+        }
+    }
 }
 
 private func XCTAssertThrowsErrorAsync(

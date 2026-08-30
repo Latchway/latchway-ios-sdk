@@ -10,6 +10,7 @@ release-only semantic policy that JSON Schema cannot express succinctly.
 from __future__ import annotations
 
 import argparse
+import copy
 import datetime as dt
 import hashlib
 import json
@@ -20,9 +21,29 @@ import xml.etree.ElementTree as ET
 from typing import Any
 
 
-SCHEMA_VERSION = "latchway.physical-device-evidence.v1"
-PROFILE_VERSION = "latchway.physical-device-profile.v1"
+SCHEMA_VERSION = "latchway.physical-device-evidence.v2"
+PROFILE_VERSION = "latchway.physical-device-profile.v2"
 OBSERVATION_VERSION = "latchway.physical-device-observation.v1"
+IOS_COMPONENT_OBSERVATION_VERSION = "latchway.ios-component-observation.v1"
+
+IOS_COMPONENT_ROLE_POLICY = {
+    "host": ("main_app", "host_bundle_identifier", "host_definition_id", "host_binary_sha256"),
+    "widget": ("widget", "widget_bundle_identifier", "widget_definition_id", "widget_binary_sha256"),
+    "share": ("share_extension", "share_bundle_identifier", "share_definition_id", "share_binary_sha256"),
+    "action": ("action_extension", "action_bundle_identifier", "action_definition_id", "action_binary_sha256"),
+}
+
+IOS_COMPONENT_TESTS = {
+    "component_candidate_identities",
+    "action_direct_attestation_step_up",
+    "component_key_isolation",
+    "component_session_isolation",
+    "component_sibling_denied",
+    "component_no_host_process",
+    "component_background_execution",
+    "component_host_termination",
+    "component_no_user_presence",
+}
 
 PLATFORM_POLICY = {
     "ios_app_attest": {
@@ -48,6 +69,18 @@ PLATFORM_POLICY = {
             "gateway_deployment_statement_sha256",
             "gateway_deployment_public_key_sha256",
             "error_mapping_feature",
+            "host_bundle_identifier",
+            "widget_bundle_identifier",
+            "share_bundle_identifier",
+            "action_bundle_identifier",
+            "host_definition_id",
+            "widget_definition_id",
+            "share_definition_id",
+            "action_definition_id",
+            "host_binary_sha256",
+            "widget_binary_sha256",
+            "share_binary_sha256",
+            "action_binary_sha256",
         },
         "tests": {
             "physical_device",
@@ -66,7 +99,7 @@ PLATFORM_POLICY = {
             "session_refresh_rotation",
             "installation_revocation",
             "protocol_version_rejection",
-        },
+        } | IOS_COMPONENT_TESTS,
     },
     "android_play_integrity": {
         "repository": "Latchway/latchway-android",
@@ -403,7 +436,7 @@ def validate_profile(profile: Any) -> list[str]:
     required_toolchain = {"runner_os", "runner_arch", "compiler", "build_tool", "collector_version"}
     if not isinstance(toolchain, dict) or set(toolchain) != required_toolchain:
         errors.append("profile.toolchain: fields must exactly match the profile contract")
-    elif toolchain.get("collector_version") != "1":
+    elif toolchain.get("collector_version") != "2":
         errors.append("profile.toolchain.collector_version: unsupported value")
     pins = profile.get("expected_pins")
     if not isinstance(pins, dict) or set(pins) != policy["pins"]:
@@ -436,6 +469,167 @@ def validate_observation(observation: Any, platform: str) -> list[str]:
         errors.append("observation.platform: does not match profile")
     if not isinstance(observation.get("observed_pins"), dict):
         errors.append("observation.observed_pins: expected object")
+    return errors
+
+
+def validate_component_observation(
+    observation: Any,
+    *,
+    platform: str,
+    run_id: str,
+    run_started: str,
+    run_completed: str | None = None,
+) -> list[str]:
+    errors: list[str] = []
+    if not isinstance(observation, dict):
+        return ["component observation: expected object"]
+    required = {
+        "schema_version", "platform", "run_id", "started_at", "completed_at",
+        "runtime", "tests",
+    }
+    if set(observation) != required:
+        errors.append("component observation: fields must exactly match the observation contract")
+        return errors
+    if observation.get("schema_version") != IOS_COMPONENT_OBSERVATION_VERSION:
+        errors.append("component observation.schema_version: unsupported value")
+    if platform != "ios_app_attest" or observation.get("platform") != platform:
+        errors.append("component observation.platform: direct Action proof requires ios_app_attest")
+    if observation.get("run_id") != run_id:
+        errors.append("component observation.run_id: does not match the physical-device run")
+    try:
+        physical_started = parse_date_time(run_started)
+        component_started = parse_date_time(observation["started_at"])
+        component_completed = parse_date_time(observation["completed_at"])
+        if component_started < physical_started or component_completed < component_started:
+            errors.append("component observation: time interval is outside the physical-device run")
+        if component_completed - component_started > dt.timedelta(hours=2):
+            errors.append("component observation: exceeded the two-hour evidence window")
+        if run_completed is not None and component_completed > parse_date_time(run_completed):
+            errors.append("component observation: completed after finalized physical-device run")
+    except (KeyError, TypeError, ValueError):
+        errors.append("component observation: invalid UTC time interval")
+
+    tests = observation.get("tests")
+    if not isinstance(tests, list):
+        errors.append("component observation.tests: expected array")
+    else:
+        by_id = {
+            item.get("id"): item
+            for item in tests
+            if isinstance(item, dict) and isinstance(item.get("id"), str)
+        }
+        if len(by_id) != len(tests) or set(by_id) != IOS_COMPONENT_TESTS:
+            errors.append("component observation.tests: must contain the exact direct-component test set")
+        elif any(item.get("status") != "passed" for item in by_id.values()):
+            errors.append("component observation.tests: every observed component test must pass")
+        denial = by_id.get("component_sibling_denied", {})
+        if (
+            denial.get("http_status") != 401
+            or denial.get("error_code") != "component_key_invalid"
+            or re.fullmatch(
+                r"[A-Za-z0-9][A-Za-z0-9._:-]{7,127}",
+                str(denial.get("request_id", "")),
+            ) is None
+        ):
+            errors.append("component observation.tests: sibling denial is not a concrete canonical rejection")
+    return errors
+
+
+def ios_component_runtime_errors(runtime: Any, profile: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    if not isinstance(runtime, dict):
+        return ["component_runtime: expected object"]
+    expected_pins = profile.get("expected_pins", {})
+    identities = runtime.get("identities")
+    if not isinstance(identities, list) or len(identities) != 4:
+        return ["component_runtime.identities: exactly four component identities are required"]
+    by_role: dict[str, dict[str, Any]] = {}
+    for identity in identities:
+        if (
+            not isinstance(identity, dict)
+            or not isinstance(identity.get("role"), str)
+            or identity["role"] in by_role
+        ):
+            errors.append("component_runtime.identities: roles must be unique objects")
+            continue
+        by_role[identity["role"]] = identity
+    if set(by_role) != set(IOS_COMPONENT_ROLE_POLICY):
+        errors.append("component_runtime.identities: host, widget, share, and action are required")
+        return errors
+
+    hash_fields = (
+        "binary_sha256", "principal_id_sha256", "dpop_key_id_sha256", "session_id_sha256",
+    )
+    for role, (kind, bundle_pin, definition_pin, binary_pin) in IOS_COMPONENT_ROLE_POLICY.items():
+        identity = by_role[role]
+        if (
+            identity.get("kind") != kind
+            or identity.get("bundle_identifier") != expected_pins.get(bundle_pin)
+            or identity.get("definition_id") != expected_pins.get(definition_pin)
+            or identity.get("binary_sha256") != expected_pins.get(binary_pin)
+        ):
+            errors.append(f"component_runtime.identities: {role} is not bound to the protected candidate")
+        if any(re.fullmatch(r"[0-9a-f]{64}", str(identity.get(field, ""))) is None for field in hash_fields):
+            errors.append(f"component_runtime.identities: {role} contains an invalid redacted identifier")
+
+    for field in ("principal_id_sha256", "dpop_key_id_sha256", "session_id_sha256"):
+        values = [identity.get(field) for identity in identities]
+        if len(set(values)) != 4:
+            errors.append(f"component_runtime.identities: {field} values are not independent")
+
+    action = by_role["action"]
+    step_up = runtime.get("direct_step_up")
+    if not isinstance(step_up, dict):
+        errors.append("component_runtime.direct_step_up: expected object")
+    else:
+        if (
+            step_up.get("role") != "action"
+            or step_up.get("definition_id") != action.get("definition_id")
+            or step_up.get("component_id_sha256") != action.get("principal_id_sha256")
+            or step_up.get("dpop_key_id_sha256") != action.get("dpop_key_id_sha256")
+            or step_up.get("session_after_sha256") != action.get("session_id_sha256")
+            or step_up.get("session_before_sha256") == step_up.get("session_after_sha256")
+            or step_up.get("trust_source_before")
+            not in {"delegated_from_attested_root", "delegated_identity_only"}
+            or step_up.get("trust_source_after") != "delegated_direct_attested"
+            or step_up.get("binding_version") != 2
+            or step_up.get("request_hash_bound") is not True
+        ):
+            errors.append("component_runtime.direct_step_up: does not prove the Action component transition")
+        app_attest_key = step_up.get("app_attest_key_id_sha256")
+        if (
+            re.fullmatch(r"[0-9a-f]{64}", str(app_attest_key or "")) is None
+            or app_attest_key in {item.get("dpop_key_id_sha256") for item in identities}
+        ):
+            errors.append("component_runtime.direct_step_up: App Attest key identity is invalid or reused")
+
+    denial = runtime.get("sibling_denial")
+    if not isinstance(denial, dict):
+        errors.append("component_runtime.sibling_denial: expected object")
+    else:
+        sibling = by_role.get(str(denial.get("credential_role")), {})
+        if (
+            denial.get("requesting_role") != "action"
+            or denial.get("credential_role") not in {"widget", "share"}
+            or denial.get("credential_session_id_sha256") != sibling.get("session_id_sha256")
+            or denial.get("credential_session_id_sha256") == action.get("session_id_sha256")
+            or denial.get("http_status") != 401
+            or denial.get("error_code") != "component_key_invalid"
+            or re.fullmatch(
+                r"[A-Za-z0-9][A-Za-z0-9._:-]{7,127}",
+                str(denial.get("request_id", "")),
+            ) is None
+        ):
+            errors.append("component_runtime.sibling_denial: sibling credential misuse was not denied")
+
+    lifecycle = runtime.get("lifecycle")
+    if lifecycle != {
+        "host_process_running_during_step_up": False,
+        "background_execution_observed": True,
+        "host_termination_observed": True,
+        "user_presence_prompt_observed": False,
+    }:
+        errors.append("component_runtime.lifecycle: no-host/background/termination/no-presence proof is incomplete")
     return errors
 
 
@@ -503,6 +697,14 @@ def semantic_errors(evidence: dict[str, Any], profile: dict[str, Any]) -> list[s
             errors.append("App Attest release evidence requires the production entitlement")
         if not isinstance(application.get("team_id"), str):
             errors.append("Apple team ID is absent")
+        if platform == "ios_app_attest":
+            expected_pins = profile.get("expected_pins", {})
+            if (
+                application.get("identifier") != expected_pins.get("host_bundle_identifier")
+                or profile.get("application_binary_sha256") != expected_pins.get("host_binary_sha256")
+            ):
+                errors.append("host application identity is not bound to the component candidate")
+            errors.extend(ios_component_runtime_errors(evidence.get("component_runtime"), profile))
     else:
         if application.get("installer_package") != "com.android.vending":
             errors.append("Play Integrity release evidence must be Play installed")
@@ -574,6 +776,7 @@ def semantic_errors(evidence: dict[str, Any], profile: dict[str, Any]) -> list[s
         "canonical_error_mapping": (404, "feature_not_found"),
         "installation_revocation": (403, "installation_revoked"),
         "protocol_version_rejection": (426, "protocol_version_unsupported"),
+        "component_sibling_denied": (401, "component_key_invalid"),
     }
     for name, (status, code) in negative_expectations.items():
         test = tests_by_name.get(name, {})
@@ -615,11 +818,30 @@ def semantic_errors(evidence: dict[str, Any], profile: dict[str, Any]) -> list[s
     artifacts = evidence.get("artifacts", {})
     if artifacts.get("profile_sha256") != canonical_sha256(profile):
         errors.append("profile hash does not match protected profile")
+    if platform == "ios_app_attest" and re.fullmatch(
+        r"[0-9a-f]{64}", str(artifacts.get("component_observation_sha256", ""))
+    ) is None:
+        errors.append("component observation hash is absent")
     return errors
 
 
-def build_evidence(observation: dict[str, Any], profile: dict[str, Any], schema: dict[str, Any]) -> dict[str, Any]:
-    observed_pins = observation["observed_pins"]
+def build_evidence(
+    observation: dict[str, Any],
+    profile: dict[str, Any],
+    schema: dict[str, Any],
+    component_observation: dict[str, Any] | None = None,
+    component_observation_sha256: str | None = None,
+) -> dict[str, Any]:
+    combined = copy.deepcopy(observation)
+    if component_observation is not None:
+        combined["component_runtime"] = copy.deepcopy(component_observation["runtime"])
+        combined["tests"] = list(combined["tests"]) + copy.deepcopy(component_observation["tests"])
+        if parse_date_time(component_observation["completed_at"]) > parse_date_time(
+            combined["run"]["completed_at"]
+        ):
+            combined["run"]["completed_at"] = component_observation["completed_at"]
+
+    observed_pins = combined["observed_pins"]
     expected_pins = profile["expected_pins"]
     pins = [
         {
@@ -635,19 +857,19 @@ def build_evidence(observation: dict[str, Any], profile: dict[str, Any], schema:
         "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
         "release_eligible": False,
         "platform": profile["platform"],
-        "run": observation["run"],
+        "run": combined["run"],
         "source": {
             "repository": profile["repository"],
             **profile["source"],
-            "gateway_version": observation["gateway_version"],
+            "gateway_version": combined["gateway_version"],
         },
         "toolchain": profile["toolchain"],
-        "application": observation["application"],
-        "device": observation["device"],
-        "provider": observation["provider"],
+        "application": combined["application"],
+        "device": combined["device"],
+        "provider": combined["provider"],
         "pins": pins,
-        "tests": observation["tests"],
-        "redaction": observation["redaction"],
+        "tests": combined["tests"],
+        "redaction": combined["redaction"],
         "artifacts": {
             "observation_sha256": canonical_sha256(observation),
             "application_binary_sha256": profile["application_binary_sha256"],
@@ -656,6 +878,11 @@ def build_evidence(observation: dict[str, Any], profile: dict[str, Any], schema:
             "schema_sha256": canonical_sha256(schema),
         },
     }
+    if component_observation is not None:
+        evidence["component_runtime"] = combined["component_runtime"]
+        evidence["artifacts"]["component_observation_sha256"] = (
+            component_observation_sha256 or canonical_sha256(component_observation)
+        )
     evidence["release_eligible"] = not (
         schema_errors(evidence, schema) + semantic_errors(evidence, profile)
     )
@@ -693,7 +920,13 @@ def write_junit(path: pathlib.Path, evidence: dict[str, Any] | None, errors: lis
     ET.ElementTree(suite).write(path, encoding="utf-8", xml_declaration=True)
 
 
-def verify(evidence: dict[str, Any], profile: dict[str, Any], schema: dict[str, Any]) -> list[str]:
+def verify(
+    evidence: dict[str, Any],
+    profile: dict[str, Any],
+    schema: dict[str, Any],
+    component_observation: dict[str, Any] | None = None,
+    component_observation_sha256: str | None = None,
+) -> list[str]:
     errors = schema_errors(evidence, schema)
     errors.extend(semantic_errors(evidence, profile))
     if evidence.get("release_eligible") is not True:
@@ -701,6 +934,31 @@ def verify(evidence: dict[str, Any], profile: dict[str, Any], schema: dict[str, 
     artifacts = evidence.get("artifacts", {})
     if artifacts.get("schema_sha256") != canonical_sha256(schema):
         errors.append("schema hash does not match checked-in schema")
+    if evidence.get("platform") == "ios_app_attest":
+        if component_observation is None:
+            errors.append("component observation is required for iOS release evidence")
+        else:
+            errors.extend(validate_component_observation(
+                component_observation,
+                platform="ios_app_attest",
+                run_id=str(evidence.get("run", {}).get("id", "")),
+                run_started=str(evidence.get("run", {}).get("started_at", "")),
+                run_completed=str(evidence.get("run", {}).get("completed_at", "")),
+            ))
+            if component_observation.get("runtime") != evidence.get("component_runtime"):
+                errors.append("component observation runtime does not match finalized evidence")
+            component_tests = component_observation.get("tests", [])
+            evidence_component_tests = [
+                item for item in evidence.get("tests", [])
+                if isinstance(item, dict) and item.get("id") in IOS_COMPONENT_TESTS
+            ]
+            if component_tests != evidence_component_tests:
+                errors.append("component observation tests do not match finalized evidence")
+            expected_component_hash = (
+                component_observation_sha256 or canonical_sha256(component_observation)
+            )
+            if artifacts.get("component_observation_sha256") != expected_component_hash:
+                errors.append("component observation hash does not match finalized evidence")
     return sorted(set(errors))
 
 
@@ -724,6 +982,7 @@ def main() -> int:
     parser.add_argument("--profile", type=pathlib.Path, required=True)
     parser.add_argument("--evidence", type=pathlib.Path, required=True)
     parser.add_argument("--observation", type=pathlib.Path)
+    parser.add_argument("--component-observation", type=pathlib.Path)
     parser.add_argument("--junit", type=pathlib.Path, required=True)
     parser.add_argument("--summary", type=pathlib.Path, required=True)
     args = parser.parse_args()
@@ -734,6 +993,12 @@ def main() -> int:
         schema = load_json(args.schema)
         profile = load_json(args.profile)
         errors.extend(validate_profile(profile))
+        component_observation: dict[str, Any] | None = None
+        component_observation_sha256: str | None = None
+        if args.component_observation is not None:
+            component_observation = load_json(args.component_observation)
+            component_observation_sha256 = sha256_file(args.component_observation)
+            errors.extend(secret_scan(component_observation))
         if args.command == "finalize":
             if args.observation is None:
                 errors.append("finalize requires --observation")
@@ -741,13 +1006,44 @@ def main() -> int:
                 observation = load_json(args.observation)
                 errors.extend(validate_observation(observation, profile.get("platform", "")))
                 errors.extend(secret_scan(observation))
+                if profile.get("platform") == "ios_app_attest":
+                    if component_observation is None:
+                        errors.append("finalize requires --component-observation for ios_app_attest")
+                    else:
+                        errors.extend(validate_component_observation(
+                            component_observation,
+                            platform="ios_app_attest",
+                            run_id=str(observation.get("run", {}).get("id", "")),
+                            run_started=str(observation.get("run", {}).get("started_at", "")),
+                        ))
+                        errors.extend(ios_component_runtime_errors(
+                            component_observation.get("runtime"), profile
+                        ))
                 if not errors:
-                    evidence = build_evidence(observation, profile, schema)
+                    evidence = build_evidence(
+                        observation,
+                        profile,
+                        schema,
+                        component_observation,
+                        component_observation_sha256,
+                    )
                     write_json(args.evidence, evidence)
-                    errors.extend(verify(evidence, profile, schema))
+                    errors.extend(verify(
+                        evidence,
+                        profile,
+                        schema,
+                        component_observation,
+                        component_observation_sha256,
+                    ))
         else:
             evidence = load_json(args.evidence)
-            errors.extend(verify(evidence, profile, schema))
+            errors.extend(verify(
+                evidence,
+                profile,
+                schema,
+                component_observation,
+                component_observation_sha256,
+            ))
     except (OSError, ValueError, KeyError, TypeError) as error:
         errors.append(str(error))
 

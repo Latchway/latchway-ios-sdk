@@ -108,6 +108,9 @@ jobs:
           COLLECTOR_TRUST_ROOT_SHA256: ${{ vars.LATCHWAY_COLLECTOR_TRUST_ROOT_SHA256 }}
           DEVICE_GRANT_SHA256: ${{ vars.LATCHWAY_DEVICE_GRANT_SHA256 }}
           EXPECTED_ARTIFACT_SHA256: ${{ vars.LATCHWAY_IOS_APP_BINARY_SHA256 }}
+          EXPECTED_WIDGET_SHA256: ${{ vars.LATCHWAY_IOS_WIDGET_BINARY_SHA256 }}
+          EXPECTED_SHARE_SHA256: ${{ vars.LATCHWAY_IOS_SHARE_BINARY_SHA256 }}
+          EXPECTED_ACTION_SHA256: ${{ vars.LATCHWAY_IOS_ACTION_BINARY_SHA256 }}
           SOURCE_COMMIT: ${{ inputs.source_commit }}
         run: |
           set -Eeuo pipefail
@@ -122,7 +125,8 @@ jobs:
           lease=/etc/latchway/physical-collector/lease.json
           signature=/etc/latchway/physical-collector/lease.sig
           hook=/usr/local/libexec/latchway-physical-collector-finalize
-          for path in "$lease" "$signature" "$hook"; do
+          component_observer=/usr/local/libexec/latchway-ios-component-evidence-observer
+          for path in "$lease" "$signature" "$hook" "$component_observer"; do
             test -f "$path" && test ! -L "$path"
             case "$RUNNER_OS" in
               macOS)
@@ -138,6 +142,7 @@ jobs:
             (( (8#$mode & 0022) == 0 ))
           done
           test -x "$hook"
+          test -x "$component_observer"
           trust_root="$RUNNER_TEMP/latchway-collector-trust-root.pem"
           isolation="$RUNNER_TEMP/latchway-app-attest-isolation"
           umask 077
@@ -155,6 +160,9 @@ jobs:
             --arg runner "$RUNNER_NAME" \
             --arg grant "$DEVICE_GRANT_SHA256" \
             --arg artifact "$EXPECTED_ARTIFACT_SHA256" \
+            --arg widget "$EXPECTED_WIDGET_SHA256" \
+            --arg share "$EXPECTED_SHARE_SHA256" \
+            --arg action "$EXPECTED_ACTION_SHA256" \
             --argjson now "$now" '
               .schema_version == "latchway.physical-collector-lease.v1" and
               .repository == $repository and .source_commit == $commit and
@@ -166,7 +174,7 @@ jobs:
               (.runner.image_digest | test("^sha256:[0-9a-f]{64}$")) and
               (.runner.boot_id_sha256 | test("^[0-9a-f]{64}$")) and
               .credentials == {long_lived:false,organization:false,administration:false,registry:false,oidc:false} and
-              .supervisor == {private_key_isolated:true,caller_supplied_claims_accepted:false,independent_device_verification:true,independent_provider_verification:true,gateway_run_receipt_verification:true,one_use_invocation:true,out_of_band_watchdog:true,destroy_on_disconnect:true} and
+              .supervisor == {private_key_isolated:true,caller_supplied_claims_accepted:false,independent_device_verification:true,independent_provider_verification:true,independent_component_verification:true,gateway_run_receipt_verification:true,one_use_invocation:true,out_of_band_watchdog:true,destroy_on_disconnect:true} and
               .grant.audience == "latchway-physical-evidence/ios-app-attest" and
               .grant.source_commit == $commit and .grant.run_id == $run_id and
               .grant.run_attempt == $run_attempt and .grant.sha256 == $grant and
@@ -177,7 +185,7 @@ jobs:
               .grant.expires_at_unix >= $now and .grant.expires_at_unix <= .expires_at_unix and
               .grant.expires_at_unix > .grant.issued_at_unix and
               (.grant.expires_at_unix - .grant.issued_at_unix) <= 300 and
-              .candidate.artifacts == {ios_app_binary_sha256:$artifact} and
+              .candidate.artifacts == {ios_app_binary_sha256:$artifact,ios_widget_binary_sha256:$widget,ios_share_binary_sha256:$share,ios_action_binary_sha256:$action} and
               (.issued_at_unix | type == "number") and (.expires_at_unix | type == "number") and
               .issued_at_unix <= $now and .expires_at_unix >= $now and
               (.expires_at_unix - .issued_at_unix) <= 3600
@@ -264,11 +272,21 @@ jobs:
           LATCHWAY_IOS_APP_BUNDLE_PATH: ${{ vars.LATCHWAY_IOS_APP_BUNDLE_PATH }}
           LATCHWAY_IOS_INSTALL_MODE: ${{ vars.LATCHWAY_IOS_INSTALL_MODE }}
           LATCHWAY_BUNDLE_ID: ${{ vars.LATCHWAY_IOS_BUNDLE_ID }}
+          LATCHWAY_IOS_WIDGET_BUNDLE_ID: ${{ vars.LATCHWAY_IOS_WIDGET_BUNDLE_ID }}
+          LATCHWAY_IOS_SHARE_BUNDLE_ID: ${{ vars.LATCHWAY_IOS_SHARE_BUNDLE_ID }}
+          LATCHWAY_IOS_ACTION_BUNDLE_ID: ${{ vars.LATCHWAY_IOS_ACTION_BUNDLE_ID }}
+          LATCHWAY_HOST_COMPONENT_DEFINITION_ID: ${{ vars.LATCHWAY_HOST_COMPONENT_DEFINITION_ID }}
+          LATCHWAY_WIDGET_COMPONENT_DEFINITION_ID: ${{ vars.LATCHWAY_WIDGET_COMPONENT_DEFINITION_ID }}
+          LATCHWAY_SHARE_COMPONENT_DEFINITION_ID: ${{ vars.LATCHWAY_SHARE_COMPONENT_DEFINITION_ID }}
+          LATCHWAY_ACTION_COMPONENT_DEFINITION_ID: ${{ vars.LATCHWAY_ACTION_COMPONENT_DEFINITION_ID }}
           LATCHWAY_APP_VERSION: ${{ vars.LATCHWAY_IOS_APP_VERSION }}
           LATCHWAY_BUILD_NUMBER: ${{ vars.LATCHWAY_IOS_BUILD_NUMBER }}
           LATCHWAY_TEAM_ID: ${{ vars.LATCHWAY_IOS_TEAM_ID }}
           LATCHWAY_SIGNING_CERTIFICATE_SHA256: ${{ vars.LATCHWAY_IOS_SIGNING_CERTIFICATE_SHA256 }}
           LATCHWAY_APP_BINARY_SHA256: ${{ vars.LATCHWAY_IOS_APP_BINARY_SHA256 }}
+          LATCHWAY_IOS_WIDGET_BINARY_SHA256: ${{ vars.LATCHWAY_IOS_WIDGET_BINARY_SHA256 }}
+          LATCHWAY_IOS_SHARE_BINARY_SHA256: ${{ vars.LATCHWAY_IOS_SHARE_BINARY_SHA256 }}
+          LATCHWAY_IOS_ACTION_BINARY_SHA256: ${{ vars.LATCHWAY_IOS_ACTION_BINARY_SHA256 }}
           LATCHWAY_DISTRIBUTION: ${{ vars.LATCHWAY_IOS_DISTRIBUTION }}
           LATCHWAY_SOURCE_COMMIT: ${{ vars.LATCHWAY_SOURCE_COMMIT }}
           LATCHWAY_CORE_COMMIT: ${{ vars.LATCHWAY_CORE_COMMIT }}
@@ -369,6 +387,7 @@ jobs:
           evidence_sha=$(shasum -a 256 "$evidence/SHA256SUMS" | awk '{print $1}')
           device_sha=$(shasum -a 256 "$evidence/device-inventory.json" | awk '{print $1}')
           provider_sha=$(shasum -a 256 "$evidence/app-attest-observation.json" | awk '{print $1}')
+          component_sha=$(shasum -a 256 "$evidence/component-observation.json" | awk '{print $1}')
           deployment_sha=$(shasum -a 256 "$evidence/gateway-deployment-verification.json" | awk '{print $1}')
           now=$(date +%s)
           jq --exit-status \
@@ -383,6 +402,7 @@ jobs:
             --arg wipe "$wipe_sha" \
             --arg evidence "$evidence_sha" \
             --arg device "$device_sha" --arg provider "$provider_sha" \
+            --arg component "$component_sha" \
             --arg deployment "$deployment_sha" \
             --argjson now "$now" '
               .schema_version == "latchway.physical-collector-teardown.v1" and
@@ -392,9 +412,10 @@ jobs:
               .runner.accepts_more_jobs == false and .runner.destroy_scheduled == true and
               .runner.destroy_deadline_unix >= $now and .runner.destroy_deadline_unix <= ($now + 600) and
               .evidence_eligible == true and
-              .supervisor == {private_key_isolated:true,caller_supplied_claims_accepted:false,independent_device_verification:true,independent_provider_verification:true,gateway_run_receipt_verified:true,one_use_invocation:true,watchdog_armed:true} and
+              .supervisor == {private_key_isolated:true,caller_supplied_claims_accepted:false,independent_device_verification:true,independent_provider_verification:true,independent_component_verification:true,gateway_run_receipt_verified:true,one_use_invocation:true,watchdog_armed:true} and
               .observations.device_inventory_sha256 == $device and
               .observations.provider_observation_sha256 == $provider and
+              .observations.component_observation_sha256 == $component and
               .observations.gateway_deployment_verification_sha256 == $deployment and
               (.observations.gateway_run_receipt_sha256 | test("^[0-9a-f]{64}$")) and
               .device == {app_data_wiped:true,method:"ios-uninstall",receipt_sha256:$wipe} and
@@ -458,6 +479,9 @@ jobs:
           COLLECTOR_TRUST_ROOT_SHA256: ${{ vars.LATCHWAY_COLLECTOR_TRUST_ROOT_SHA256 }}
           DEVICE_GRANT_SHA256: ${{ vars.LATCHWAY_DEVICE_GRANT_SHA256 }}
           EXPECTED_ARTIFACT_SHA256: ${{ vars.LATCHWAY_IOS_APP_BINARY_SHA256 }}
+          EXPECTED_WIDGET_SHA256: ${{ vars.LATCHWAY_IOS_WIDGET_BINARY_SHA256 }}
+          EXPECTED_SHARE_SHA256: ${{ vars.LATCHWAY_IOS_SHARE_BINARY_SHA256 }}
+          EXPECTED_ACTION_SHA256: ${{ vars.LATCHWAY_IOS_ACTION_BINARY_SHA256 }}
           SOURCE_COMMIT: ${{ inputs.source_commit }}
         run: |
           set -Eeuo pipefail
@@ -498,6 +522,7 @@ jobs:
           evidence_sha=$(sha256sum "$evidence/SHA256SUMS" | awk '{print $1}')
           device_sha=$(sha256sum "$evidence/device-inventory.json" | awk '{print $1}')
           provider_sha=$(sha256sum "$evidence/app-attest-observation.json" | awk '{print $1}')
+          component_sha=$(sha256sum "$evidence/component-observation.json" | awk '{print $1}')
           deployment_sha=$(sha256sum "$evidence/gateway-deployment-verification.json" | awk '{print $1}')
           runner="latchway-ios-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           jq --exit-status \
@@ -519,7 +544,10 @@ jobs:
             --arg runner "$runner" \
             --arg auth "$auth_sha" \
             --arg grant "$DEVICE_GRANT_SHA256" \
-            --arg artifact "$EXPECTED_ARTIFACT_SHA256" '
+            --arg artifact "$EXPECTED_ARTIFACT_SHA256" \
+            --arg widget "$EXPECTED_WIDGET_SHA256" \
+            --arg share "$EXPECTED_SHARE_SHA256" \
+            --arg action "$EXPECTED_ACTION_SHA256" '
               .schema_version == "latchway.physical-collector-lease.v1" and
               .repository == $repository and .source_commit == $commit and
               .source_authorization_sha256 == $auth and
@@ -530,7 +558,7 @@ jobs:
               .runner.destroy_after_job == true and (.runner.image_digest | test("^sha256:[0-9a-f]{64}$")) and
               (.runner.boot_id_sha256 | test("^[0-9a-f]{64}$")) and
               .credentials == {long_lived:false,organization:false,administration:false,registry:false,oidc:false} and
-              .supervisor == {private_key_isolated:true,caller_supplied_claims_accepted:false,independent_device_verification:true,independent_provider_verification:true,gateway_run_receipt_verification:true,one_use_invocation:true,out_of_band_watchdog:true,destroy_on_disconnect:true} and
+              .supervisor == {private_key_isolated:true,caller_supplied_claims_accepted:false,independent_device_verification:true,independent_provider_verification:true,independent_component_verification:true,gateway_run_receipt_verification:true,one_use_invocation:true,out_of_band_watchdog:true,destroy_on_disconnect:true} and
               .grant == {audience:"latchway-physical-evidence/ios-app-attest",source_commit:$commit,run_id:$run_id,run_attempt:$run_attempt,sha256:$grant,single_use:true,jti_sha256:.grant.jti_sha256,issued_at_unix:.grant.issued_at_unix,expires_at_unix:.grant.expires_at_unix} and
               (.grant.jti_sha256 | test("^[0-9a-f]{64}$")) and
               (.grant.issued_at_unix | type == "number") and (.grant.expires_at_unix | type == "number") and
@@ -538,7 +566,7 @@ jobs:
               .grant.expires_at_unix > .grant.issued_at_unix and
               (.grant.expires_at_unix - .grant.issued_at_unix) <= 300 and
               .grant.expires_at_unix <= .expires_at_unix and
-              .candidate.artifacts == {ios_app_binary_sha256:$artifact} and
+              .candidate.artifacts == {ios_app_binary_sha256:$artifact,ios_widget_binary_sha256:$widget,ios_share_binary_sha256:$share,ios_action_binary_sha256:$action} and
               (.expires_at_unix - .issued_at_unix) <= 3600
             ' "$root/collector-lease.json" >/dev/null
           jq --exit-status \
@@ -565,7 +593,8 @@ jobs:
             --arg lease "$lease_sha" \
             --arg wipe "$wipe_sha" \
             --arg evidence "$evidence_sha" --arg device "$device_sha" \
-            --arg provider "$provider_sha" --arg deployment "$deployment_sha" '
+            --arg provider "$provider_sha" --arg component "$component_sha" \
+            --arg deployment "$deployment_sha" '
               .schema_version == "latchway.physical-collector-teardown.v1" and
               .repository == $repository and .source_commit == $commit and
               .workflow == {run_id:$run_id,run_attempt:$run_attempt,job:"app-attest-production",audience:"ios-app-attest"} and
@@ -574,9 +603,10 @@ jobs:
               .runner.destroy_deadline_unix >= .finished_at_unix and
               .runner.destroy_deadline_unix <= (.finished_at_unix + 600) and
               .evidence_eligible == true and
-              .supervisor == {private_key_isolated:true,caller_supplied_claims_accepted:false,independent_device_verification:true,independent_provider_verification:true,gateway_run_receipt_verified:true,one_use_invocation:true,watchdog_armed:true} and
+              .supervisor == {private_key_isolated:true,caller_supplied_claims_accepted:false,independent_device_verification:true,independent_provider_verification:true,independent_component_verification:true,gateway_run_receipt_verified:true,one_use_invocation:true,watchdog_armed:true} and
               .observations.device_inventory_sha256 == $device and
               .observations.provider_observation_sha256 == $provider and
+              .observations.component_observation_sha256 == $component and
               .observations.gateway_deployment_verification_sha256 == $deployment and
               (.observations.gateway_run_receipt_sha256 | test("^[0-9a-f]{64}$")) and
               .device == {app_data_wiped:true,method:"ios-uninstall",receipt_sha256:$wipe} and
@@ -619,6 +649,7 @@ jobs:
             app-attest-observation.json \
             app-attest-profile.json \
             app-attest-validation.json \
+            component-observation.json \
             device-inventory.json \
             gateway-client-policy.json \
             gateway-deployment-public-key.pem \
@@ -653,14 +684,15 @@ jobs:
           cmp --silent "$payloads" "$checksum_names"
           for document in "$root"/*.json; do jq --exit-status . "$document" >/dev/null; done
           evidence_sha=$(sha256sum "$root/app-attest-evidence.json" | awk '{print $1}')
+          component_sha=$(sha256sum "$root/component-observation.json" | awk '{print $1}')
           jq --exit-status --arg commit "$SOURCE_COMMIT" '
-            .schema_version == "latchway.physical-device-profile.v1" and
+            .schema_version == "latchway.physical-device-profile.v2" and
             .platform == "ios_app_attest" and
             .repository == "Latchway/latchway-ios-sdk" and
             .source.commit == $commit and .source.worktree_clean == true
           ' "$root/app-attest-profile.json" >/dev/null
-          jq --exit-status --arg commit "$SOURCE_COMMIT" --arg run "$EXPECTED_RUN_ID" '
-            .schema_version == "latchway.physical-device-evidence.v1" and
+          jq --exit-status --arg commit "$SOURCE_COMMIT" --arg run "$EXPECTED_RUN_ID" --arg component "$component_sha" '
+            .schema_version == "latchway.physical-device-evidence.v2" and
             .release_eligible == true and .platform == "ios_app_attest" and
             .run.id == $run and .run.mode == "release" and
             .source.repository == "Latchway/latchway-ios-sdk" and
@@ -669,8 +701,26 @@ jobs:
             .device.emulator == false and .device.testing == false and
             .device.debugger_attached == false and
             .provider.name == "app_attest" and .provider.environment == "production" and
+            (.component_runtime.identities | map(.role) | sort) == ["action","host","share","widget"] and
+            .component_runtime.direct_step_up.role == "action" and
+            .component_runtime.direct_step_up.trust_source_after == "delegated_direct_attested" and
+            .component_runtime.direct_step_up.binding_version == 2 and
+            .component_runtime.direct_step_up.request_hash_bound == true and
+            .component_runtime.sibling_denial.http_status == 401 and
+            .component_runtime.sibling_denial.error_code == "component_key_invalid" and
+            .component_runtime.lifecycle == {host_process_running_during_step_up:false,background_execution_observed:true,host_termination_observed:true,user_presence_prompt_observed:false} and
+            .artifacts.component_observation_sha256 == $component and
             (.tests | type == "array" and length > 0 and all(.[]; .status == "passed")) and
             (.redaction | type == "object" and all(.[]; . == false))
+          ' "$root/app-attest-evidence.json" >/dev/null
+          jq --exit-status --arg run "$EXPECTED_RUN_ID" '
+            .schema_version == "latchway.ios-component-observation.v1" and
+            .platform == "ios_app_attest" and .run_id == $run and
+            (.runtime | type == "object") and
+            (.tests | type == "array" and length == 9 and all(.[]; .status == "passed"))
+          ' "$root/component-observation.json" >/dev/null
+          jq --exit-status --slurpfile component "$root/component-observation.json" '
+            .component_runtime == $component[0].runtime
           ' "$root/app-attest-evidence.json" >/dev/null
           jq --exit-status --arg commit "$SOURCE_COMMIT" --arg run "$EXPECTED_RUN_ID" --arg sha "$evidence_sha" '
             .schema_version == "latchway.physical-device-validation.v1" and
@@ -685,6 +735,7 @@ jobs:
           subject-path: |
             ${{ runner.temp }}/latchway-app-attest-evidence/app-attest-profile.json
             ${{ runner.temp }}/latchway-app-attest-evidence/app-attest-evidence.json
+            ${{ runner.temp }}/latchway-app-attest-evidence/component-observation.json
             ${{ runner.temp }}/latchway-app-attest-evidence/SHA256SUMS
             ${{ runner.temp }}/latchway-app-attest-isolation/collector-isolation-validation.json
       - name: Retain the GitHub Sigstore bundle with the report
@@ -699,7 +750,7 @@ jobs:
           install -m 0600 -- "$BUNDLE_PATH" "$RUNNER_TEMP/latchway-app-attest-isolation/github-isolation-attestation.sigstore.json"
           bytes=$(stat -c '%s' "$destination")
           (( bytes > 0 && bytes <= 4194304 ))
-          test "$(find "$root" -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d ' ')" = 13
+          test "$(find "$root" -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d ' ')" = 14
           test -z "$(find "$root" -mindepth 1 ! -type f -print -quit)"
           total=$(find "$root" -type f -printf '%s\n' | awk '{sum += $1} END {print sum + 0}')
           (( total <= 67108864 ))

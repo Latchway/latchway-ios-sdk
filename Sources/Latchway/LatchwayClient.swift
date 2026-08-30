@@ -124,10 +124,38 @@ public actor LatchwayClient {
         feature: String,
         framework: LatchwayFrameworkMetadata? = nil
     ) -> LatchwayFeatureTransport {
+        makeFeatureTransport(
+            feature: feature,
+            framework: framework,
+            session: nil
+        )
+    }
+
+    /// Test-only injection keeps production streaming sessions private and
+    /// independently cancellable while allowing deterministic URLProtocol
+    /// coverage of response-head retry behavior.
+    nonisolated func transport(
+        feature: String,
+        framework: LatchwayFrameworkMetadata? = nil,
+        session: URLSession
+    ) -> LatchwayFeatureTransport {
+        makeFeatureTransport(
+            feature: feature,
+            framework: framework,
+            session: session
+        )
+    }
+
+    private nonisolated func makeFeatureTransport(
+        feature: String,
+        framework: LatchwayFrameworkMetadata?,
+        session: URLSession?
+    ) -> LatchwayFeatureTransport {
         LatchwayFeatureTransport(
             feature: feature,
             framework: framework,
             baseURL: configuration.baseURL,
+            session: session,
             authorize: { [self] request in
                 try await authorizedFrameworkRequest(
                     request,
@@ -138,6 +166,16 @@ public actor LatchwayClient {
             send: { [self] request in
                 try await send(
                     request,
+                    feature: feature,
+                    framework: framework,
+                    allowManagedPlaceholder: true
+                )
+            },
+            streamingRetry: { [self] request, authorized, directive in
+                try await authorizedRetryRequest(
+                    request,
+                    firstAuthorizedRequest: authorized,
+                    directive: directive,
                     feature: feature,
                     framework: framework,
                     allowManagedPlaceholder: true
@@ -183,6 +221,7 @@ public actor LatchwayClient {
         try LatchwayComponentRequestSecurity.prepare(
             &request,
             configuration: configuration,
+            feature: feature,
             framework: framework,
             allowManagedPlaceholder: allowManagedPlaceholder
         )
@@ -213,8 +252,9 @@ public actor LatchwayClient {
     /// This method retries at most once, and only for `session_expired` or
     /// `dpop_nonce_required`, which the wire contract defines as rejection
     /// before upstream dispatch. Requests backed by an `httpBodyStream` are
-    /// never replayed. Streaming callers should call ``authorize(_:feature:)``
-    /// and consume `bytes(for:)` from ``makeURLSession()`` directly.
+    /// never replayed. Streaming callers should use
+    /// ``LatchwayFeatureTransport/bytes(for:)`` for the same bounded policy
+    /// without buffering successful response bodies.
     public func send(_ request: URLRequest, feature: String) async throws -> LatchwayHTTPResponse {
         try await send(
             request,
@@ -245,52 +285,14 @@ public actor LatchwayClient {
             throw error
         }
         guard (400 ... 599).contains(firstResponse.statusCode) else { return firstResponse }
-        guard let firstProblem = Self.problem(from: firstResponse) else {
-            let error = LatchwayError.invalidServerResponse
-            await record(error)
-            throw error
-        }
-        guard request.httpBodyStream == nil else {
-            let error = LatchwayError.server(firstProblem)
-            await record(error)
-            throw error
-        }
-
-        var retryRequest = request
-        retryRequest.setValue(
-            firstRequest.value(forHTTPHeaderField: "X-Latchway-Request-ID"),
-            forHTTPHeaderField: "X-Latchway-Request-ID"
-        )
-        let retryDirective = SafeRetryDirective.parse(
+        let retryRequest = try await authorizedRetryRequest(
+            request,
+            firstAuthorizedRequest: firstRequest,
             response: firstResponse,
-            expectedRequestID: firstRequest.value(forHTTPHeaderField: "X-Latchway-Request-ID")
+            feature: feature,
+            framework: framework,
+            allowManagedPlaceholder: allowManagedPlaceholder
         )
-        switch retryDirective {
-        case .sessionExpired:
-            let refreshed = try await refreshSession(force: true)
-            try await applyAuthorization(
-                &retryRequest,
-                feature: feature,
-                active: refreshed,
-                nonce: nil,
-                framework: framework,
-                allowManagedPlaceholder: allowManagedPlaceholder
-            )
-        case let .dpopNonceRequired(nonce):
-            let active = try await activeSession()
-            try await applyAuthorization(
-                &retryRequest,
-                feature: feature,
-                active: active,
-                nonce: nonce,
-                framework: framework,
-                allowManagedPlaceholder: allowManagedPlaceholder
-            )
-        case nil:
-            let error = LatchwayError.server(firstProblem)
-            await record(error)
-            throw error
-        }
 
         let secondResponse = try await sendThroughTransport(retryRequest)
         if (300 ... 399).contains(secondResponse.statusCode) {
@@ -311,6 +313,86 @@ public actor LatchwayClient {
         return secondResponse
     }
 
+    private func authorizedRetryRequest(
+        _ request: URLRequest,
+        firstAuthorizedRequest: URLRequest,
+        response: LatchwayHTTPResponse,
+        feature: String,
+        framework: LatchwayFrameworkMetadata?,
+        allowManagedPlaceholder: Bool
+    ) async throws -> URLRequest {
+        guard let firstProblem = Self.problem(from: response) else {
+            let error = LatchwayError.invalidServerResponse
+            await record(error)
+            throw error
+        }
+        guard request.httpBodyStream == nil else {
+            let error = LatchwayError.server(firstProblem)
+            await record(error)
+            throw error
+        }
+        guard let directive = SafeRetryDirective.parse(
+            response: response,
+            expectedRequestID: firstAuthorizedRequest.value(
+                forHTTPHeaderField: "X-Latchway-Request-ID"
+            )
+        ) else {
+            let error = LatchwayError.server(firstProblem)
+            await record(error)
+            throw error
+        }
+
+        return try await authorizedRetryRequest(
+            request,
+            firstAuthorizedRequest: firstAuthorizedRequest,
+            directive: directive,
+            feature: feature,
+            framework: framework,
+            allowManagedPlaceholder: allowManagedPlaceholder
+        )
+    }
+
+    private func authorizedRetryRequest(
+        _ request: URLRequest,
+        firstAuthorizedRequest: URLRequest,
+        directive: SafeRetryDirective,
+        feature: String,
+        framework: LatchwayFrameworkMetadata?,
+        allowManagedPlaceholder: Bool
+    ) async throws -> URLRequest {
+        var retry = request
+        retry.setValue(
+            firstAuthorizedRequest.value(forHTTPHeaderField: "X-Latchway-Request-ID"),
+            forHTTPHeaderField: "X-Latchway-Request-ID"
+        )
+        switch directive {
+        case .sessionExpired:
+            let refreshed = try await refreshSession(force: true)
+            try await applyAuthorization(
+                &retry,
+                feature: feature,
+                active: refreshed,
+                nonce: nil,
+                framework: framework,
+                allowManagedPlaceholder: allowManagedPlaceholder
+            )
+        case let .dpopNonceRequired(nonce):
+            let active = try await activeSession()
+            try await applyAuthorization(
+                &retry,
+                feature: feature,
+                active: active,
+                nonce: nonce,
+                framework: framework,
+                allowManagedPlaceholder: allowManagedPlaceholder
+            )
+        }
+        return retry
+    }
+
+    /// Creates the SDK's hardened URL session for lower-level caller-owned
+    /// dispatch. This session does not authorize or retry requests; prefer
+    /// ``LatchwayFeatureTransport/bytes(for:)`` for streaming data-plane work.
     public func makeURLSession() -> URLSession {
         LatchwayURLSessionFactory.make()
     }
@@ -1186,6 +1268,7 @@ public actor LatchwayClient {
         try LatchwayComponentRequestSecurity.prepare(
             &request,
             configuration: configuration,
+            feature: feature,
             framework: framework,
             allowManagedPlaceholder: allowManagedPlaceholder
         )
@@ -1401,7 +1484,7 @@ public actor LatchwayClient {
             trust.level == "web_risk_verified"
         case .debug:
             trust.level == "debug"
-        case .delegatedFromAttestedRoot, .delegatedIdentityOnly:
+        case .delegatedFromAttestedRoot, .delegatedIdentityOnly, .delegatedDirectAttested:
             false
         }
     }

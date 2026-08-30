@@ -71,6 +71,105 @@ struct SessionExchangeRequest: Encodable {
     }
 }
 
+struct ComponentAttestationChallengeWire: Decodable, Sendable {
+    struct Attestation: Decodable, Sendable {
+        let provider: String
+        let mode: String
+        let clientDataHash: String
+        let providerOptions: [String: LatchwayJSONValue]?
+
+        enum CodingKeys: String, CodingKey, CaseIterable {
+            case provider, mode
+            case clientDataHash = "client_data_hash"
+            case providerOptions = "provider_options"
+        }
+
+        init(from decoder: any Decoder) throws {
+            try rejectUnknownComponentChallengeKeys(
+                in: decoder,
+                allowed: Set(CodingKeys.allCases.map(\.rawValue))
+            )
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            provider = try container.decode(String.self, forKey: .provider)
+            mode = try container.decode(String.self, forKey: .mode)
+            clientDataHash = try container.decode(String.self, forKey: .clientDataHash)
+            providerOptions = try container.decodeIfPresent(
+                [String: LatchwayJSONValue].self,
+                forKey: .providerOptions
+            )
+        }
+    }
+
+    let challengeID: String
+    let challengeNonce: String
+    let bindingVersion: Int
+    let issuedAt: Int64
+    let expiresAt: Date
+    let attestation: Attestation
+
+    enum CodingKeys: String, CodingKey, CaseIterable {
+        case attestation
+        case challengeID = "challenge_id"
+        case challengeNonce = "challenge_nonce"
+        case bindingVersion = "binding_version"
+        case issuedAt = "issued_at"
+        case expiresAt = "expires_at"
+    }
+
+    init(from decoder: any Decoder) throws {
+        try rejectUnknownComponentChallengeKeys(
+            in: decoder,
+            allowed: Set(CodingKeys.allCases.map(\.rawValue))
+        )
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        challengeID = try container.decode(String.self, forKey: .challengeID)
+        challengeNonce = try container.decode(String.self, forKey: .challengeNonce)
+        bindingVersion = try container.decode(Int.self, forKey: .bindingVersion)
+        issuedAt = try container.decode(Int64.self, forKey: .issuedAt)
+        expiresAt = try container.decode(Date.self, forKey: .expiresAt)
+        attestation = try container.decode(Attestation.self, forKey: .attestation)
+    }
+}
+
+private struct ComponentChallengeCodingKey: CodingKey {
+    let stringValue: String
+    let intValue: Int? = nil
+
+    init?(stringValue: String) {
+        self.stringValue = stringValue
+    }
+
+    init?(intValue _: Int) {
+        return nil
+    }
+}
+
+private func rejectUnknownComponentChallengeKeys(
+    in decoder: any Decoder,
+    allowed: Set<String>
+) throws {
+    let container = try decoder.container(keyedBy: ComponentChallengeCodingKey.self)
+    let unknown = Set(container.allKeys.map(\.stringValue)).subtracting(allowed).sorted()
+    guard unknown.isEmpty else {
+        throw DecodingError.dataCorrupted(
+            .init(
+                codingPath: decoder.codingPath,
+                debugDescription: "Unknown component attestation challenge keys: \(unknown.joined(separator: ", "))"
+            )
+        )
+    }
+}
+
+struct ComponentAttestationExchangeRequest: Encodable {
+    let challengeID: String
+    let attestation: LatchwayAttestationEvidence
+
+    enum CodingKeys: String, CodingKey {
+        case attestation
+        case challengeID = "challenge_id"
+    }
+}
+
 struct SessionRefreshRequest: Encodable {
     let refreshToken: String
 

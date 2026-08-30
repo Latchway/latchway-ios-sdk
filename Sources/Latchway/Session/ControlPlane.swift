@@ -23,6 +23,14 @@ struct LatchwayControlPlane: Sendable {
         static func component(_ componentID: String) -> String {
             "\(currentFamilyComponents)/\(componentID)"
         }
+
+        static func componentAttestationChallenges(_ componentID: String) -> String {
+            "\(component(componentID))/attestation-challenges"
+        }
+
+        static func componentAttestationExchanges(_ componentID: String) -> String {
+            "\(component(componentID))/attestation-exchanges"
+        }
     }
 
     private var encoder: JSONEncoder {
@@ -176,6 +184,40 @@ struct LatchwayControlPlane: Sendable {
             accessToken: nil,
             expectedStatus: 200,
             as: ComponentSessionGrantWire.self
+        )
+    }
+
+    func createComponentAttestationChallenge(
+        componentID: String,
+        accessToken: String
+    ) async throws -> ComponentAttestationChallengeWire {
+        let encodedID = try Self.resourceID(componentID, prefix: "cmp")
+        return try await sendWithoutBody(
+            method: "POST",
+            path: Endpoint.componentAttestationChallenges(encodedID),
+            accessToken: accessToken,
+            expectedStatus: 201,
+            as: ComponentAttestationChallengeWire.self
+        )
+    }
+
+    func exchangeComponentAttestation(
+        componentID: String,
+        challengeID: String,
+        evidence: LatchwayAttestationEvidence,
+        accessToken: String
+    ) async throws -> SessionGrantWire {
+        let encodedID = try Self.resourceID(componentID, prefix: "cmp")
+        return try await sendJSON(
+            method: "POST",
+            path: Endpoint.componentAttestationExchanges(encodedID),
+            body: ComponentAttestationExchangeRequest(
+                challengeID: challengeID,
+                attestation: evidence
+            ),
+            accessToken: accessToken,
+            expectedStatus: 201,
+            as: SessionGrantWire.self
         )
     }
 

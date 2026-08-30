@@ -137,6 +137,7 @@ public struct LatchwayLanguageModelExecutor: LanguageModelExecutor, Sendable {
         urlRequest.setValue("text/event-stream", forHTTPHeaderField: "Accept")
 
         let stream = try await configuration.transport.bytes(for: urlRequest)
+        defer { stream.cancel() }
         guard (200 ... 299).contains(stream.response.statusCode) else {
             throw Self.gatewayError(from: stream.response)
         }

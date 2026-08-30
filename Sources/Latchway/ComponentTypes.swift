@@ -130,6 +130,7 @@ public enum LatchwayComponentTrustSource: String, Sendable, Codable, Equatable {
     case directAttested = "direct_attested"
     case delegatedFromAttestedRoot = "delegated_from_attested_root"
     case delegatedIdentityOnly = "delegated_identity_only"
+    case delegatedDirectAttested = "delegated_direct_attested"
     case identityOnly = "identity_only"
     case webRiskVerified = "web_risk_verified"
     case debug
@@ -218,11 +219,18 @@ public enum LatchwayComponentError: Error, Sendable, Equatable, LocalizedError {
                 userAuthenticationRequired: true,
                 immediateRetryUseful: false
             )
-        case .componentGrantExpired, .parentTrustExpired, .directAttestationRequired:
+        case .componentGrantExpired, .parentTrustExpired:
             .init(
                 action: "Open the containing app to renew root trust and provision this component again.",
                 openingContainingAppCanFix: true,
                 userAuthenticationRequired: true,
+                immediateRetryUseful: false
+            )
+        case .directAttestationRequired:
+            .init(
+                action: "Complete the configured direct App Attest step in this component.",
+                openingContainingAppCanFix: false,
+                userAuthenticationRequired: false,
                 immediateRetryUseful: false
             )
         case .componentRevoked, .featureNotDelegated:
@@ -318,6 +326,7 @@ struct LatchwayStoredComponentCredential: Sendable, Codable, Equatable {
         for configuration: LatchwayComponentConfiguration,
         keyThumbprint: String,
         now: Date,
+        expectedPlatform: String = "ios",
         rotationLeeway: TimeInterval = 0
     ) -> Bool {
         let features = component.grantedFeatures
@@ -333,7 +342,7 @@ struct LatchwayStoredComponentCredential: Sendable, Codable, Equatable {
             ) != nil
             && component.definitionID == configuration.definitionID
             && component.kind == configuration.kind
-            && component.platform == "ios"
+            && component.platform == expectedPlatform
             && !component.isRoot
             && component.status == "active"
             && self.keyThumbprint == keyThumbprint
@@ -356,6 +365,7 @@ struct LatchwayStoredComponentCredential: Sendable, Codable, Equatable {
             && [
                 LatchwayComponentTrustSource.delegatedFromAttestedRoot,
                 .delegatedIdentityOnly,
+                .delegatedDirectAttested,
             ].contains(trustSource)
             && trustExpiresAt > now
             && rotationExpiresAt.timeIntervalSince(now) > rotationLeeway

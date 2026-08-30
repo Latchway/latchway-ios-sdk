@@ -103,8 +103,12 @@ request, session expiry must not carry a nonce, and a nonce challenge must
 carry one unambiguous printable-ASCII value. Strict JSON validation rejects
 duplicate and Unicode-escaped duplicate members before decoding. The same
 nonce grammar protects the public caller-owned authorization API and internal
-control-plane retry. Buffered retry rejects streaming request bodies, and the
-`makeURLSession` streaming path never automatically replays.
+control-plane retry. `LatchwayFeatureTransport.bytes(for:)` applies that exact
+one-retry policy before exposing response bytes: it buffers only a candidate
+401 problem body up to 64 KiB and leaves successful and post-retry bodies as
+native `URLSession.AsyncBytes`. Requests backed by `httpBodyStream` are never
+replayed. Each streaming dispatch owns an independently cancellable URL
+session; the response's `finish()` and `cancel()` methods release it.
 
 Before session or transport work, authorization rejects the shared SDK list of
 provider-secret header and decoded query names. It includes bearer/proxy auth,
@@ -113,12 +117,14 @@ signature fields, Google credential/signature fields, and cookies. Ordinary
 non-credential query parameters remain supported. SDK-owned URL sessions also
 disable cookie acceptance and persistence.
 
-For caller-owned transports such as React Native fetch, public nonce-aware
-authorization and forced-refresh operations expose no stored credentials. The
-bridge must first validate a same-origin problem response, preserve the request
-identifier, and cap replay to one attempt. A typed runtime configuration pairs
-the React Native iOS installation platform with its protocol SDK identifier so
-the two cannot drift independently.
+React Native uses the public feature transport so native code owns strict
+problem validation, request-identifier preservation, bounded replay, and URL
+session cancellation without exporting stored credentials. Lower-level
+caller-owned transports may still use public nonce-aware authorization and
+forced-refresh operations after independently validating a same-origin
+problem. A typed runtime configuration pairs the React Native iOS installation
+platform with its protocol SDK identifier so the two cannot drift
+independently.
 
 Cancellation and streaming flow end to end. Errors expose stable safe fields
 and request identifiers, never tokens or raw attestation evidence.

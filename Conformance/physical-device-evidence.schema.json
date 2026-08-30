@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://latchway.dev/schemas/physical-device-evidence-v1.json",
+  "$id": "https://latchway.dev/schemas/physical-device-evidence-v2.json",
   "title": "Latchway physical-device evidence",
   "type": "object",
   "additionalProperties": false,
@@ -22,7 +22,7 @@
   ],
   "properties": {
     "schema_version": {
-      "const": "latchway.physical-device-evidence.v1"
+      "const": "latchway.physical-device-evidence.v2"
     },
     "generated_at": {
       "type": "string",
@@ -164,7 +164,7 @@
           "maxLength": 256
         },
         "collector_version": {
-          "const": "1"
+          "const": "2"
         }
       }
     },
@@ -319,6 +319,152 @@
         }
       }
     },
+    "component_runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["identities", "direct_step_up", "sibling_denial", "lifecycle"],
+      "properties": {
+        "identities": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "role",
+              "kind",
+              "definition_id",
+              "bundle_identifier",
+              "binary_sha256",
+              "principal_id_sha256",
+              "dpop_key_id_sha256",
+              "session_id_sha256"
+            ],
+            "properties": {
+              "role": { "enum": ["host", "widget", "share", "action"] },
+              "kind": { "enum": ["main_app", "widget", "share_extension", "action_extension"] },
+              "definition_id": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_-]{0,62}$"
+              },
+              "bundle_identifier": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{2,254}$"
+              },
+              "binary_sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "principal_id_sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "dpop_key_id_sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "session_id_sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              }
+            }
+          }
+        },
+        "direct_step_up": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "role",
+            "definition_id",
+            "component_id_sha256",
+            "dpop_key_id_sha256",
+            "session_before_sha256",
+            "session_after_sha256",
+            "app_attest_key_id_sha256",
+            "trust_source_before",
+            "trust_source_after",
+            "binding_version",
+            "request_hash_bound"
+          ],
+          "properties": {
+            "role": { "const": "action" },
+            "definition_id": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{0,62}$"
+            },
+            "component_id_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "dpop_key_id_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "session_before_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "session_after_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "app_attest_key_id_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "trust_source_before": {
+              "enum": ["delegated_from_attested_root", "delegated_identity_only"]
+            },
+            "trust_source_after": { "const": "delegated_direct_attested" },
+            "binding_version": { "const": 2 },
+            "request_hash_bound": { "const": true }
+          }
+        },
+        "sibling_denial": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "requesting_role",
+            "credential_role",
+            "credential_session_id_sha256",
+            "http_status",
+            "error_code",
+            "request_id"
+          ],
+          "properties": {
+            "requesting_role": { "const": "action" },
+            "credential_role": { "enum": ["widget", "share"] },
+            "credential_session_id_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "http_status": { "const": 401 },
+            "error_code": { "const": "component_key_invalid" },
+            "request_id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$"
+            }
+          }
+        },
+        "lifecycle": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "host_process_running_during_step_up",
+            "background_execution_observed",
+            "host_termination_observed",
+            "user_presence_prompt_observed"
+          ],
+          "properties": {
+            "host_process_running_during_step_up": { "const": false },
+            "background_execution_observed": { "const": true },
+            "host_termination_observed": { "const": true },
+            "user_presence_prompt_observed": { "const": false }
+          }
+        }
+      }
+    },
     "pins": {
       "type": "array",
       "minItems": 1,
@@ -453,6 +599,10 @@
           "pattern": "^[0-9a-f]{64}$"
         },
         "schema_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "component_observation_sha256": {
           "type": "string",
           "pattern": "^[0-9a-f]{64}$"
         }

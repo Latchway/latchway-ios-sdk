@@ -4,6 +4,31 @@ import Latchway
 import XCTest
 
 final class AppAttestLifecycleTests: XCTestCase {
+    func testComponentStorageNamespacesDoNotReuseRootOrSiblingMarkers() {
+        let first = LatchwayAppAttestProvider.componentStorageNamespace(
+            applicationID: "app_01J00000000000000000000000",
+            environment: "production",
+            clientRuntime: .iOS,
+            componentDefinitionID: "action_extension"
+        )
+        let sibling = LatchwayAppAttestProvider.componentStorageNamespace(
+            applicationID: "app_01J00000000000000000000000",
+            environment: "production",
+            clientRuntime: .iOS,
+            componentDefinitionID: "sso_extension"
+        )
+
+        XCTAssertEqual(
+            first,
+            "ios.app_01J00000000000000000000000.production.component.action_extension"
+        )
+        XCTAssertNotEqual(first, sibling)
+        XCTAssertNotEqual(
+            first,
+            "ios.app_01J00000000000000000000000.production"
+        )
+    }
+
     func testRegistrationThenAssertion() async throws {
         let service = FakeService()
         let store = MemoryStateStore()

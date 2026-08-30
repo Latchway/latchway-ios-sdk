@@ -79,6 +79,7 @@ class PhysicalEvidenceWorkflowTests(unittest.TestCase):
         for marker in (
             "/etc/latchway/physical-collector/lease.json",
             "/usr/local/libexec/latchway-physical-collector-finalize",
+            "/usr/local/libexec/latchway-ios-component-evidence-observer",
             'test "$RUNNER_NAME" = "latchway-ios-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"',
             ".runner.ephemeral == true",
             ".runner.jit == true",
@@ -97,6 +98,9 @@ class PhysicalEvidenceWorkflowTests(unittest.TestCase):
             "(.grant.expires_at_unix - .grant.issued_at_unix) <= 300",
             "source_authorization_sha256",
             "ios_app_binary_sha256",
+            "ios_widget_binary_sha256",
+            "ios_share_binary_sha256",
+            "ios_action_binary_sha256",
             "openssl dgst -sha256 -verify",
             "--deny-self-hosted-runners",
         ):
@@ -122,16 +126,39 @@ class PhysicalEvidenceWorkflowTests(unittest.TestCase):
             "private_key_isolated:true",
             "independent_device_verification:true",
             "independent_provider_verification:true",
+            "independent_component_verification:true",
             "gateway_run_receipt_verified:true",
             "one_use_invocation:true",
             "watchdog_armed:true",
             ".observations.device_inventory_sha256",
             ".observations.provider_observation_sha256",
+            ".observations.component_observation_sha256",
             ".observations.gateway_run_receipt_sha256",
             ".runner.deregistered == true",
             ".runner.destroy_scheduled == true",
         ):
             self.assertIn(marker, self.collect)
+
+    def test_action_component_candidate_and_lifecycle_observer_are_mandatory(self) -> None:
+        for marker in (
+            "LATCHWAY_IOS_WIDGET_BUNDLE_ID",
+            "LATCHWAY_IOS_SHARE_BUNDLE_ID",
+            "LATCHWAY_IOS_ACTION_BUNDLE_ID",
+            "LATCHWAY_HOST_COMPONENT_DEFINITION_ID",
+            "LATCHWAY_WIDGET_COMPONENT_DEFINITION_ID",
+            "LATCHWAY_SHARE_COMPONENT_DEFINITION_ID",
+            "LATCHWAY_ACTION_COMPONENT_DEFINITION_ID",
+            "LATCHWAY_IOS_WIDGET_BINARY_SHA256",
+            "LATCHWAY_IOS_SHARE_BINARY_SHA256",
+            "LATCHWAY_IOS_ACTION_BINARY_SHA256",
+            "component-observation.json",
+            'trust_source_after == "delegated_direct_attested"',
+            "host_process_running_during_step_up:false",
+            "background_execution_observed:true",
+            "host_termination_observed:true",
+            "user_presence_prompt_observed:false",
+        ):
+            self.assertIn(marker, self.source)
 
     def test_unsigned_handoff_is_bounded_and_short_lived(self) -> None:
         self.assertIn(
@@ -170,7 +197,7 @@ class PhysicalEvidenceWorkflowTests(unittest.TestCase):
             self.assertIn(validation, self.attest)
         self.assertEqual(self.source.count("actions/attest@"), 2)
 
-    def test_final_observer_contract_is_unchanged(self) -> None:
+    def test_final_observer_contract_includes_direct_component_observation(self) -> None:
         self.assertIn(
             "name: app-attest-physical-${{ github.run_id }}-${{ github.run_attempt }}",
             self.attest,
@@ -182,6 +209,7 @@ class PhysicalEvidenceWorkflowTests(unittest.TestCase):
             "app-attest-observation.json",
             "app-attest-profile.json",
             "app-attest-validation.json",
+            "component-observation.json",
             "device-inventory.json",
             "gateway-client-policy.json",
             "gateway-deployment-public-key.pem",

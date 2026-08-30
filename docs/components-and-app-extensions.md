@@ -98,7 +98,12 @@ it and requires the containing app to prepare the component again.
 Authorization rejects all of the following before a token or proof is added:
 
 - a different scheme, host, effective port, or configured base path;
-- control-plane or non-`/v1` paths;
+- methods other than `POST` on the exact structured routes
+  `/v1/responses`, `/v1/chat/completions`, `/v1/embeddings`, and
+  `/v1/messages`;
+- opaque routes outside `/proxy/{exact-feature}/{nonempty-relative-path}`,
+  opaque queries, encoded traversal/separators, empty path segments, and
+  methods other than `GET`, `POST`, `PUT`, `PATCH`, or `DELETE`;
 - user information or a redirect target;
 - provider credential names in headers or multiply encoded query fields;
 - unknown framework IDs or malformed framework versions.
@@ -108,6 +113,47 @@ problem proves rejection occurred before upstream dispatch. Body streams are
 never replayed. Streaming uses the cookie-free, redirect-rejecting native
 session, is incrementally consumed, and propagates cancellation without
 exporting credentials.
+
+## Direct component App Attest step-up
+
+An iOS Action or SSO extension whose server-side component definition requires
+direct App Attest supplies a component-specific provider to its extension
+client. The provider namespace includes the component definition ID, so it
+cannot reuse the containing application's or a sibling component's accepted
+App Attest key marker:
+
+```swift
+import LatchwayAppAttest
+
+let actionExtension = LatchwayComponentConfiguration(
+    definitionID: "action_extension",
+    kind: "action_extension",
+    keychainAccessGroup: resolvedActionAccessGroup,
+    requestedFeatures: ["habit-assistant"]
+)
+let componentAppAttest = LatchwayAppAttestProvider(
+    applicationID: "app_01J00000000000000000000000",
+    environment: "production",
+    componentDefinitionID: actionExtension.definitionID
+)
+let actionClient = try LatchwayExtensionClient(
+    configuration: configuration,
+    component: actionExtension,
+    directAttestationProvider: componentAppAttest
+)
+
+try await actionClient.establishDirectAttestation()
+```
+
+The operation is native-only and returns no challenge, evidence, token, proof,
+or key data. It uses the current component DPoP session to obtain and exchange
+one version-2 challenge, persists the rotated component credential, then
+reports `delegated_direct_attested` through redacted diagnostics. Concurrent
+and repeated calls coalesce or return after usable composite trust exists.
+Missing provider configuration fails with `directAttestationRequired`; invalid
+component kinds fail locally before network use. This package supports direct
+step-up for Action and SSO components; it does not claim watchOS runtime
+support.
 
 ## Revocation and sign-out
 
@@ -149,15 +195,20 @@ Common recovery behavior:
 | Component revoked or key replaced | Prepare the component again; immediate extension retry is not useful. |
 | Family revoked or identity changed | Authenticate the current user and establish a new family. |
 | Keychain access group unavailable | Correct both signed entitlements and reinstall; opening the app alone cannot repair signing. |
-| Direct attestation required | Use a component/runtime that can provide the configured proof, or change server policy. |
+| Direct attestation required | Configure a component-namespaced `LatchwayAppAttestProvider` in the eligible extension and call `establishDirectAttestation()`. |
 
 React Native must call these native actors through its iOS bridge. Component
 keys, grants, refresh tokens, access tokens, and DPoP proofs must not cross the
-JavaScript bridge. The React Native containing app keeps
-`clientRuntime: .reactNativeIOS`; a WidgetKit, App Intent, or other native
-extension is a separate iOS executable and constructs its extension-side
-configuration with `clientRuntime: .iOS`. Configure that component definition
-for the `ios` platform on the server.
+JavaScript bridge. Runtime/platform binding is exact: a native WidgetKit, App
+Intent, Action, SSO, or other Swift extension uses an extension-side
+configuration with `clientRuntime: .iOS` and a server component platform of
+`ios`. If a React Native runtime is genuinely hosted inside the extension
+bundle, that extension creates a separate component client with
+`clientRuntime: .reactNativeIOS`, a server component platform of
+`react_native_ios`, and a component-namespaced App Attest provider using the
+same runtime. It must not reuse the containing app's root client, root lease,
+or identity callback. An `ios` component credential and a `react_native_ios`
+component credential cannot be consumed across runtimes.
 
 ## Physical-device evidence
 

@@ -56,3 +56,11 @@ import Testing
         )
     }
 }
+
+@Test func directComponentAttestationSurfaceIsPublic() {
+    let operation: (LatchwayExtensionClient) async throws -> Void = { client in
+        try await client.establishDirectAttestation()
+    }
+    _ = operation
+    #expect(LatchwayComponentTrustSource.delegatedDirectAttested.rawValue == "delegated_direct_attested")
+}

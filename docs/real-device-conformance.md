@@ -1,7 +1,8 @@
 # Physical App Attest release evidence
 
-The v1 Apple gate is a production App Attest registration and assertion on a
-supported physical Apple device. Simulator, fixture, development-attestation,
+The v1 Apple gate is a production App Attest registration and assertion plus a
+component-scoped production App Attest step-up from the signed Action extension
+on a supported physical Apple device. Simulator, fixture, development-attestation,
 Debug, XCTest, debugger-attached, unsigned, and unpinned runs are useful local
 checks but are never release evidence.
 
@@ -32,7 +33,15 @@ One run resets the conformance app's isolated SDK state, then records:
   `protocol_version_unsupported`, and server enforcement of installation
   revocation as HTTP 403 `installation_revoked`;
 - a bounded streamed request and quota response; and
-- a second session using the same installation and an App Attest assertion.
+- a second session using the same installation and an App Attest assertion;
+- candidate-bound host, Widget, Share, and Action bundle/definition/executable
+  identities, four independent redacted DPoP-key and session identifiers, and
+  an Action transition to `delegated_direct_attested` with binding version 2;
+- a concrete HTTP 401 `component_key_invalid` denial when the Action attempts
+  to use a Widget or Share sibling session; and
+- independent observation that Action step-up ran with the containing host not
+  running, in background execution, after host termination, and without a user
+  presence prompt.
 
 The report includes safe request IDs and app/device/toolchain metadata. It
 never includes the identity/access/refresh token, DPoP JWT, App Attest key ID,
@@ -57,11 +66,21 @@ LATCHWAY_XCODE_IDENTITY
 LATCHWAY_IOS_APP_BUNDLE_PATH
 LATCHWAY_IOS_INSTALL_MODE          # must be install
 LATCHWAY_IOS_BUNDLE_ID
+LATCHWAY_IOS_WIDGET_BUNDLE_ID
+LATCHWAY_IOS_SHARE_BUNDLE_ID
+LATCHWAY_IOS_ACTION_BUNDLE_ID
+LATCHWAY_HOST_COMPONENT_DEFINITION_ID
+LATCHWAY_WIDGET_COMPONENT_DEFINITION_ID
+LATCHWAY_SHARE_COMPONENT_DEFINITION_ID
+LATCHWAY_ACTION_COMPONENT_DEFINITION_ID
 LATCHWAY_IOS_APP_VERSION
 LATCHWAY_IOS_BUILD_NUMBER
 LATCHWAY_IOS_TEAM_ID
 LATCHWAY_IOS_SIGNING_CERTIFICATE_SHA256
 LATCHWAY_IOS_APP_BINARY_SHA256
+LATCHWAY_IOS_WIDGET_BINARY_SHA256
+LATCHWAY_IOS_SHARE_BINARY_SHA256
+LATCHWAY_IOS_ACTION_BINARY_SHA256
 LATCHWAY_IOS_DISTRIBUTION          # ad_hoc, testflight, or app_store
 LATCHWAY_IOS_SDK_VERSION
 LATCHWAY_SOURCE_COMMIT             # exact 40-character candidate commit
@@ -121,11 +140,13 @@ GitHub Sigstore attestation. The collector verifies that bundle with
 
 The JIT image must expose root-owned, non-writable files
 `/etc/latchway/physical-collector/lease.json` and `lease.sig`, plus the
-root-owned client `/usr/local/libexec/latchway-physical-collector-finalize`.
+root-owned clients `/usr/local/libexec/latchway-physical-collector-finalize`
+and `/usr/local/libexec/latchway-ios-component-evidence-observer`.
 The ECDSA/SHA-256 lease is signed outside the candidate VM. It binds the exact
 repository, commit, source-authorization hash, workflow run/attempt/job and
 audience, runner name/image/boot identity, one-job JIT and fresh-workspace
-flags, exact app digest, and the one-use grant hash/`jti`/issuance/expiry. It also
+flags, exact host/Widget/Share/Action executable digests, and the one-use grant
+hash/`jti`/issuance/expiry. It also
 asserts that no long-lived, organization, administration, registry, or OIDC
 credential exists in the collector.
 
@@ -133,11 +154,20 @@ The finalizer is a client for an authenticated privileged supervisor, not a
 signing key or a general-purpose signing command. The private key and gateway
 observer capability stay outside the candidate VM. The service ignores
 caller-supplied claims, hashes the supplied source/evidence/wipe paths itself,
-independently queries the device and the gateway's server-side run receipt,
+independently queries the device, independently verifies the component
+observation, and checks the gateway's server-side run receipt,
 allows one invocation for the signed lease, deregisters the runner, refuses a
 second job, and schedules VM destruction within ten minutes. Candidate code
 may cause a denial of service, but it cannot ask the service to sign arbitrary
 hashes or a synthetic physical/provider verdict.
+
+The component observer drives the signed candidate and records observations;
+it does not accept lifecycle booleans, trust sources, key/session identities,
+or pass claims from workflow inputs. Its run-bound
+`component-observation.json` is hashed by the teardown supervisor, revalidated
+against the protected candidate pins, and byte-compared with the component
+runtime embedded in final evidence. If the observer cannot establish any
+no-host/background/termination/no-presence fact, the release gate stays closed.
 
 The supervisor also owns an out-of-band lease watchdog. Cancellation, timeout,
 runner crash, network loss, or a missing finalizer receipt must revoke the JIT
@@ -173,15 +203,19 @@ signature on the lease and teardown, exact grant/artifact/run coordinates,
 device-wipe receipt, evidence-manifest hash, independent supervisor verdict,
 and destruction deadline. It attests a
 `collector-isolation-validation.json` subject and retains the separate
-`app-attest-collector-isolation-<run>-<attempt>` artifact for 30 days; the
-observer-compatible physical artifact file set remains unchanged.
+`app-attest-collector-isolation-<run>-<attempt>` artifact for 30 days. The
+observer-compatible physical artifact file set includes the exact component
+observation as a separately attested subject.
 
 The app candidate must be a non-debuggable Release build signed by the pinned
 Team ID/certificate with
 `com.apple.developer.devicecheck.appattest-environment=production`. Its bundle
 ID, version, build, executable SHA-256, and application identifier must exactly
-match the protected values. The runner always installs that inspected bundle
-immediately before launch; preinstalled applications are rejected.
+match the protected values. The candidate must also contain exactly one signed
+Widget, Share, and Action extension with the protected bundle IDs and
+executable hashes. The Action extension carries its own production App Attest
+entitlement. The runner removes any prior installation, verifies absence, then
+installs the inspected bundle immediately before launch.
 
 The gateway must run the exact pinned OCI digest and configuration revision,
 reject development/debug attestation, require the expected bundle and Team ID,
@@ -212,6 +246,7 @@ app-attest-junit.xml
 app-attest-observation.json
 app-attest-profile.json
 app-attest-validation.json
+component-observation.json
 device-inventory.json
 gateway-client-policy.json
 gateway-deployment-public-key.pem
@@ -236,6 +271,7 @@ python3 scripts/device-evidence.py verify \
   --schema Conformance/physical-device-evidence.schema.json \
   --profile /path/to/app-attest-profile.json \
   --evidence /path/to/app-attest-evidence.json \
+  --component-observation /path/to/component-observation.json \
   --junit /tmp/app-attest-junit.xml \
   --summary /tmp/app-attest-validation.json
 

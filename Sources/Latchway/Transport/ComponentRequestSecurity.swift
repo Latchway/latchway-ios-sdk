@@ -4,13 +4,19 @@ enum LatchwayComponentRequestSecurity {
     static func prepare(
         _ request: inout URLRequest,
         configuration: LatchwayConfiguration,
+        feature: String,
         framework: LatchwayFrameworkMetadata?,
         allowManagedPlaceholder: Bool
     ) throws {
         guard let url = request.url else {
             throw LatchwayError.invalidRequest("URLRequest must contain a URL")
         }
-        try validateDestination(url, baseURL: configuration.baseURL)
+        try validateDestination(
+            url,
+            method: request.httpMethod?.uppercased() ?? "GET",
+            feature: feature,
+            baseURL: configuration.baseURL
+        )
         if allowManagedPlaceholder { stripManagedPlaceholder(from: &request) }
         try rejectCredentials(in: request)
         try validateFrameworkHeaders(in: request, framework: framework)
@@ -34,7 +40,12 @@ enum LatchwayComponentRequestSecurity {
         }
     }
 
-    private static func validateDestination(_ url: URL, baseURL: URL) throws {
+    private static func validateDestination(
+        _ url: URL,
+        method: String,
+        feature: String,
+        baseURL: URL
+    ) throws {
         guard let request = URLComponents(url: url, resolvingAgainstBaseURL: false),
               let gateway = URLComponents(url: baseURL, resolvingAgainstBaseURL: false),
               let gatewayScheme = gateway.scheme?.lowercased(),
@@ -66,14 +77,72 @@ enum LatchwayComponentRequestSecurity {
             throw LatchwayError.invalidRequest("The request escaped the configured Latchway path")
         }
         let relative = String(requestPath.dropFirst(prefix.count))
-        guard relative == "/v1" || relative.hasPrefix("/v1/") else {
+        guard isAllowedStructuredRoute(relative, method: method)
+            || isAllowedOpaqueRoute(
+                request,
+                gateway: gateway,
+                method: method,
+                feature: feature
+            )
+        else {
             throw LatchwayError.invalidRequest("The request path is not a Latchway data-plane path")
         }
+    }
+
+    private static func isAllowedStructuredRoute(
+        _ relativePath: String,
+        method: String
+    ) -> Bool {
+        method == "POST" && structuredDataPlanePaths.contains(relativePath)
+    }
+
+    private static func isAllowedOpaqueRoute(
+        _ request: URLComponents,
+        gateway: URLComponents,
+        method: String,
+        feature: String
+    ) -> Bool {
+        guard ["GET", "POST", "PUT", "PATCH", "DELETE"].contains(method),
+              request.percentEncodedQuery == nil
+        else { return false }
+
+        let basePath = gateway.percentEncodedPath
+        let basePrefix: String
+        if basePath.isEmpty || basePath == "/" {
+            basePrefix = ""
+        } else if basePath.hasSuffix("/") {
+            basePrefix = String(basePath.dropLast())
+        } else {
+            basePrefix = basePath
+        }
+        let opaquePrefix = "\(basePrefix)/proxy/\(feature)/"
+        let path = request.percentEncodedPath
+        guard path.hasPrefix(opaquePrefix) else { return false }
+
+        let remaining = String(path.dropFirst(opaquePrefix.count))
+        let lowercased = remaining.lowercased()
+        return (1 ... 2_048).contains(remaining.utf8.count)
+            && remaining
+                .split(separator: "/", omittingEmptySubsequences: false)
+                .allSatisfy { !$0.isEmpty && $0 != "." && $0 != ".." }
+            && !lowercased.contains("%2e")
+            && !lowercased.contains("%2f")
+            && !lowercased.contains("%5c")
+            && !remaining.contains("\\")
+            && !lowercased.hasPrefix("http:")
+            && !lowercased.hasPrefix("https:")
     }
 
     private static func isLoopback(_ host: String) -> Bool {
         host == "localhost" || host == "127.0.0.1" || host == "::1"
     }
+
+    private static let structuredDataPlanePaths: Set<String> = [
+        "/v1/responses",
+        "/v1/chat/completions",
+        "/v1/embeddings",
+        "/v1/messages",
+    ]
 
     private static func stripManagedPlaceholder(from request: inout URLRequest) {
         for header in ["Authorization", "api-key", "x-api-key"] {

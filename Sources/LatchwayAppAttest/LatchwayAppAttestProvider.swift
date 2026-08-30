@@ -52,6 +52,35 @@ public actor LatchwayAppAttestProvider: LatchwayAttestationProvider {
         )
     }
 
+    /// Creates App Attest state dedicated to one directly attested Client
+    /// Component. Component App Attest keys must not reuse the containing
+    /// application's accepted-key marker or a sibling component's marker.
+    public init(
+        applicationID: String,
+        environment: String,
+        clientRuntime: LatchwayClientRuntime = .iOS,
+        componentDefinitionID: String
+    ) {
+        self.service = SystemAppAttestService()
+        self.stateStore = AppAttestKeychainStateStore(
+            namespace: Self.componentStorageNamespace(
+                applicationID: applicationID,
+                environment: environment,
+                clientRuntime: clientRuntime,
+                componentDefinitionID: componentDefinitionID
+            )
+        )
+    }
+
+    static func componentStorageNamespace(
+        applicationID: String,
+        environment: String,
+        clientRuntime: LatchwayClientRuntime,
+        componentDefinitionID: String
+    ) -> String {
+        "\(clientRuntime.platformIdentifier).\(applicationID).\(environment).component.\(componentDefinitionID)"
+    }
+
     init(service: any AppAttestServicing, stateStore: any AppAttestStateStoring) {
         self.service = service
         self.stateStore = stateStore
