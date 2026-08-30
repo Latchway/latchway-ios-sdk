@@ -228,7 +228,7 @@ public enum LatchwayComponentError: Error, Sendable, Equatable, LocalizedError {
             )
         case .directAttestationRequired:
             .init(
-                action: "Complete the configured direct App Attest step in this component.",
+                action: "Complete direct attestation only in a platform extension that supports it; iOS app extensions must remain delegated-only.",
                 openingContainingAppCanFix: false,
                 userAuthenticationRequired: false,
                 immediateRetryUseful: false

@@ -82,12 +82,41 @@ private final class ConformanceModel: ObservableObject {
         defer { running = false }
 
         let startedAt = Self.timestamp()
-        let environment = ProcessInfo.processInfo.environment
-        guard let values = Values(environment: environment) else {
+        var environment = ProcessInfo.processInfo.environment
+        let registrationIdentityToken = environment.removeValue(
+            forKey: "LATCHWAY_REGISTRATION_IDENTITY_TOKEN"
+        )
+        let assertionIdentityToken = environment.removeValue(
+            forKey: "LATCHWAY_ASSERTION_IDENTITY_TOKEN"
+        )
+        unsetenv("LATCHWAY_REGISTRATION_IDENTITY_TOKEN")
+        unsetenv("LATCHWAY_ASSERTION_IDENTITY_TOKEN")
+        guard var values = Values(
+            environment: environment,
+            registrationIdentityToken: registrationIdentityToken,
+            assertionIdentityToken: assertionIdentityToken
+        ) else {
             identityStatus = "missing or invalid launch configuration"
             return
         }
         identityStatus = "configured"
+
+        do {
+            if let checkpoint = try PhysicalComponentProducer.loadCheckpoint(runID: values.runID) {
+                guard try PhysicalComponentProducer.observerCompleted(runID: values.runID) else {
+                    try PhysicalComponentProducer.ensureReadyMarker(runID: values.runID)
+                    identityStatus = "component credentials prepared"
+                    evidenceResult = "awaiting independent component observer"
+                    return
+                }
+                await resumeAfterComponentObservation(values: values, checkpoint: checkpoint)
+                return
+            }
+        } catch {
+            identityStatus = "invalid component coordination state"
+            await writeObservation(values: values, startedAt: startedAt, tests: [], diagnostics: nil)
+            return
+        }
 
         var tests: [EvidenceTest] = [
             .boolean(
@@ -99,6 +128,14 @@ private final class ConformanceModel: ObservableObject {
             ),
             .boolean(id: "identifier_pins", passed: values.localPinsMatch),
         ]
+
+        guard let registrationIdentityProvider = values.takeRegistrationIdentityProvider(),
+              let assertionIdentityProvider = values.takeAssertionIdentityProvider()
+        else {
+            identityStatus = "initial launch requires two distinct one-use grants"
+            await writeObservation(values: values, startedAt: startedAt, tests: [], diagnostics: nil)
+            return
+        }
 
         let appAttest = LatchwayAppAttestProvider(
             applicationID: values.applicationID,
@@ -128,10 +165,14 @@ private final class ConformanceModel: ObservableObject {
             return
         }
 
-        let client = makeClient(values: values, appAttest: appAttest)
+        let registrationClient = makeClient(
+            values: values,
+            appAttest: appAttest,
+            identityTokenProvider: registrationIdentityProvider
+        )
         var diagnostics: LatchwayDiagnostics?
         do {
-            let probe = try await authorizedQuotaProbe(client: client, values: values)
+            let probe = try await authorizedQuotaProbe(client: registrationClient, values: values)
             let first = try await sendBounded(probe, maximumBytes: 65_536)
             tests.append(.http(
                 id: "dpop_authorized_request",
@@ -139,7 +180,7 @@ private final class ConformanceModel: ObservableObject {
                 response: first
             ))
 
-            diagnostics = await client.diagnostics()
+            diagnostics = await registrationClient.diagnostics()
             if let diagnostics {
                 secureEnclaveStatus = diagnostics.keyStorage.rawValue
                 appAttestSupport = diagnostics.attestation.support.rawValue
@@ -158,7 +199,40 @@ private final class ConformanceModel: ObservableObject {
             tests.append(.http(id: "dpop_replay_rejected", passed: replayPassed, response: replay))
             replayResult = replayPassed ? "passed" : "failed"
 
-            var tampered = try await authorizedQuotaProbe(client: client, values: values)
+            // Consume the independently lease-bound assertion grant immediately
+            // after registration and the minimum replay check. The extended
+            // protocol suite runs only after the assertion session exists, so
+            // the second one-use grant is never retained through long tests.
+            guard let registeredInstallationID = diagnostics?.installationID,
+                  !registeredInstallationID.isEmpty
+            else {
+                throw SuiteError.protocolFailure
+            }
+            try await LatchwayKeychainSessionStorage(
+                applicationID: values.applicationID,
+                environment: values.environment,
+                clientRuntime: .iOS
+            ).clear()
+            let assertionProvider = LatchwayAppAttestProvider(
+                applicationID: values.applicationID,
+                environment: values.environment,
+                clientRuntime: .iOS
+            )
+            let assertionClient = makeClient(
+                values: values,
+                appAttest: assertionProvider,
+                identityTokenProvider: assertionIdentityProvider
+            )
+            _ = try await assertionClient.quota(feature: values.feature)
+            let assertionDiagnostics = await assertionClient.diagnostics()
+            let assertionPassed = assertionDiagnostics.attestation.lastOperation == "assertion"
+                && assertionDiagnostics.sessionState == .active
+                && assertionDiagnostics.installationID == registeredInstallationID
+            tests.append(.boolean(id: "app_attest_assertion", passed: assertionPassed))
+            attestationResult = assertionPassed ? "registration + assertion" : "assertion failed"
+            diagnostics = assertionDiagnostics
+
+            var tampered = try await authorizedQuotaProbe(client: assertionClient, values: values)
             guard let proof = tampered.value(forHTTPHeaderField: "DPoP"), !proof.isEmpty else {
                 throw SuiteError.protocolFailure
             }
@@ -169,7 +243,7 @@ private final class ConformanceModel: ObservableObject {
             tamperResult = tamperPassed ? "passed" : "failed"
 
             do {
-                _ = try await client.quota(feature: values.errorMappingFeature)
+                _ = try await assertionClient.quota(feature: values.errorMappingFeature)
                 tests.append(.failed(id: "canonical_error_mapping"))
             } catch let error as LatchwayError {
                 if case let .server(problem) = error {
@@ -184,11 +258,11 @@ private final class ConformanceModel: ObservableObject {
                 }
             }
 
-            let beforeRefresh = try await authorizedQuotaProbe(client: client, values: values)
-            let beforeRefreshDiagnostics = await client.diagnostics()
-            try await client.refresh()
-            let afterRefresh = try await authorizedQuotaProbe(client: client, values: values)
-            let afterRefreshDiagnostics = await client.diagnostics()
+            let beforeRefresh = try await authorizedQuotaProbe(client: assertionClient, values: values)
+            let beforeRefreshDiagnostics = await assertionClient.diagnostics()
+            try await assertionClient.refresh()
+            let afterRefresh = try await authorizedQuotaProbe(client: assertionClient, values: values)
+            let afterRefreshDiagnostics = await assertionClient.diagnostics()
             tests.append(try .rotation(
                 id: "session_refresh_rotation",
                 credentialBefore: requiredAuthorizationHash(beforeRefresh),
@@ -198,7 +272,7 @@ private final class ConformanceModel: ObservableObject {
             ))
             diagnostics = afterRefreshDiagnostics
 
-            var unsupportedProtocol = try await authorizedQuotaProbe(client: client, values: values)
+            var unsupportedProtocol = try await authorizedQuotaProbe(client: assertionClient, values: values)
             unsupportedProtocol.setValue("0", forHTTPHeaderField: "X-Latchway-Protocol-Version")
             let unsupported = try await sendBounded(unsupportedProtocol, maximumBytes: 65_536)
             tests.append(.protocolRejection(
@@ -207,7 +281,7 @@ private final class ConformanceModel: ObservableObject {
                 version: 0
             ))
 
-            let stream = try await streamedRequest(client: client, values: values)
+            let stream = try await streamedRequest(client: assertionClient, values: values)
             tests.append(.http(
                 id: "streamed_request",
                 passed: (200 ..< 300).contains(stream.status) && stream.byteCount > 0,
@@ -217,38 +291,24 @@ private final class ConformanceModel: ObservableObject {
                 ? "passed (\(stream.byteCount) bytes)"
                 : "failed"
 
-            let snapshot = try await client.quota(feature: values.feature)
+            let snapshot = try await assertionClient.quota(feature: values.feature)
             let quotaPassed = snapshot.feature == values.feature && !snapshot.limits.isEmpty
             tests.append(.boolean(id: "quota", passed: quotaPassed))
             quotaResult = quotaPassed ? "passed (\(snapshot.limits.count) limits)" : "failed"
 
-            try await LatchwayKeychainSessionStorage(
-                applicationID: values.applicationID,
-                environment: values.environment,
-                clientRuntime: .iOS
-            ).clear()
-            let assertionProvider = LatchwayAppAttestProvider(
-                applicationID: values.applicationID,
-                environment: values.environment,
-                clientRuntime: .iOS
+            let completed = Set(tests.filter { $0.status == "passed" }.map(\.id))
+            guard EvidencePolicy.preObserverTests.isSubset(of: completed) else {
+                throw SuiteError.protocolFailure
+            }
+            try await PhysicalComponentProducer.stage(
+                client: assertionClient,
+                runID: values.runID,
+                startedAt: startedAt,
+                tests: tests
             )
-            let assertionClient = makeClient(values: values, appAttest: assertionProvider)
-            _ = try await assertionClient.quota(feature: values.feature)
-            let assertionDiagnostics = await assertionClient.diagnostics()
-            let assertionPassed = assertionDiagnostics.attestation.lastOperation == "assertion"
-                && assertionDiagnostics.sessionState == .active
-                && assertionDiagnostics.installationID == diagnostics?.installationID
-            tests.append(.boolean(id: "app_attest_assertion", passed: assertionPassed))
-            attestationResult = assertionPassed ? "registration + assertion" : "assertion failed"
-
-            let postRevocationProbe = try await authorizedQuotaProbe(client: assertionClient, values: values)
-            try await assertionClient.revokeCurrentInstallation()
-            let revoked = try await sendBounded(postRevocationProbe, maximumBytes: 65_536)
-            tests.append(.http(
-                id: "installation_revocation",
-                passed: revoked.status == 403 && revoked.problemCode == "installation_revoked",
-                response: revoked
-            ))
+            identityStatus = "component credentials prepared"
+            evidenceResult = "awaiting independent component observer"
+            return
         } catch {
             let missing = EvidencePolicy.iosTests.subtracting(tests.map(\.id))
             tests.append(contentsOf: missing.sorted().map { .failed(id: $0) })
@@ -267,7 +327,8 @@ private final class ConformanceModel: ObservableObject {
 
     private func makeClient(
         values: Values,
-        appAttest: LatchwayAppAttestProvider
+        appAttest: LatchwayAppAttestProvider,
+        identityTokenProvider: any LatchwayIdentityTokenProvider
     ) -> LatchwayClient {
         LatchwayClient(
             configuration: LatchwayConfiguration(
@@ -279,8 +340,50 @@ private final class ConformanceModel: ObservableObject {
                 softwareKeyFallbackPolicy: .disallow,
                 attestationProvider: appAttest
             ),
-            identityTokenProvider: ConformanceIdentityProvider(token: values.identityToken)
+            identityTokenProvider: identityTokenProvider
         )
+    }
+
+    private func resumeAfterComponentObservation(
+        values: Values,
+        checkpoint: PhysicalComponentCheckpoint
+    ) async {
+        var tests = checkpoint.tests
+        let appAttest = LatchwayAppAttestProvider(
+            applicationID: values.applicationID,
+            environment: values.environment,
+            clientRuntime: .iOS
+        )
+        let client = makeClient(
+            values: values,
+            appAttest: appAttest,
+            identityTokenProvider: UnavailableConformanceIdentityProvider()
+        )
+        var diagnostics: LatchwayDiagnostics?
+        do {
+            let postRevocationProbe = try await authorizedQuotaProbe(client: client, values: values)
+            let loadedDiagnostics = await client.diagnostics()
+            guard loadedDiagnostics.sessionState == .active else {
+                throw SuiteError.protocolFailure
+            }
+            diagnostics = loadedDiagnostics
+            try await client.revokeCurrentInstallation()
+            let revoked = try await sendBounded(postRevocationProbe, maximumBytes: 65_536)
+            tests.append(.http(
+                id: "installation_revocation",
+                passed: revoked.status == 403 && revoked.problemCode == "installation_revoked",
+                response: revoked
+            ))
+        } catch {
+            tests.append(.failed(id: "installation_revocation"))
+        }
+        await writeObservation(
+            values: values,
+            startedAt: checkpoint.startedAt,
+            tests: tests,
+            diagnostics: diagnostics
+        )
+        try? PhysicalComponentProducer.removeCoordinationFiles()
     }
 
     private func authorizedQuotaProbe(client: LatchwayClient, values: Values) async throws -> URLRequest {
@@ -324,7 +427,7 @@ private final class ConformanceModel: ObservableObject {
         }
         let trustLevel = diagnostics?.trustLevel ?? "none"
         let requestHashBound = diagnostics?.trustProvider == "app_attest"
-            && ["device_verified", "strong_device_verified"].contains(trustLevel)
+            && trustLevel == "app_verified"
         let document = DeviceObservation(
             schemaVersion: "latchway.physical-device-observation.v1",
             platform: "ios_app_attest",
@@ -402,7 +505,8 @@ private struct Values {
     let applicationID: String
     let environment: String
     let identityProvider: String
-    let identityToken: String
+    private var registrationIdentityToken: String?
+    private var assertionIdentityToken: String?
     let feature: String
     let errorMappingFeature: String
     let model: String
@@ -415,7 +519,11 @@ private struct Values {
     let appAttestEnvironment: String
     let observedPins: [String: String]
 
-    init?(environment values: [String: String]) {
+    init?(
+        environment values: [String: String],
+        registrationIdentityToken: String?,
+        assertionIdentityToken: String?
+    ) {
         guard let gatewayText = values["LATCHWAY_BASE_URL"],
               let gateway = URL(string: gatewayText), gateway.scheme == "https", gateway.host != nil,
               let gatewayOrigin = values.bounded("LATCHWAY_GATEWAY_ORIGIN", maximum: 512),
@@ -425,7 +533,10 @@ private struct Values {
                   pattern: "^app_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
               ),
               let environment = values.canonical("LATCHWAY_ENVIRONMENT", pattern: "^[a-z][a-z0-9_-]{0,62}$"),
-              let identityToken = values["LATCHWAY_IDENTITY_TOKEN"], (16 ... 65_536).contains(identityToken.utf8.count),
+              let identityProvider = values.canonical(
+                  "LATCHWAY_IDENTITY_PROVIDER",
+                  pattern: "^[a-z][a-z0-9_-]{0,62}$"
+              ),
               let feature = values.canonical("LATCHWAY_FEATURE", pattern: "^[a-z][a-z0-9_-]{0,62}$"),
               let errorMappingFeature = values.canonical(
                   "LATCHWAY_ERROR_MAPPING_FEATURE",
@@ -457,13 +568,42 @@ private struct Values {
               let appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
               let buildNumber = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String,
               let appAttestEnvironment = Bundle.main.object(forInfoDictionaryKey: "LatchwayAppAttestEnvironment") as? String,
+              let signedApplicationID = Bundle.main.object(
+                  forInfoDictionaryKey: "LatchwayApplicationID"
+              ) as? String,
+              let signedEnvironment = Bundle.main.object(
+                  forInfoDictionaryKey: "LatchwayEnvironment"
+              ) as? String,
+              let signedIdentityProvider = Bundle.main.object(
+                  forInfoDictionaryKey: "LatchwayIdentityProvider"
+              ) as? String,
+              applicationID == signedApplicationID,
+              environment == signedEnvironment,
+              identityProvider == signedIdentityProvider,
               let identifier = Bundle.main.bundleIdentifier
         else { return nil }
         self.gateway = gateway
-        self.applicationID = applicationID
-        self.environment = environment
-        self.identityProvider = values["LATCHWAY_IDENTITY_PROVIDER"] ?? "firebase"
-        self.identityToken = identityToken
+        self.applicationID = signedApplicationID
+        self.environment = signedEnvironment
+        self.identityProvider = signedIdentityProvider
+        let grantsAbsent = registrationIdentityToken == nil && assertionIdentityToken == nil
+        let grantsValid = registrationIdentityToken.map { (16 ... 65_536).contains($0.utf8.count) } == true
+            && assertionIdentityToken.map { (16 ... 65_536).contains($0.utf8.count) } == true
+            && registrationIdentityToken != assertionIdentityToken
+        let grantlessResumeIsValid: Bool
+        if grantsAbsent {
+            do {
+                grantlessResumeIsValid = try PhysicalComponentProducer.loadCheckpoint(runID: runID) != nil
+                    && PhysicalComponentProducer.observerCompleted(runID: runID)
+            } catch {
+                return nil
+            }
+        } else {
+            grantlessResumeIsValid = false
+        }
+        guard grantsValid || grantlessResumeIsValid else { return nil }
+        self.registrationIdentityToken = registrationIdentityToken
+        self.assertionIdentityToken = assertionIdentityToken
         self.feature = feature
         self.errorMappingFeature = errorMappingFeature
         self.model = model
@@ -476,6 +616,9 @@ private struct Values {
         self.appAttestEnvironment = appAttestEnvironment
         self.observedPins = [
             "application_identifier": identifier,
+            "latchway_application_id": signedApplicationID,
+            "latchway_environment": signedEnvironment,
+            "identity_provider": signedIdentityProvider,
             "app_version": appVersion,
             "build_number": buildNumber,
             "team_id": teamID,
@@ -495,15 +638,30 @@ private struct Values {
         ]
     }
 
+    mutating func takeRegistrationIdentityProvider() -> SingleUseConformanceIdentityProvider? {
+        guard let token = registrationIdentityToken else { return nil }
+        registrationIdentityToken = nil
+        return SingleUseConformanceIdentityProvider(token: token)
+    }
+
+    mutating func takeAssertionIdentityProvider() -> SingleUseConformanceIdentityProvider? {
+        guard let token = assertionIdentityToken else { return nil }
+        assertionIdentityToken = nil
+        return SingleUseConformanceIdentityProvider(token: token)
+    }
+
     var localPinsMatch: Bool {
         observedPins["application_identifier"] == Bundle.main.bundleIdentifier
+            && observedPins["latchway_application_id"] == applicationID
+            && observedPins["latchway_environment"] == environment
+            && observedPins["identity_provider"] == identityProvider
             && observedPins["app_version"] == appVersion
             && observedPins["build_number"] == buildNumber
             && appAttestEnvironment == "production"
     }
 }
 
-private struct HTTPObservation {
+struct HTTPObservation {
     let status: Int
     let body: Data
     let byteCount: Int
@@ -571,7 +729,7 @@ private enum IsolatedSession {
     }
 }
 
-private struct EvidenceTest: Codable {
+struct EvidenceTest: Codable {
     let id: String
     let status: String
     let durationMS: Int
@@ -691,7 +849,7 @@ private struct EvidenceTest: Codable {
     }
 }
 
-private enum EvidencePolicy {
+enum EvidencePolicy {
     static let iosTests: Set<String> = [
         "physical_device", "identifier_pins", "app_attest_supported", "secure_enclave_key",
         "app_attest_registration", "session_created", "dpop_authorized_request",
@@ -699,6 +857,8 @@ private enum EvidencePolicy {
         "app_attest_assertion", "canonical_error_mapping", "session_refresh_rotation",
         "installation_revocation", "protocol_version_rejection",
     ]
+
+    static let preObserverTests = iosTests.subtracting(["installation_revocation"])
 }
 
 private func requiredAuthorizationHash(_ request: URLRequest) throws -> String {
@@ -858,12 +1018,24 @@ private enum DeviceFacts {
 
 private enum SuiteError: Error {
     case configuration
+    case identityUnavailable
     case protocolFailure
 }
 
-private struct ConformanceIdentityProvider: LatchwayIdentityTokenProvider {
-    let token: String
-    func identityToken() async throws -> String { token }
+private actor SingleUseConformanceIdentityProvider: LatchwayIdentityTokenProvider {
+    private var token: String?
+
+    init(token: String) { self.token = token }
+
+    func identityToken() async throws -> String {
+        guard let token else { throw SuiteError.identityUnavailable }
+        self.token = nil
+        return token
+    }
+}
+
+private struct UnavailableConformanceIdentityProvider: LatchwayIdentityTokenProvider {
+    func identityToken() async throws -> String { throw SuiteError.identityUnavailable }
 }
 
 private extension Dictionary where Key == String, Value == String {

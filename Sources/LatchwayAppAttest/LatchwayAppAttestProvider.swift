@@ -55,6 +55,11 @@ public actor LatchwayAppAttestProvider: LatchwayAttestationProvider {
     /// Creates App Attest state dedicated to one directly attested Client
     /// Component. Component App Attest keys must not reuse the containing
     /// application's accepted-key marker or a sibling component's marker.
+    @available(
+        *,
+        unavailable,
+        message: "iOS and React Native iOS app extensions are delegated-only in Latchway v1"
+    )
     public init(
         applicationID: String,
         environment: String,

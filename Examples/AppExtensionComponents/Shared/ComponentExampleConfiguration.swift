@@ -8,24 +8,74 @@ enum ComponentExampleConfiguration {
         let gateway = try requiredURL("LatchwayGatewayURL")
         let applicationID = try requiredString("LatchwayApplicationID")
         let environment = try requiredString("LatchwayEnvironment")
+        let identityProvider = try requiredString("LatchwayIdentityProvider")
         return LatchwayConfiguration(
             baseURL: gateway,
             applicationID: applicationID,
             environment: environment,
+            identityProvider: identityProvider,
             softwareKeyFallbackPolicy: .disallow,
             attestationProvider: attestationProvider
         )
     }
 
+    static func hostDefinitionID() throws -> String {
+        try requiredString("LatchwayHostComponentDefinitionID")
+    }
+
     static func widget() throws -> LatchwayComponentConfiguration {
-        let accessGroup = try requiredString("LatchwayComponentKeychainAccessGroup")
+        try component(
+            definitionKey: "LatchwayWidgetComponentDefinitionID",
+            featureKey: "LatchwayWidgetFeature",
+            groupKey: "LatchwayWidgetKeychainAccessGroup",
+            kind: "widget"
+        )
+    }
+
+    static func share() throws -> LatchwayComponentConfiguration {
+        try component(
+            definitionKey: "LatchwayShareComponentDefinitionID",
+            featureKey: "LatchwayShareFeature",
+            groupKey: "LatchwayShareKeychainAccessGroup",
+            kind: "share_extension"
+        )
+    }
+
+    static func action() throws -> LatchwayComponentConfiguration {
+        try component(
+            definitionKey: "LatchwayActionComponentDefinitionID",
+            featureKey: "LatchwayActionFeature",
+            groupKey: "LatchwayActionKeychainAccessGroup",
+            kind: "action_extension"
+        )
+    }
+
+    static func delegatedComponents() throws -> [LatchwayComponentConfiguration] {
+        try [widget(), share(), action()]
+    }
+
+    static func feature(for component: LatchwayComponentConfiguration) throws -> String {
+        guard let feature = component.requestedFeatures.first,
+              component.requestedFeatures.count == 1
+        else { throw ExampleConfigurationError.invalidComponentScope }
+        return feature
+    }
+
+    private static func component(
+        definitionKey: String,
+        featureKey: String,
+        groupKey: String,
+        kind: String
+    ) throws -> LatchwayComponentConfiguration {
+        let accessGroup = try requiredString(groupKey)
         guard !accessGroup.contains("$(") else {
             throw ExampleConfigurationError.unresolvedAccessGroup
         }
-        return .widget(
-            definitionID: "home_widget",
+        return LatchwayComponentConfiguration(
+            definitionID: try requiredString(definitionKey),
+            kind: kind,
             keychainAccessGroup: accessGroup,
-            requestedFeatures: ["weekly-summary"]
+            requestedFeatures: [try requiredString(featureKey)]
         )
     }
 
@@ -49,7 +99,7 @@ enum ExampleConfigurationError: Error, LocalizedError {
     case missing(String)
     case invalidURL(String)
     case unresolvedAccessGroup
-    case missingIdentityToken
+    case invalidComponentScope
 
     var errorDescription: String? {
         switch self {
@@ -57,17 +107,8 @@ enum ExampleConfigurationError: Error, LocalizedError {
         case let .invalidURL(key): "Info.plist value \(key) is not an absolute URL."
         case .unresolvedAccessGroup:
             "The runtime Keychain access group still contains an unresolved build-setting token."
-        case .missingIdentityToken:
-            "Provide LATCHWAY_IDENTITY_TOKEN in the host app's launch environment."
+        case .invalidComponentScope:
+            "The physical component producer requires exactly one configured feature."
         }
-    }
-}
-
-struct LaunchEnvironmentIdentityProvider: LatchwayIdentityTokenProvider {
-    func identityToken() async throws -> String {
-        guard let token = ProcessInfo.processInfo.environment["LATCHWAY_IDENTITY_TOKEN"],
-              (16 ... 65_536).contains(token.utf8.count)
-        else { throw ExampleConfigurationError.missingIdentityToken }
-        return token
     }
 }

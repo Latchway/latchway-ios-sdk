@@ -32,8 +32,7 @@ public actor LatchwayExtensionClient {
 
     public init(
         configuration: LatchwayConfiguration,
-        component: LatchwayComponentConfiguration,
-        directAttestationProvider: (any LatchwayAttestationProvider)? = nil
+        component: LatchwayComponentConfiguration
     ) throws {
         try Self.validate(component)
         let key = LatchwayComponentKeyManager(
@@ -60,13 +59,26 @@ public actor LatchwayExtensionClient {
         transport = network
         self.clock = clock
         self.proofFactory = proofFactory
-        self.directAttestationProvider = directAttestationProvider
+        directAttestationProvider = nil
         controlPlane = LatchwayControlPlane(
             configuration: configuration,
             transport: network,
             proofFactory: proofFactory,
             clock: clock
         )
+    }
+
+    @available(
+        *,
+        unavailable,
+        message: "iOS and React Native iOS app extensions are delegated-only in Latchway v1"
+    )
+    public init(
+        configuration _: LatchwayConfiguration,
+        component _: LatchwayComponentConfiguration,
+        directAttestationProvider _: any LatchwayAttestationProvider
+    ) throws {
+        fatalError("unavailable")
     }
 
     init(
@@ -129,21 +141,24 @@ public actor LatchwayExtensionClient {
         _ = try await refreshSession(force: true)
     }
 
-    /// Completes the contract's component-scoped direct App Attest step-up.
-    ///
-    /// The component's current DPoP session authorizes a one-use version-2
-    /// challenge. Successful exchange rotates only this component's session
-    /// family and persists its new directly attested refresh credential.
-    /// Configure a component-namespaced App Attest provider when constructing
-    /// the client; root and sibling accepted-key markers must not be reused.
-    /// The stored and returned component platform must exactly match
-    /// `configuration.clientRuntime`.
+    /// Fails closed because every runtime exposed by this package is an iOS
+    /// application-extension runtime, where App Attest key generation is not
+    /// supported. Latchway v1 extensions are delegated-only and this method
+    /// performs no session refresh, challenge request, or grant consumption.
     public func establishDirectAttestation() async throws {
+        throw LatchwayComponentError.invalidConfiguration(
+            "Direct component attestation is unavailable for iOS and React Native iOS extensions"
+        )
+    }
+
+    /// Exercises the dormant platform-generic wire contract without exposing
+    /// an eligible iOS producer. Used only by the package's contract tests.
+    func establishDirectAttestationForContractConformance() async throws {
         guard ["action_extension", "sso_extension"]
             .contains(component.kind)
         else {
             throw LatchwayComponentError.invalidConfiguration(
-                "This component kind does not support direct App Attest step-up"
+                "This component kind does not support direct attestation step-up"
             )
         }
         guard let directAttestationProvider else {

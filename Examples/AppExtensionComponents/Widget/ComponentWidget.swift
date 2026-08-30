@@ -32,11 +32,12 @@ struct ComponentProvider: TimelineProvider {
         do {
             let configuration = try ComponentExampleConfiguration.latchway()
             let component = try ComponentExampleConfiguration.widget()
+            let feature = try ComponentExampleConfiguration.feature(for: component)
             let client = try LatchwayExtensionClient(
                 configuration: configuration,
                 component: component
             )
-            let transport = client.transport(feature: "weekly-summary")
+            let transport = client.transport(feature: feature)
             var request = URLRequest(url: try transport.endpoint(path: "v1/responses"))
             request.httpMethod = "POST"
             request.httpBody = Data(#"{"input":"Return a short weekly summary.","stream":false}"#.utf8)

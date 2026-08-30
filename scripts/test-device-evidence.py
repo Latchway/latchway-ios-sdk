@@ -32,6 +32,9 @@ def now(offset_seconds: int = 0) -> str:
 def profile() -> dict:
     expected = {
         "application_identifier": "dev.latchway.conformance",
+        "latchway_application_id": "app_00000000000000000000000000",
+        "latchway_environment": "production",
+        "identity_provider": "firebase",
         "app_version": "1.0.0",
         "build_number": "42",
         "team_id": "A1B2C3D4E5",
@@ -88,6 +91,7 @@ def profile() -> dict:
         },
         "expected_pins": expected,
         "application_binary_sha256": "6" * 64,
+        "application_bundle_tree_sha256": "d" * 64,
         "device_inventory_sha256": "8" * 64,
     }
 
@@ -154,12 +158,23 @@ def observation() -> dict:
         "provider": {
             "name": "app_attest",
             "environment": "production",
-            "trust_level": "strong_device_verified",
+            "trust_level": "app_verified",
             "request_hash_bound": True,
             "app_recognition": "not_applicable",
             "account_licensing": "not_applicable",
         },
-        "observed_pins": copy.deepcopy(expected),
+        "observed_pins": {
+            name: value
+            for name, value in expected.items()
+            if name not in {
+                "host_bundle_identifier", "widget_bundle_identifier",
+                "share_bundle_identifier", "action_bundle_identifier",
+                "host_definition_id", "widget_definition_id",
+                "share_definition_id", "action_definition_id",
+                "host_binary_sha256", "widget_binary_sha256",
+                "share_binary_sha256", "action_binary_sha256",
+            }
+        },
         "tests": tests,
         "redaction": {
             "identity_token_recorded": False,
@@ -189,6 +204,7 @@ def component_observation() -> dict:
             "definition_id": expected[f"{role}_definition_id"],
             "bundle_identifier": expected[f"{role}_bundle_identifier"],
             "binary_sha256": expected[f"{role}_binary_sha256"],
+            "attestation_mode": "root_app_attest" if role == "host" else "delegated_only",
             "principal_id_sha256": principal * 64,
             "dpop_key_id_sha256": key * 64,
             "session_id_sha256": session * 64,
@@ -211,18 +227,15 @@ def component_observation() -> dict:
         "completed_at": now(-1),
         "runtime": {
             "identities": identities,
-            "direct_step_up": {
+            "delegated_execution": {
                 "role": "action",
                 "definition_id": expected["action_definition_id"],
                 "component_id_sha256": "f" * 64,
                 "dpop_key_id_sha256": "3" * 64,
-                "session_before_sha256": "a" * 64,
-                "session_after_sha256": "7" * 64,
-                "app_attest_key_id_sha256": "8" * 64,
-                "trust_source_before": "delegated_from_attested_root",
-                "trust_source_after": "delegated_direct_attested",
-                "binding_version": 2,
-                "request_hash_bound": True,
+                "session_id_sha256": "7" * 64,
+                "trust_source": "delegated_from_attested_root",
+                "http_status": 200,
+                "request_id": "request-action-1234",
             },
             "sibling_denial": {
                 "requesting_role": "action",
@@ -233,7 +246,7 @@ def component_observation() -> dict:
                 "request_id": "request-sibling-1234",
             },
             "lifecycle": {
-                "host_process_running_during_step_up": False,
+                "host_process_running_during_action_request": False,
                 "background_execution_observed": True,
                 "host_termination_observed": True,
                 "user_presence_prompt_observed": False,
@@ -258,9 +271,45 @@ class DeviceEvidenceTest(unittest.TestCase):
     def test_valid_release_evidence_passes(self) -> None:
         evidence, current_profile = self.evidence()
         self.assertTrue(evidence["release_eligible"])
+        self.assertEqual(
+            evidence["artifacts"]["application_bundle_tree_sha256"], "d" * 64
+        )
         self.assertEqual(device_evidence.verify(
             evidence, current_profile, self.schema, component_observation()
         ), [])
+
+    def test_ios_bundle_tree_hash_is_required_and_bound_to_final_evidence(self) -> None:
+        missing_profile = profile()
+        del missing_profile["application_bundle_tree_sha256"]
+        self.assertIn(
+            "profile: missing properties: application_bundle_tree_sha256",
+            device_evidence.validate_profile(missing_profile),
+        )
+
+        invalid_profile = profile()
+        invalid_profile["application_bundle_tree_sha256"] = "E" * 64
+        self.assertIn(
+            "profile.application_bundle_tree_sha256: expected lowercase SHA-256",
+            device_evidence.validate_profile(invalid_profile),
+        )
+
+        evidence, current_profile = self.evidence()
+        del evidence["artifacts"]["application_bundle_tree_sha256"]
+        self.assertIn(
+            "whole application bundle tree is not bound to the protected profile",
+            device_evidence.verify(
+                evidence, current_profile, self.schema, component_observation()
+            ),
+        )
+
+        evidence, current_profile = self.evidence()
+        evidence["artifacts"]["application_bundle_tree_sha256"] = "e" * 64
+        self.assertIn(
+            "whole application bundle tree is not bound to the protected profile",
+            device_evidence.verify(
+                evidence, current_profile, self.schema, component_observation()
+            ),
+        )
 
     def test_json_loader_rejects_ambiguous_nonfinite_and_symlinked_inputs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -305,6 +354,14 @@ class DeviceEvidenceTest(unittest.TestCase):
         )
         self.assertFalse(result["release_eligible"])
 
+    def test_app_attest_requires_exact_app_verified_trust(self) -> None:
+        current = observation()
+        current["provider"]["trust_level"] = "strong_device_verified"
+        result = device_evidence.build_evidence(
+            current, profile(), self.schema, component_observation()
+        )
+        self.assertFalse(result["release_eligible"])
+
     def test_pin_mismatch_fails_closed(self) -> None:
         current = observation()
         current["observed_pins"]["team_id"] = "ZZZZZZZZZZ"
@@ -312,6 +369,47 @@ class DeviceEvidenceTest(unittest.TestCase):
             current, profile(), self.schema, component_observation()
         )
         self.assertFalse(result["release_eligible"])
+
+    def test_component_pins_are_derived_from_observer_and_conflicts_fail_closed(self) -> None:
+        current_profile = profile()
+        result = device_evidence.build_evidence(
+            observation(), current_profile, self.schema, component_observation()
+        )
+        by_name = {pin["name"]: pin for pin in result["pins"]}
+        for role in ("host", "widget", "share", "action"):
+            for suffix in ("bundle_identifier", "definition_id", "binary_sha256"):
+                name = f"{role}_{suffix}"
+                self.assertEqual(
+                    current_profile["expected_pins"][name],
+                    by_name[name]["observed"],
+                )
+                self.assertTrue(by_name[name]["matched"])
+        self.assertTrue(result["release_eligible"])
+
+        conflicting = observation()
+        conflicting["observed_pins"]["action_bundle_identifier"] = "dev.latchway.other"
+        conflict_errors = device_evidence.ios_component_observed_pin_errors(
+            conflicting["observed_pins"], component_observation()["runtime"]
+        )
+        self.assertTrue(conflict_errors)
+        self.assertFalse(device_evidence.build_evidence(
+            conflicting, current_profile, self.schema, component_observation()
+        )["release_eligible"])
+
+    def test_tenant_and_identity_provider_pin_mismatches_fail_closed(self) -> None:
+        replacements = {
+            "latchway_application_id": "app_11111111111111111111111111",
+            "latchway_environment": "staging",
+            "identity_provider": "oidc",
+        }
+        for pin, replacement in replacements.items():
+            with self.subTest(pin=pin):
+                current = observation()
+                current["observed_pins"][pin] = replacement
+                result = device_evidence.build_evidence(
+                    current, profile(), self.schema, component_observation()
+                )
+                self.assertFalse(result["release_eligible"])
 
     def test_negative_cases_require_exact_protocol_results(self) -> None:
         current = observation()
@@ -345,6 +443,9 @@ class DeviceEvidenceTest(unittest.TestCase):
                 "bundle_identifier", "dev.latchway.conformance.other"
             ),
             lambda value: value["runtime"]["identities"][3].__setitem__(
+                "attestation_mode", "root_app_attest"
+            ),
+            lambda value: value["runtime"]["identities"][3].__setitem__(
                 "dpop_key_id_sha256",
                 value["runtime"]["identities"][0]["dpop_key_id_sha256"],
             ),
@@ -362,11 +463,11 @@ class DeviceEvidenceTest(unittest.TestCase):
                 )
                 self.assertFalse(result["release_eligible"])
 
-    def test_direct_step_up_and_sibling_denial_fail_closed(self) -> None:
+    def test_delegated_execution_and_sibling_denial_fail_closed(self) -> None:
         mutations = (
-            ("direct_step_up", "trust_source_after", "delegated_from_attested_root"),
-            ("direct_step_up", "binding_version", 1),
-            ("direct_step_up", "session_before_sha256", "7" * 64),
+            ("delegated_execution", "trust_source", "delegated_identity_only"),
+            ("delegated_execution", "http_status", 401),
+            ("delegated_execution", "session_id_sha256", "6" * 64),
             ("sibling_denial", "credential_session_id_sha256", "7" * 64),
             ("sibling_denial", "error_code", "dpop_invalid"),
         )
@@ -381,7 +482,7 @@ class DeviceEvidenceTest(unittest.TestCase):
 
     def test_no_host_background_termination_and_no_presence_claims_fail_closed(self) -> None:
         invalid = {
-            "host_process_running_during_step_up": True,
+            "host_process_running_during_action_request": True,
             "background_execution_observed": False,
             "host_termination_observed": False,
             "user_presence_prompt_observed": True,

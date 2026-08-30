@@ -82,7 +82,8 @@ ANDROID_CLIENT_FIELDS = {
 
 IOS_PLATFORMS = {"ios_app_attest", "react_native_ios_app_attest"}
 ANDROID_PLATFORMS = {"android_play_integrity", "react_native_android_play_integrity"}
-TRUST_LEVELS = {"device_verified", "strong_device_verified"}
+IOS_TRUST_LEVELS = {"app_verified"}
+ANDROID_TRUST_LEVELS = {"device_verified", "strong_device_verified"}
 PLAY_TRACKS = {"internal", "closed", "open", "production"}
 
 COMMIT = re.compile(r"[0-9a-f]{40}")
@@ -272,6 +273,7 @@ def validate_client(value: Any) -> dict[str, Any]:
         raise Rejected("client_invalid")
     platform = value.get("platform")
     if platform in IOS_PLATFORMS:
+        trust_levels = IOS_TRUST_LEVELS
         if set(value) != IOS_CLIENT_FIELDS:
             raise Rejected("client_fields_invalid")
         if value.get("provider") != "app_attest":
@@ -284,6 +286,7 @@ def validate_client(value: Any) -> dict[str, Any]:
         if value.get("require_play_recognized") is not False or value.get("require_licensed") is not False:
             raise Rejected("client_play_policy_invalid")
     elif platform in ANDROID_PLATFORMS:
+        trust_levels = ANDROID_TRUST_LEVELS
         if set(value) != ANDROID_CLIENT_FIELDS:
             raise Rejected("client_fields_invalid")
         if value.get("provider") != "play_integrity":
@@ -308,7 +311,7 @@ def validate_client(value: Any) -> dict[str, Any]:
     signing_certificate = value.get("signing_certificate_sha256")
     if not isinstance(signing_certificate, str) or SHA256.fullmatch(signing_certificate) is None:
         raise Rejected("client_signing_certificate_invalid")
-    if value.get("minimum_trust_level") not in TRUST_LEVELS:
+    if value.get("minimum_trust_level") not in trust_levels:
         raise Rejected("client_trust_policy_invalid")
     if value.get("require_request_hash") is not True:
         raise Rejected("client_request_hash_policy_invalid")

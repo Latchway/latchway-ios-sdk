@@ -106,16 +106,22 @@ jobs:
         env:
           COLLECTOR_TRUST_ROOT_PEM: ${{ vars.LATCHWAY_COLLECTOR_TRUST_ROOT_PEM }}
           COLLECTOR_TRUST_ROOT_SHA256: ${{ vars.LATCHWAY_COLLECTOR_TRUST_ROOT_SHA256 }}
-          DEVICE_GRANT_SHA256: ${{ vars.LATCHWAY_DEVICE_GRANT_SHA256 }}
+          REGISTRATION_GRANT_SHA256: ${{ vars.LATCHWAY_REGISTRATION_DEVICE_GRANT_SHA256 }}
+          ASSERTION_GRANT_SHA256: ${{ vars.LATCHWAY_ASSERTION_DEVICE_GRANT_SHA256 }}
           EXPECTED_ARTIFACT_SHA256: ${{ vars.LATCHWAY_IOS_APP_BINARY_SHA256 }}
+          EXPECTED_BUNDLE_TREE_SHA256: ${{ vars.LATCHWAY_IOS_APP_BUNDLE_TREE_SHA256 }}
           EXPECTED_WIDGET_SHA256: ${{ vars.LATCHWAY_IOS_WIDGET_BINARY_SHA256 }}
           EXPECTED_SHARE_SHA256: ${{ vars.LATCHWAY_IOS_SHARE_BINARY_SHA256 }}
           EXPECTED_ACTION_SHA256: ${{ vars.LATCHWAY_IOS_ACTION_BINARY_SHA256 }}
+          EXPECTED_APPLICATION_ID: ${{ vars.LATCHWAY_APPLICATION_ID }}
+          EXPECTED_ENVIRONMENT: ${{ vars.LATCHWAY_ENVIRONMENT }}
+          EXPECTED_IDENTITY_PROVIDER: ${{ vars.LATCHWAY_IDENTITY_PROVIDER }}
           SOURCE_COMMIT: ${{ inputs.source_commit }}
         run: |
           set -Eeuo pipefail
           test "$GITHUB_REF" = refs/heads/main
           [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$EXPECTED_BUNDLE_TREE_SHA256" =~ ^[0-9a-f]{64}$ ]]
           test "$RUNNER_NAME" = "latchway-ios-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           test -z "$(find "$GITHUB_WORKSPACE" -mindepth 1 -print -quit)"
           if env | grep -Eq '^(ACTIONS_ID_TOKEN_REQUEST_URL|ACTIONS_ID_TOKEN_REQUEST_TOKEN|GITHUB_TOKEN|GH_TOKEN|NPM_TOKEN|NODE_AUTH_TOKEN|DOCKER_AUTH_CONFIG|AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|GOOGLE_APPLICATION_CREDENTIALS|AZURE_CLIENT_SECRET|CLOUDFLARE_API_TOKEN)='; then
@@ -158,11 +164,16 @@ jobs:
             --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
             --arg job "$GITHUB_JOB" \
             --arg runner "$RUNNER_NAME" \
-            --arg grant "$DEVICE_GRANT_SHA256" \
+            --arg registration_grant "$REGISTRATION_GRANT_SHA256" \
+            --arg assertion_grant "$ASSERTION_GRANT_SHA256" \
             --arg artifact "$EXPECTED_ARTIFACT_SHA256" \
+            --arg bundle_tree "$EXPECTED_BUNDLE_TREE_SHA256" \
             --arg widget "$EXPECTED_WIDGET_SHA256" \
             --arg share "$EXPECTED_SHARE_SHA256" \
             --arg action "$EXPECTED_ACTION_SHA256" \
+            --arg application "$EXPECTED_APPLICATION_ID" \
+            --arg environment "$EXPECTED_ENVIRONMENT" \
+            --arg identity_provider "$EXPECTED_IDENTITY_PROVIDER" \
             --argjson now "$now" '
               .schema_version == "latchway.physical-collector-lease.v1" and
               .repository == $repository and .source_commit == $commit and
@@ -175,17 +186,42 @@ jobs:
               (.runner.boot_id_sha256 | test("^[0-9a-f]{64}$")) and
               .credentials == {long_lived:false,organization:false,administration:false,registry:false,oidc:false} and
               .supervisor == {private_key_isolated:true,caller_supplied_claims_accepted:false,independent_device_verification:true,independent_provider_verification:true,independent_component_verification:true,gateway_run_receipt_verification:true,one_use_invocation:true,out_of_band_watchdog:true,destroy_on_disconnect:true} and
-              .grant.audience == "latchway-physical-evidence/ios-app-attest" and
-              .grant.source_commit == $commit and .grant.run_id == $run_id and
-              .grant.run_attempt == $run_attempt and .grant.sha256 == $grant and
-              .grant.single_use == true and (.grant.jti_sha256 | test("^[0-9a-f]{64}$")) and
-              (.grant.issued_at_unix | type == "number") and
-              (.grant.expires_at_unix | type == "number") and
-              .grant.issued_at_unix >= .issued_at_unix and .grant.issued_at_unix <= $now and
-              .grant.expires_at_unix >= $now and .grant.expires_at_unix <= .expires_at_unix and
-              .grant.expires_at_unix > .grant.issued_at_unix and
-              (.grant.expires_at_unix - .grant.issued_at_unix) <= 300 and
-              .candidate.artifacts == {ios_app_binary_sha256:$artifact,ios_widget_binary_sha256:$widget,ios_share_binary_sha256:$share,ios_action_binary_sha256:$action} and
+              (.grants | keys) == ["assertion","registration"] and
+              (.grants.registration | keys) == ["application_id","audience","environment","expires_at_unix","identity_provider","issued_at_unix","jti_sha256","run_attempt","run_id","sha256","single_use","source_commit"] and
+              (.grants.assertion | keys) == ["application_id","audience","environment","expires_at_unix","identity_provider","issued_at_unix","jti_sha256","run_attempt","run_id","sha256","single_use","source_commit"] and
+              .grants.registration.audience == "latchway-physical-evidence/ios-app-attest/registration" and
+              .grants.assertion.audience == "latchway-physical-evidence/ios-app-attest/assertion" and
+              .grants.registration.source_commit == $commit and .grants.assertion.source_commit == $commit and
+              .grants.registration.application_id == $application and .grants.assertion.application_id == $application and
+              .grants.registration.environment == $environment and .grants.assertion.environment == $environment and
+              .grants.registration.identity_provider == $identity_provider and .grants.assertion.identity_provider == $identity_provider and
+              .grants.registration.run_id == $run_id and .grants.assertion.run_id == $run_id and
+              .grants.registration.run_attempt == $run_attempt and .grants.assertion.run_attempt == $run_attempt and
+              .grants.registration.sha256 == $registration_grant and .grants.assertion.sha256 == $assertion_grant and
+              $registration_grant != $assertion_grant and
+              .grants.registration.single_use == true and .grants.assertion.single_use == true and
+              (.grants.registration.jti_sha256 | test("^[0-9a-f]{64}$")) and
+              (.grants.assertion.jti_sha256 | test("^[0-9a-f]{64}$")) and
+              .grants.registration.jti_sha256 != .grants.assertion.jti_sha256 and
+              (.grants.registration.issued_at_unix | type == "number") and
+              (.grants.registration.expires_at_unix | type == "number") and
+              .grants.registration.issued_at_unix >= .issued_at_unix and
+              .grants.registration.issued_at_unix <= $now and
+              .grants.registration.expires_at_unix >= $now and
+              .grants.registration.expires_at_unix > .grants.registration.issued_at_unix and
+              (.grants.registration.expires_at_unix - .grants.registration.issued_at_unix) <= 300 and
+              (.grants.assertion.issued_at_unix | type == "number") and
+              (.grants.assertion.expires_at_unix | type == "number") and
+              .grants.assertion.issued_at_unix >= .issued_at_unix and
+              .grants.assertion.issued_at_unix <= $now and
+              .grants.assertion.expires_at_unix >= $now and
+              .grants.assertion.expires_at_unix > .grants.assertion.issued_at_unix and
+              (.grants.assertion.expires_at_unix - .grants.assertion.issued_at_unix) <= 300 and
+              .grants.registration.expires_at_unix <= .expires_at_unix and
+              .grants.assertion.expires_at_unix <= .expires_at_unix and
+              .candidate.artifacts == {ios_app_binary_sha256:$artifact,ios_app_bundle_tree_sha256:$bundle_tree,ios_widget_binary_sha256:$widget,ios_share_binary_sha256:$share,ios_action_binary_sha256:$action} and
+              .candidate.configuration == {application_id:$application,environment:$environment,identity_provider:$identity_provider} and
+              (.candidate | keys) == ["artifacts","configuration"] and
               (.issued_at_unix | type == "number") and (.expires_at_unix | type == "number") and
               .issued_at_unix <= $now and .expires_at_unix >= $now and
               (.expires_at_unix - .issued_at_unix) <= 3600
@@ -254,16 +290,29 @@ jobs:
           test "$(git rev-parse 'HEAD^{tree}')" = "$(jq -r '.source.tree' "$RUNNER_TEMP/latchway-app-attest-source/source-authorization.json")"
           test "$(xcodebuild -version | tr '\n' ' ' | sed 's/[[:space:]]*$//')" = "$EXPECTED_XCODE_IDENTITY"
           test -z "$(git status --porcelain=v1 --untracked-files=all)"
-      - name: Verify the single-use run-bound device grant
+      - name: Verify the distinct single-use run-bound device grants
         shell: bash
         env:
-          DEVICE_GRANT: ${{ secrets.LATCHWAY_ONE_TIME_DEVICE_GRANT }}
-          DEVICE_GRANT_SHA256: ${{ vars.LATCHWAY_DEVICE_GRANT_SHA256 }}
+          REGISTRATION_GRANT: ${{ secrets.LATCHWAY_REGISTRATION_DEVICE_GRANT }}
+          REGISTRATION_GRANT_SHA256: ${{ vars.LATCHWAY_REGISTRATION_DEVICE_GRANT_SHA256 }}
+          ASSERTION_GRANT: ${{ secrets.LATCHWAY_ASSERTION_DEVICE_GRANT }}
+          ASSERTION_GRANT_SHA256: ${{ vars.LATCHWAY_ASSERTION_DEVICE_GRANT_SHA256 }}
         run: |
           set -Eeuo pipefail
-          test -n "$DEVICE_GRANT"
-          [[ "$DEVICE_GRANT_SHA256" =~ ^[0-9a-f]{64}$ ]]
-          test "$(printf '%s' "$DEVICE_GRANT" | shasum -a 256 | awk '{print $1}')" = "$DEVICE_GRANT_SHA256"
+          registration_grant="$REGISTRATION_GRANT"
+          assertion_grant="$ASSERTION_GRANT"
+          unset REGISTRATION_GRANT ASSERTION_GRANT
+          export -n registration_grant assertion_grant
+          test -n "$registration_grant" && test -n "$assertion_grant"
+          test "$registration_grant" != "$assertion_grant"
+          [[ "$REGISTRATION_GRANT_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$ASSERTION_GRANT_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          test "$REGISTRATION_GRANT_SHA256" != "$ASSERTION_GRANT_SHA256"
+          test "$(printf '%s' "$registration_grant" | shasum -a 256 | awk '{print $1}')" = "$REGISTRATION_GRANT_SHA256"
+          test "$(printf '%s' "$assertion_grant" | shasum -a 256 | awk '{print $1}')" = "$ASSERTION_GRANT_SHA256"
+          registration_grant=""
+          assertion_grant=""
+          unset registration_grant assertion_grant
       - name: Collect and validate production physical-device evidence
         id: collect
         env:
@@ -282,8 +331,14 @@ jobs:
           LATCHWAY_APP_VERSION: ${{ vars.LATCHWAY_IOS_APP_VERSION }}
           LATCHWAY_BUILD_NUMBER: ${{ vars.LATCHWAY_IOS_BUILD_NUMBER }}
           LATCHWAY_TEAM_ID: ${{ vars.LATCHWAY_IOS_TEAM_ID }}
+          LATCHWAY_APP_ID_PREFIX: ${{ vars.LATCHWAY_IOS_APP_ID_PREFIX }}
+          LATCHWAY_IOS_HOST_PROVISIONING_PROFILE_UUID: ${{ vars.LATCHWAY_IOS_HOST_PROVISIONING_PROFILE_UUID }}
+          LATCHWAY_IOS_WIDGET_PROVISIONING_PROFILE_UUID: ${{ vars.LATCHWAY_IOS_WIDGET_PROVISIONING_PROFILE_UUID }}
+          LATCHWAY_IOS_SHARE_PROVISIONING_PROFILE_UUID: ${{ vars.LATCHWAY_IOS_SHARE_PROVISIONING_PROFILE_UUID }}
+          LATCHWAY_IOS_ACTION_PROVISIONING_PROFILE_UUID: ${{ vars.LATCHWAY_IOS_ACTION_PROVISIONING_PROFILE_UUID }}
           LATCHWAY_SIGNING_CERTIFICATE_SHA256: ${{ vars.LATCHWAY_IOS_SIGNING_CERTIFICATE_SHA256 }}
           LATCHWAY_APP_BINARY_SHA256: ${{ vars.LATCHWAY_IOS_APP_BINARY_SHA256 }}
+          LATCHWAY_IOS_APP_BUNDLE_TREE_SHA256: ${{ vars.LATCHWAY_IOS_APP_BUNDLE_TREE_SHA256 }}
           LATCHWAY_IOS_WIDGET_BINARY_SHA256: ${{ vars.LATCHWAY_IOS_WIDGET_BINARY_SHA256 }}
           LATCHWAY_IOS_SHARE_BINARY_SHA256: ${{ vars.LATCHWAY_IOS_SHARE_BINARY_SHA256 }}
           LATCHWAY_IOS_ACTION_BINARY_SHA256: ${{ vars.LATCHWAY_IOS_ACTION_BINARY_SHA256 }}
@@ -305,7 +360,12 @@ jobs:
           LATCHWAY_APPLICATION_ID: ${{ vars.LATCHWAY_APPLICATION_ID }}
           LATCHWAY_ENVIRONMENT: ${{ vars.LATCHWAY_ENVIRONMENT }}
           LATCHWAY_IDENTITY_PROVIDER: ${{ vars.LATCHWAY_IDENTITY_PROVIDER }}
-          LATCHWAY_IDENTITY_TOKEN: ${{ secrets.LATCHWAY_ONE_TIME_DEVICE_GRANT }}
+          LATCHWAY_REGISTRATION_DEVICE_GRANT_SHA256: ${{ vars.LATCHWAY_REGISTRATION_DEVICE_GRANT_SHA256 }}
+          LATCHWAY_ASSERTION_DEVICE_GRANT_SHA256: ${{ vars.LATCHWAY_ASSERTION_DEVICE_GRANT_SHA256 }}
+          LATCHWAY_COLLECTOR_TRUST_ROOT_PATH: ${{ runner.temp }}/latchway-collector-trust-root.pem
+          LATCHWAY_COLLECTOR_TRUST_ROOT_SHA256: ${{ vars.LATCHWAY_COLLECTOR_TRUST_ROOT_SHA256 }}
+          LATCHWAY_REGISTRATION_IDENTITY_TOKEN: ${{ secrets.LATCHWAY_REGISTRATION_DEVICE_GRANT }}
+          LATCHWAY_ASSERTION_IDENTITY_TOKEN: ${{ secrets.LATCHWAY_ASSERTION_DEVICE_GRANT }}
           LATCHWAY_FEATURE: ${{ vars.LATCHWAY_FEATURE }}
           LATCHWAY_ERROR_MAPPING_FEATURE: ${{ vars.LATCHWAY_ERROR_MAPPING_FEATURE }}
           LATCHWAY_MODEL: ${{ vars.LATCHWAY_MODEL }}
@@ -477,16 +537,22 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           COLLECTOR_TRUST_ROOT_PEM: ${{ vars.LATCHWAY_COLLECTOR_TRUST_ROOT_PEM }}
           COLLECTOR_TRUST_ROOT_SHA256: ${{ vars.LATCHWAY_COLLECTOR_TRUST_ROOT_SHA256 }}
-          DEVICE_GRANT_SHA256: ${{ vars.LATCHWAY_DEVICE_GRANT_SHA256 }}
+          REGISTRATION_GRANT_SHA256: ${{ vars.LATCHWAY_REGISTRATION_DEVICE_GRANT_SHA256 }}
+          ASSERTION_GRANT_SHA256: ${{ vars.LATCHWAY_ASSERTION_DEVICE_GRANT_SHA256 }}
           EXPECTED_ARTIFACT_SHA256: ${{ vars.LATCHWAY_IOS_APP_BINARY_SHA256 }}
+          EXPECTED_BUNDLE_TREE_SHA256: ${{ vars.LATCHWAY_IOS_APP_BUNDLE_TREE_SHA256 }}
           EXPECTED_WIDGET_SHA256: ${{ vars.LATCHWAY_IOS_WIDGET_BINARY_SHA256 }}
           EXPECTED_SHARE_SHA256: ${{ vars.LATCHWAY_IOS_SHARE_BINARY_SHA256 }}
           EXPECTED_ACTION_SHA256: ${{ vars.LATCHWAY_IOS_ACTION_BINARY_SHA256 }}
+          EXPECTED_APPLICATION_ID: ${{ vars.LATCHWAY_APPLICATION_ID }}
+          EXPECTED_ENVIRONMENT: ${{ vars.LATCHWAY_ENVIRONMENT }}
+          EXPECTED_IDENTITY_PROVIDER: ${{ vars.LATCHWAY_IDENTITY_PROVIDER }}
           SOURCE_COMMIT: ${{ inputs.source_commit }}
         run: |
           set -Eeuo pipefail
           root="$RUNNER_TEMP/latchway-app-attest-isolation"
           evidence="$RUNNER_TEMP/latchway-app-attest-evidence"
+          [[ "$EXPECTED_BUNDLE_TREE_SHA256" =~ ^[0-9a-f]{64}$ ]]
           test -d "$root" && test ! -L "$root"
           test -z "$(find "$root" -mindepth 1 ! -type f -print -quit)"
           expected="$RUNNER_TEMP/app-attest-isolation-expected"
@@ -543,11 +609,16 @@ jobs:
             --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
             --arg runner "$runner" \
             --arg auth "$auth_sha" \
-            --arg grant "$DEVICE_GRANT_SHA256" \
+            --arg registration_grant "$REGISTRATION_GRANT_SHA256" \
+            --arg assertion_grant "$ASSERTION_GRANT_SHA256" \
             --arg artifact "$EXPECTED_ARTIFACT_SHA256" \
+            --arg bundle_tree "$EXPECTED_BUNDLE_TREE_SHA256" \
             --arg widget "$EXPECTED_WIDGET_SHA256" \
             --arg share "$EXPECTED_SHARE_SHA256" \
-            --arg action "$EXPECTED_ACTION_SHA256" '
+            --arg action "$EXPECTED_ACTION_SHA256" \
+            --arg application "$EXPECTED_APPLICATION_ID" \
+            --arg environment "$EXPECTED_ENVIRONMENT" \
+            --arg identity_provider "$EXPECTED_IDENTITY_PROVIDER" '
               .schema_version == "latchway.physical-collector-lease.v1" and
               .repository == $repository and .source_commit == $commit and
               .source_authorization_sha256 == $auth and
@@ -559,14 +630,28 @@ jobs:
               (.runner.boot_id_sha256 | test("^[0-9a-f]{64}$")) and
               .credentials == {long_lived:false,organization:false,administration:false,registry:false,oidc:false} and
               .supervisor == {private_key_isolated:true,caller_supplied_claims_accepted:false,independent_device_verification:true,independent_provider_verification:true,independent_component_verification:true,gateway_run_receipt_verification:true,one_use_invocation:true,out_of_band_watchdog:true,destroy_on_disconnect:true} and
-              .grant == {audience:"latchway-physical-evidence/ios-app-attest",source_commit:$commit,run_id:$run_id,run_attempt:$run_attempt,sha256:$grant,single_use:true,jti_sha256:.grant.jti_sha256,issued_at_unix:.grant.issued_at_unix,expires_at_unix:.grant.expires_at_unix} and
-              (.grant.jti_sha256 | test("^[0-9a-f]{64}$")) and
-              (.grant.issued_at_unix | type == "number") and (.grant.expires_at_unix | type == "number") and
-              .grant.issued_at_unix >= .issued_at_unix and
-              .grant.expires_at_unix > .grant.issued_at_unix and
-              (.grant.expires_at_unix - .grant.issued_at_unix) <= 300 and
-              .grant.expires_at_unix <= .expires_at_unix and
-              .candidate.artifacts == {ios_app_binary_sha256:$artifact,ios_widget_binary_sha256:$widget,ios_share_binary_sha256:$share,ios_action_binary_sha256:$action} and
+              (.grants | keys) == ["assertion","registration"] and
+              .grants.registration == {audience:"latchway-physical-evidence/ios-app-attest/registration",application_id:$application,environment:$environment,identity_provider:$identity_provider,source_commit:$commit,run_id:$run_id,run_attempt:$run_attempt,sha256:$registration_grant,single_use:true,jti_sha256:.grants.registration.jti_sha256,issued_at_unix:.grants.registration.issued_at_unix,expires_at_unix:.grants.registration.expires_at_unix} and
+              .grants.assertion == {audience:"latchway-physical-evidence/ios-app-attest/assertion",application_id:$application,environment:$environment,identity_provider:$identity_provider,source_commit:$commit,run_id:$run_id,run_attempt:$run_attempt,sha256:$assertion_grant,single_use:true,jti_sha256:.grants.assertion.jti_sha256,issued_at_unix:.grants.assertion.issued_at_unix,expires_at_unix:.grants.assertion.expires_at_unix} and
+              $registration_grant != $assertion_grant and
+              (.grants.registration.jti_sha256 | test("^[0-9a-f]{64}$")) and
+              (.grants.assertion.jti_sha256 | test("^[0-9a-f]{64}$")) and
+              .grants.registration.jti_sha256 != .grants.assertion.jti_sha256 and
+              (.grants.registration.issued_at_unix | type == "number") and
+              (.grants.registration.expires_at_unix | type == "number") and
+              .grants.registration.issued_at_unix >= .issued_at_unix and
+              .grants.registration.expires_at_unix > .grants.registration.issued_at_unix and
+              (.grants.registration.expires_at_unix - .grants.registration.issued_at_unix) <= 300 and
+              .grants.registration.expires_at_unix <= .expires_at_unix and
+              (.grants.assertion.issued_at_unix | type == "number") and
+              (.grants.assertion.expires_at_unix | type == "number") and
+              .grants.assertion.issued_at_unix >= .issued_at_unix and
+              .grants.assertion.expires_at_unix > .grants.assertion.issued_at_unix and
+              (.grants.assertion.expires_at_unix - .grants.assertion.issued_at_unix) <= 300 and
+              .grants.assertion.expires_at_unix <= .expires_at_unix and
+              .candidate.artifacts == {ios_app_binary_sha256:$artifact,ios_app_bundle_tree_sha256:$bundle_tree,ios_widget_binary_sha256:$widget,ios_share_binary_sha256:$share,ios_action_binary_sha256:$action} and
+              .candidate.configuration == {application_id:$application,environment:$environment,identity_provider:$identity_provider} and
+              (.candidate | keys) == ["artifacts","configuration"] and
               (.expires_at_unix - .issued_at_unix) <= 3600
             ' "$root/collector-lease.json" >/dev/null
           jq --exit-status \
@@ -623,20 +708,25 @@ jobs:
             --arg repository "$GITHUB_REPOSITORY" --arg commit "$SOURCE_COMMIT" \
             --arg run_id "$GITHUB_RUN_ID" --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
             --arg auth "$auth_sha" --arg lease "$lease_sha" --arg teardown "$(sha256sum "$root/collector-teardown.json" | awk '{print $1}')" \
-            --arg evidence "$evidence_sha" \
-            '{schema_version:"latchway.physical-collector-isolation-validation.v1",valid:true,repository:$repository,source_commit:$commit,workflow:{run_id:$run_id,run_attempt:$run_attempt,audience:"ios-app-attest"},source_authorization_sha256:$auth,lease_sha256:$lease,teardown_sha256:$teardown,evidence_manifest_sha256:$evidence}' \
+            --arg evidence "$evidence_sha" --arg bundle_tree "$EXPECTED_BUNDLE_TREE_SHA256" \
+            '{schema_version:"latchway.physical-collector-isolation-validation.v1",valid:true,repository:$repository,source_commit:$commit,workflow:{run_id:$run_id,run_attempt:$run_attempt,audience:"ios-app-attest"},source_authorization_sha256:$auth,lease_sha256:$lease,teardown_sha256:$teardown,evidence_manifest_sha256:$evidence,application_bundle_tree_sha256:$bundle_tree}' \
             > "$root/collector-isolation-validation.json"
       - name: Validate the fixed receipt, hashes, and coordinates without candidate code
         shell: bash
         env:
           SOURCE_COMMIT: ${{ inputs.source_commit }}
           EXPECTED_RUN_ID: app-attest-${{ github.run_id }}-${{ github.run_attempt }}
+          EXPECTED_BUNDLE_TREE_SHA256: ${{ vars.LATCHWAY_IOS_APP_BUNDLE_TREE_SHA256 }}
+          EXPECTED_APPLICATION_ID: ${{ vars.LATCHWAY_APPLICATION_ID }}
+          EXPECTED_ENVIRONMENT: ${{ vars.LATCHWAY_ENVIRONMENT }}
+          EXPECTED_IDENTITY_PROVIDER: ${{ vars.LATCHWAY_IDENTITY_PROVIDER }}
         run: |
           set -Eeuo pipefail
           root="$RUNNER_TEMP/latchway-app-attest-evidence"
           test "$GITHUB_REF" = refs/heads/main
           test "$GITHUB_SHA" = "$SOURCE_COMMIT"
           [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$EXPECTED_BUNDLE_TREE_SHA256" =~ ^[0-9a-f]{64}$ ]]
           test -d "$root" && test ! -L "$root"
           test -z "$(find "$root" -mindepth 1 ! -type f -print -quit)"
           expected="$RUNNER_TEMP/app-attest-expected-files"
@@ -685,13 +775,21 @@ jobs:
           for document in "$root"/*.json; do jq --exit-status . "$document" >/dev/null; done
           evidence_sha=$(sha256sum "$root/app-attest-evidence.json" | awk '{print $1}')
           component_sha=$(sha256sum "$root/component-observation.json" | awk '{print $1}')
-          jq --exit-status --arg commit "$SOURCE_COMMIT" '
+          jq --exit-status --arg commit "$SOURCE_COMMIT" --arg bundle_tree "$EXPECTED_BUNDLE_TREE_SHA256" \
+            --arg application "$EXPECTED_APPLICATION_ID" --arg environment "$EXPECTED_ENVIRONMENT" \
+            --arg identity_provider "$EXPECTED_IDENTITY_PROVIDER" '
             .schema_version == "latchway.physical-device-profile.v2" and
             .platform == "ios_app_attest" and
             .repository == "Latchway/latchway-ios-sdk" and
-            .source.commit == $commit and .source.worktree_clean == true
+            .source.commit == $commit and .source.worktree_clean == true and
+            .application_bundle_tree_sha256 == $bundle_tree and
+            .expected_pins.latchway_application_id == $application and
+            .expected_pins.latchway_environment == $environment and
+            .expected_pins.identity_provider == $identity_provider
           ' "$root/app-attest-profile.json" >/dev/null
-          jq --exit-status --arg commit "$SOURCE_COMMIT" --arg run "$EXPECTED_RUN_ID" --arg component "$component_sha" '
+          jq --exit-status --arg commit "$SOURCE_COMMIT" --arg run "$EXPECTED_RUN_ID" --arg component "$component_sha" --arg bundle_tree "$EXPECTED_BUNDLE_TREE_SHA256" \
+            --arg application "$EXPECTED_APPLICATION_ID" --arg environment "$EXPECTED_ENVIRONMENT" \
+            --arg identity_provider "$EXPECTED_IDENTITY_PROVIDER" '
             .schema_version == "latchway.physical-device-evidence.v2" and
             .release_eligible == true and .platform == "ios_app_attest" and
             .run.id == $run and .run.mode == "release" and
@@ -701,15 +799,21 @@ jobs:
             .device.emulator == false and .device.testing == false and
             .device.debugger_attached == false and
             .provider.name == "app_attest" and .provider.environment == "production" and
+            .provider.trust_level == "app_verified" and .provider.request_hash_bound == true and
             (.component_runtime.identities | map(.role) | sort) == ["action","host","share","widget"] and
-            .component_runtime.direct_step_up.role == "action" and
-            .component_runtime.direct_step_up.trust_source_after == "delegated_direct_attested" and
-            .component_runtime.direct_step_up.binding_version == 2 and
-            .component_runtime.direct_step_up.request_hash_bound == true and
+            ([.component_runtime.identities[] | select(.role == "host" and .attestation_mode == "root_app_attest")] | length) == 1 and
+            ([.component_runtime.identities[] | select(.role != "host" and .attestation_mode == "delegated_only")] | length) == 3 and
+            .component_runtime.delegated_execution.role == "action" and
+            .component_runtime.delegated_execution.trust_source == "delegated_from_attested_root" and
+            (.component_runtime.delegated_execution.http_status >= 200 and .component_runtime.delegated_execution.http_status <= 299) and
             .component_runtime.sibling_denial.http_status == 401 and
             .component_runtime.sibling_denial.error_code == "component_key_invalid" and
-            .component_runtime.lifecycle == {host_process_running_during_step_up:false,background_execution_observed:true,host_termination_observed:true,user_presence_prompt_observed:false} and
+            .component_runtime.lifecycle == {host_process_running_during_action_request:false,background_execution_observed:true,host_termination_observed:true,user_presence_prompt_observed:false} and
             .artifacts.component_observation_sha256 == $component and
+            .artifacts.application_bundle_tree_sha256 == $bundle_tree and
+            ([.pins[] | select(.name == "latchway_application_id" and .expected == $application and .observed == $application and .matched == true)] | length) == 1 and
+            ([.pins[] | select(.name == "latchway_environment" and .expected == $environment and .observed == $environment and .matched == true)] | length) == 1 and
+            ([.pins[] | select(.name == "identity_provider" and .expected == $identity_provider and .observed == $identity_provider and .matched == true)] | length) == 1 and
             (.tests | type == "array" and length > 0 and all(.[]; .status == "passed")) and
             (.redaction | type == "object" and all(.[]; . == false))
           ' "$root/app-attest-evidence.json" >/dev/null

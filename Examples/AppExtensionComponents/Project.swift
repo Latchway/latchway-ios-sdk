@@ -14,6 +14,7 @@ let applicationID = Environment.latchwayApplicationID.getString(
     default: "app_00000000000000000000000000"
 )
 let environment = Environment.latchwayEnvironment.getString(default: "development")
+let identityProvider = Environment.latchwayIdentityProvider.getString(default: "firebase")
 let accessGroup = "$(AppIdentifierPrefix)\(componentGroupSuffix)"
 
 var settings: SettingsDictionary = [
@@ -27,9 +28,13 @@ if !developmentTeam.isEmpty {
 
 let commonInfo: [String: Plist.Value] = [
     "LatchwayApplicationID": .string(applicationID),
-    "LatchwayComponentKeychainAccessGroup": .string(accessGroup),
     "LatchwayEnvironment": .string(environment),
+    "LatchwayIdentityProvider": .string(identityProvider),
     "LatchwayGatewayURL": .string(gatewayURL),
+    "LatchwayHostComponentDefinitionID": "host_app",
+    "LatchwayWidgetComponentDefinitionID": "home_widget",
+    "LatchwayWidgetFeature": "weekly-summary",
+    "LatchwayWidgetKeychainAccessGroup": .string(accessGroup),
 ]
 
 let project = Project(

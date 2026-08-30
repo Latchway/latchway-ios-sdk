@@ -1,3 +1,4 @@
+import Foundation
 import Latchway
 import LatchwayAppAttest
 import SwiftUI
@@ -97,5 +98,22 @@ private final class ComponentHostModel: ObservableObject {
             return component.recovery.action
         }
         return (error as? LocalizedError)?.errorDescription ?? "Latchway setup failed."
+    }
+}
+
+private struct LaunchEnvironmentIdentityProvider: LatchwayIdentityTokenProvider {
+    func identityToken() async throws -> String {
+        guard let token = ProcessInfo.processInfo.environment["LATCHWAY_IDENTITY_TOKEN"],
+              (16 ... 65_536).contains(token.utf8.count)
+        else { throw HostIdentityError.missingIdentityToken }
+        return token
+    }
+}
+
+private enum HostIdentityError: Error, LocalizedError {
+    case missingIdentityToken
+
+    var errorDescription: String? {
+        "Provide LATCHWAY_IDENTITY_TOKEN in the host app's launch environment."
     }
 }

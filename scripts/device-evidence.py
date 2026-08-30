@@ -35,7 +35,7 @@ IOS_COMPONENT_ROLE_POLICY = {
 
 IOS_COMPONENT_TESTS = {
     "component_candidate_identities",
-    "action_direct_attestation_step_up",
+    "action_delegated_request",
     "component_key_isolation",
     "component_session_isolation",
     "component_sibling_denied",
@@ -49,10 +49,14 @@ PLATFORM_POLICY = {
     "ios_app_attest": {
         "repository": "Latchway/latchway-ios-sdk",
         "provider": "app_attest",
+        "trust": {"app_verified"},
         "security": {"secure_enclave"},
         "distribution": {"ad_hoc", "testflight", "app_store"},
         "pins": {
             "application_identifier",
+            "latchway_application_id",
+            "latchway_environment",
+            "identity_provider",
             "app_version",
             "build_number",
             "team_id",
@@ -104,6 +108,7 @@ PLATFORM_POLICY = {
     "android_play_integrity": {
         "repository": "Latchway/latchway-android",
         "provider": "play_integrity",
+        "trust": {"device_verified", "strong_device_verified"},
         "security": {"strongbox", "tee", "unknown_secure_hardware"},
         "distribution": {"play_internal", "play_closed", "play_open", "play_production"},
         "pins": {
@@ -148,6 +153,7 @@ PLATFORM_POLICY = {
     "react_native_ios_app_attest": {
         "repository": "Latchway/latchway-react-native-sdk",
         "provider": "app_attest",
+        "trust": {"app_verified"},
         "security": {"secure_enclave"},
         "distribution": {"ad_hoc", "testflight", "app_store"},
         "pins": {
@@ -193,6 +199,7 @@ PLATFORM_POLICY = {
     "react_native_android_play_integrity": {
         "repository": "Latchway/latchway-react-native-sdk",
         "provider": "play_integrity",
+        "trust": {"device_verified", "strong_device_verified"},
         "security": {"strongbox", "tee", "unknown_secure_hardware"},
         "distribution": {"play_internal", "play_closed", "play_open", "play_production"},
         "pins": {
@@ -376,10 +383,13 @@ def validate_profile(profile: Any) -> list[str]:
     errors: list[str] = []
     if not isinstance(profile, dict):
         return ["profile: expected object"]
+    platform = profile.get("platform")
     allowed = {
         "schema_version", "platform", "repository", "source", "toolchain",
         "expected_pins", "application_binary_sha256", "device_inventory_sha256",
     }
+    if platform == "ios_app_attest":
+        allowed.add("application_bundle_tree_sha256")
     extras = sorted(set(profile) - allowed)
     if extras:
         errors.append(f"profile: unexpected properties: {', '.join(extras)}")
@@ -390,7 +400,6 @@ def validate_profile(profile: Any) -> list[str]:
         return errors
     if profile["schema_version"] != PROFILE_VERSION:
         errors.append("profile.schema_version: unsupported value")
-    platform = profile.get("platform")
     policy = PLATFORM_POLICY.get(platform)
     if policy is None:
         errors.append("profile.platform: unsupported value")
@@ -446,6 +455,12 @@ def validate_profile(profile: Any) -> list[str]:
     binary_hash = profile.get("application_binary_sha256")
     if re.fullmatch(r"[0-9a-f]{64}", str(binary_hash)) is None:
         errors.append("profile.application_binary_sha256: expected lowercase SHA-256")
+    if platform == "ios_app_attest" and re.fullmatch(
+        r"[0-9a-f]{64}", str(profile.get("application_bundle_tree_sha256", ""))
+    ) is None:
+        errors.append(
+            "profile.application_bundle_tree_sha256: expected lowercase SHA-256"
+        )
     inventory_hash = profile.get("device_inventory_sha256")
     if re.fullmatch(r"[0-9a-f]{64}", str(inventory_hash)) is None:
         errors.append("profile.device_inventory_sha256: expected lowercase SHA-256")
@@ -493,7 +508,7 @@ def validate_component_observation(
     if observation.get("schema_version") != IOS_COMPONENT_OBSERVATION_VERSION:
         errors.append("component observation.schema_version: unsupported value")
     if platform != "ios_app_attest" or observation.get("platform") != platform:
-        errors.append("component observation.platform: direct Action proof requires ios_app_attest")
+        errors.append("component observation.platform: delegated component proof requires ios_app_attest")
     if observation.get("run_id") != run_id:
         errors.append("component observation.run_id: does not match the physical-device run")
     try:
@@ -519,7 +534,7 @@ def validate_component_observation(
             if isinstance(item, dict) and isinstance(item.get("id"), str)
         }
         if len(by_id) != len(tests) or set(by_id) != IOS_COMPONENT_TESTS:
-            errors.append("component observation.tests: must contain the exact direct-component test set")
+            errors.append("component observation.tests: must contain the exact delegated-component test set")
         elif any(item.get("status") != "passed" for item in by_id.values()):
             errors.append("component observation.tests: every observed component test must pass")
         denial = by_id.get("component_sibling_denied", {})
@@ -562,11 +577,13 @@ def ios_component_runtime_errors(runtime: Any, profile: dict[str, Any]) -> list[
     )
     for role, (kind, bundle_pin, definition_pin, binary_pin) in IOS_COMPONENT_ROLE_POLICY.items():
         identity = by_role[role]
+        expected_attestation_mode = "root_app_attest" if role == "host" else "delegated_only"
         if (
             identity.get("kind") != kind
             or identity.get("bundle_identifier") != expected_pins.get(bundle_pin)
             or identity.get("definition_id") != expected_pins.get(definition_pin)
             or identity.get("binary_sha256") != expected_pins.get(binary_pin)
+            or identity.get("attestation_mode") != expected_attestation_mode
         ):
             errors.append(f"component_runtime.identities: {role} is not bound to the protected candidate")
         if any(re.fullmatch(r"[0-9a-f]{64}", str(identity.get(field, ""))) is None for field in hash_fields):
@@ -578,30 +595,25 @@ def ios_component_runtime_errors(runtime: Any, profile: dict[str, Any]) -> list[
             errors.append(f"component_runtime.identities: {field} values are not independent")
 
     action = by_role["action"]
-    step_up = runtime.get("direct_step_up")
-    if not isinstance(step_up, dict):
-        errors.append("component_runtime.direct_step_up: expected object")
+    delegated = runtime.get("delegated_execution")
+    if not isinstance(delegated, dict):
+        errors.append("component_runtime.delegated_execution: expected object")
     else:
         if (
-            step_up.get("role") != "action"
-            or step_up.get("definition_id") != action.get("definition_id")
-            or step_up.get("component_id_sha256") != action.get("principal_id_sha256")
-            or step_up.get("dpop_key_id_sha256") != action.get("dpop_key_id_sha256")
-            or step_up.get("session_after_sha256") != action.get("session_id_sha256")
-            or step_up.get("session_before_sha256") == step_up.get("session_after_sha256")
-            or step_up.get("trust_source_before")
-            not in {"delegated_from_attested_root", "delegated_identity_only"}
-            or step_up.get("trust_source_after") != "delegated_direct_attested"
-            or step_up.get("binding_version") != 2
-            or step_up.get("request_hash_bound") is not True
+            delegated.get("role") != "action"
+            or delegated.get("definition_id") != action.get("definition_id")
+            or delegated.get("component_id_sha256") != action.get("principal_id_sha256")
+            or delegated.get("dpop_key_id_sha256") != action.get("dpop_key_id_sha256")
+            or delegated.get("session_id_sha256") != action.get("session_id_sha256")
+            or delegated.get("trust_source") != "delegated_from_attested_root"
+            or not isinstance(delegated.get("http_status"), int)
+            or not 200 <= delegated["http_status"] <= 299
+            or re.fullmatch(
+                r"[A-Za-z0-9][A-Za-z0-9._:-]{7,127}",
+                str(delegated.get("request_id", "")),
+            ) is None
         ):
-            errors.append("component_runtime.direct_step_up: does not prove the Action component transition")
-        app_attest_key = step_up.get("app_attest_key_id_sha256")
-        if (
-            re.fullmatch(r"[0-9a-f]{64}", str(app_attest_key or "")) is None
-            or app_attest_key in {item.get("dpop_key_id_sha256") for item in identities}
-        ):
-            errors.append("component_runtime.direct_step_up: App Attest key identity is invalid or reused")
+            errors.append("component_runtime.delegated_execution: does not prove the Action delegated request")
 
     denial = runtime.get("sibling_denial")
     if not isinstance(denial, dict):
@@ -624,13 +636,51 @@ def ios_component_runtime_errors(runtime: Any, profile: dict[str, Any]) -> list[
 
     lifecycle = runtime.get("lifecycle")
     if lifecycle != {
-        "host_process_running_during_step_up": False,
+        "host_process_running_during_action_request": False,
         "background_execution_observed": True,
         "host_termination_observed": True,
         "user_presence_prompt_observed": False,
     }:
         errors.append("component_runtime.lifecycle: no-host/background/termination/no-presence proof is incomplete")
     return errors
+
+
+def ios_component_observed_pins(runtime: Any) -> dict[str, str]:
+    """Derive public candidate pins only from the independent component observer."""
+    if not isinstance(runtime, dict) or not isinstance(runtime.get("identities"), list):
+        return {}
+    identities = {
+        identity.get("role"): identity
+        for identity in runtime["identities"]
+        if isinstance(identity, dict) and isinstance(identity.get("role"), str)
+    }
+    if set(identities) != set(IOS_COMPONENT_ROLE_POLICY):
+        return {}
+    result: dict[str, str] = {}
+    for role, (_, bundle_pin, definition_pin, binary_pin) in IOS_COMPONENT_ROLE_POLICY.items():
+        identity = identities[role]
+        values = {
+            bundle_pin: identity.get("bundle_identifier"),
+            definition_pin: identity.get("definition_id"),
+            binary_pin: identity.get("binary_sha256"),
+        }
+        if any(not isinstance(value, str) or not value for value in values.values()):
+            return {}
+        result.update(values)
+    return result
+
+
+def ios_component_observed_pin_errors(observed_pins: Any, runtime: Any) -> list[str]:
+    if not isinstance(observed_pins, dict):
+        return ["observation.observed_pins: expected object"]
+    component_pins = ios_component_observed_pins(runtime)
+    if len(component_pins) != 12:
+        return ["component observation: cannot derive the exact component candidate pins"]
+    return [
+        f"observation.observed_pins.{name}: conflicts with independent component observation"
+        for name, value in component_pins.items()
+        if name in observed_pins and observed_pins[name] != value
+    ]
 
 
 def secret_scan(value: Any, path: str = "$") -> list[str]:
@@ -704,6 +754,12 @@ def semantic_errors(evidence: dict[str, Any], profile: dict[str, Any]) -> list[s
                 or profile.get("application_binary_sha256") != expected_pins.get("host_binary_sha256")
             ):
                 errors.append("host application identity is not bound to the component candidate")
+            if evidence.get("artifacts", {}).get(
+                "application_bundle_tree_sha256"
+            ) != profile.get("application_bundle_tree_sha256"):
+                errors.append(
+                    "whole application bundle tree is not bound to the protected profile"
+                )
             errors.extend(ios_component_runtime_errors(evidence.get("component_runtime"), profile))
     else:
         if application.get("installer_package") != "com.android.vending":
@@ -730,6 +786,8 @@ def semantic_errors(evidence: dict[str, Any], profile: dict[str, Any]) -> list[s
         errors.append("attestation provider does not match platform")
     if provider.get("environment") != "production":
         errors.append("debug/development attestation cannot be release evidence")
+    if provider.get("trust_level") not in policy["trust"]:
+        errors.append("attestation trust level does not match the platform provider")
     if provider.get("request_hash_bound") is not True:
         errors.append("attestation was not bound to the server challenge")
     if platform.endswith("android_play_integrity"):
@@ -841,6 +899,11 @@ def build_evidence(
         ):
             combined["run"]["completed_at"] = component_observation["completed_at"]
 
+        for name, value in ios_component_observed_pins(
+            component_observation["runtime"]
+        ).items():
+            combined["observed_pins"].setdefault(name, value)
+
     observed_pins = combined["observed_pins"]
     expected_pins = profile["expected_pins"]
     pins = [
@@ -882,6 +945,10 @@ def build_evidence(
         evidence["component_runtime"] = combined["component_runtime"]
         evidence["artifacts"]["component_observation_sha256"] = (
             component_observation_sha256 or canonical_sha256(component_observation)
+        )
+    if profile["platform"] == "ios_app_attest":
+        evidence["artifacts"]["application_bundle_tree_sha256"] = profile.get(
+            "application_bundle_tree_sha256", ""
         )
     evidence["release_eligible"] = not (
         schema_errors(evidence, schema) + semantic_errors(evidence, profile)
@@ -1018,6 +1085,10 @@ def main() -> int:
                         ))
                         errors.extend(ios_component_runtime_errors(
                             component_observation.get("runtime"), profile
+                        ))
+                        errors.extend(ios_component_observed_pin_errors(
+                            observation.get("observed_pins"),
+                            component_observation.get("runtime"),
                         ))
                 if not errors:
                     evidence = build_evidence(

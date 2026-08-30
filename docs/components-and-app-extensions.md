@@ -114,46 +114,31 @@ never replayed. Streaming uses the cookie-free, redirect-rejecting native
 session, is incrementally consumed, and propagates cancellation without
 exporting credentials.
 
-## Direct component App Attest step-up
+## Direct component attestation protocol and iOS limitation
 
-An iOS Action or SSO extension whose server-side component definition requires
-direct App Attest supplies a component-specific provider to its extension
-client. The provider namespace includes the component definition ID, so it
-cannot reuse the containing application's or a sibling component's accepted
-App Attest key marker:
+The wire protocol retains a dormant, platform-generic direct
+component-attestation exchange for contract compatibility. The public iOS and
+React Native iOS extension client does not expose an eligible producer: its
+legacy `establishDirectAttestation()` surface fails closed before refresh,
+challenge acquisition, or grant use, and the component-namespaced
+`LatchwayAppAttestProvider` initializer is unavailable. Package-internal tests
+exercise the generic wire exchange without making it an iOS runtime claim.
 
-```swift
-import LatchwayAppAttest
+That exchange cannot run from an iOS application extension: the installed
+Apple SDK documents that
+`DCAppAttestService.generateKey` fails for iOS app extensions (the extension
+exception is watchOS 9 or newer), and `LatchwayAppAttestProvider` necessarily
+calls that operation when no accepted key exists.
 
-let actionExtension = LatchwayComponentConfiguration(
-    definitionID: "action_extension",
-    kind: "action_extension",
-    keychainAccessGroup: resolvedActionAccessGroup,
-    requestedFeatures: ["habit-assistant"]
-)
-let componentAppAttest = LatchwayAppAttestProvider(
-    applicationID: "app_01J00000000000000000000000",
-    environment: "production",
-    componentDefinitionID: actionExtension.definitionID
-)
-let actionClient = try LatchwayExtensionClient(
-    configuration: configuration,
-    component: actionExtension,
-    directAttestationProvider: componentAppAttest
-)
-
-try await actionClient.establishDirectAttestation()
-```
-
-The operation is native-only and returns no challenge, evidence, token, proof,
-or key data. It uses the current component DPoP session to obtain and exchange
-one version-2 challenge, persists the rotated component credential, then
-reports `delegated_direct_attested` through redacted diagnostics. Concurrent
-and repeated calls coalesce or return after usable composite trust exists.
-Missing provider configuration fails with `directAttestationRequired`; invalid
-component kinds fail locally before network use. This package supports direct
-step-up for Action and SSO components; it does not claim watchOS runtime
-support.
+Consequently, iOS Widget, Share, Action, and SSO extensions are
+delegated-only. The containing app performs its own App Attest exchange and
+prepares independent component DPoP keys and delegated grants; each extension
+then establishes and uses only its own component session. The host must not
+attest on an extension's behalf, no extension target should carry the App
+Attest entitlement, and physical evidence must not claim direct extension App
+Attest. A future watchOS-specific implementation may use the generic protocol
+only after it has a dedicated runtime implementation and physical conformance
+gate; this package currently makes no watchOS direct-attestation claim.
 
 ## Revocation and sign-out
 
@@ -195,7 +180,7 @@ Common recovery behavior:
 | Component revoked or key replaced | Prepare the component again; immediate extension retry is not useful. |
 | Family revoked or identity changed | Authenticate the current user and establish a new family. |
 | Keychain access group unavailable | Correct both signed entitlements and reinstall; opening the app alone cannot repair signing. |
-| Direct attestation required | Configure a component-namespaced `LatchwayAppAttestProvider` in the eligible extension and call `establishDirectAttestation()`. |
+| Server requires direct attestation from an iOS app extension | Unsupported by Apple's App Attest runtime; use a delegated-only iOS component definition or fail closed. Do not have the containing app attest for the extension. |
 
 React Native must call these native actors through its iOS bridge. Component
 keys, grants, refresh tokens, access tokens, and DPoP proofs must not cross the
@@ -205,9 +190,10 @@ configuration with `clientRuntime: .iOS` and a server component platform of
 `ios`. If a React Native runtime is genuinely hosted inside the extension
 bundle, that extension creates a separate component client with
 `clientRuntime: .reactNativeIOS`, a server component platform of
-`react_native_ios`, and a component-namespaced App Attest provider using the
-same runtime. It must not reuse the containing app's root client, root lease,
-or identity callback. An `ios` component credential and a `react_native_ios`
+`react_native_ios`, and its own delegated component key/session. React Native
+does not change Apple's App Attest extension restriction. It must not reuse the
+containing app's root client, root lease, or identity callback. An `ios`
+component credential and a `react_native_ios`
 component credential cannot be consumed across runtimes.
 
 ## Physical-device evidence

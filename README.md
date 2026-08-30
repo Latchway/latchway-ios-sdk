@@ -27,8 +27,9 @@ hardware attestation.
   sessions, authorization, quota, revocation, and diagnostics
 - `LatchwayAppAttest`: `DCAppAttestService` registration/assertion lifecycle
 - `LatchwayAppExtensions`: extension-safe exports for independently keyed Client
-  Components provisioned by their containing application, including native
-  Action/SSO component App Attest step-up
+  Components provisioned by their containing application. iOS application
+  extensions are delegated-only because Apple does not support App Attest key
+  generation there; the host never attests on an extension's behalf.
 - `LatchwayFirebaseAuth`: optional closure adapter; the core target has no
   Firebase dependency
 - `LatchwaySwiftOpenAI`: audited SwiftOpenAI 4.6.0 async HTTP/streaming adapter

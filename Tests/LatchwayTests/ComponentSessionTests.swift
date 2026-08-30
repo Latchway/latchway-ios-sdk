@@ -365,18 +365,41 @@ final class ComponentSessionTests: XCTestCase {
         XCTAssertNil(request.value(forHTTPHeaderField: "DPoP"))
     }
 
+    func testPublicDirectComponentAttestationFailsBeforeSessionUseForV1Runtimes() async throws {
+        for (runtime, platform) in [
+            (LatchwayClientRuntime.iOS, "ios"),
+            (.reactNativeIOS, "react_native_ios"),
+        ] {
+            let fixture = try await makeDirectAttestationFixture(
+                clientRuntime: runtime,
+                componentPlatform: platform
+            )
+
+            await XCTAssertComponentThrowsError {
+                try await fixture.client.establishDirectAttestation()
+            }
+
+            let requests = await fixture.server.requests
+            let challenges = await fixture.provider.challenges
+            let stored = await fixture.storage.load()
+            XCTAssertEqual(requests.count, 0)
+            XCTAssertEqual(challenges.count, 0)
+            XCTAssertEqual(stored?.trustSource, .delegatedFromAttestedRoot)
+        }
+    }
+
     func testConcurrentDirectComponentAttestationUsesOneChallengeAndPersistsCompositeTrust() async throws {
         let fixture = try await makeDirectAttestationFixture()
 
         try await withThrowingTaskGroup(of: Void.self) { group in
             for _ in 0 ..< 12 {
                 group.addTask {
-                    try await fixture.client.establishDirectAttestation()
+                    try await fixture.client.establishDirectAttestationForContractConformance()
                 }
             }
             try await group.waitForAll()
         }
-        try await fixture.client.establishDirectAttestation()
+        try await fixture.client.establishDirectAttestationForContractConformance()
 
         let challengePath = "/client/v1/installation-families/current/components/"
             + "cmp_01J00000000000000000000000/attestation-challenges"
@@ -422,7 +445,7 @@ final class ComponentSessionTests: XCTestCase {
             componentPlatform: "react_native_ios"
         )
 
-        try await fixture.client.establishDirectAttestation()
+        try await fixture.client.establishDirectAttestationForContractConformance()
 
         let stored = await fixture.storage.load()
         let requests = await fixture.server.requests

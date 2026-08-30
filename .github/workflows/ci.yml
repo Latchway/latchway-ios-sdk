@@ -29,7 +29,7 @@ jobs:
         with:
           install: true
           cache: false
-      - name: Compile production App Attest host without signing
+      - name: Compile production App Attest host and all extensions without signing
         env:
           TUIST_LATCHWAY_APP_ATTEST_ENVIRONMENT: production
         run: |
@@ -47,6 +47,7 @@ jobs:
           python3 scripts/test-device-evidence.py
           python3 scripts/test-physical-evidence-workflow.py
           python3 scripts/test-verify-gateway-deployment.py
-          bash -n scripts/gateway-deployment-evidence.sh scripts/run-physical-app-attest.sh
+          python3 -m py_compile scripts/inspect-physical-app-attest-candidate.py scripts/physical_app_bundle_tree.py
+          bash -n scripts/build-physical-app-attest-candidate.sh scripts/gateway-deployment-evidence.sh scripts/run-physical-app-attest.sh
       - name: Verify SwiftPM products and CocoaPods metadata
         run: scripts/verify-package.sh

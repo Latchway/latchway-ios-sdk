@@ -134,14 +134,28 @@ else:
     )
 if any(observed != expected for observed, expected in platform_pairs):
     raise SystemExit("platform identity differs from signed gateway client policy")
-trust_rank = {"device_verified": 1, "strong_device_verified": 2}
 if (
     provider.get("name") != policy.get("provider")
     or provider.get("environment") != "production"
     or provider.get("request_hash_bound") is not policy.get("require_request_hash")
-    or trust_rank.get(provider.get("trust_level"), 0) < trust_rank[policy["minimum_trust_level"]]
 ):
     raise SystemExit("accepted session does not meet signed gateway trust policy")
+if policy["platform"].endswith("ios_app_attest"):
+    if (
+        policy.get("minimum_trust_level") != "app_verified"
+        or provider.get("trust_level") != "app_verified"
+    ):
+        raise SystemExit("accepted App Attest session does not have app_verified trust")
+else:
+    trust_rank = {"device_verified": 1, "strong_device_verified": 2}
+    observed_trust = provider.get("trust_level")
+    minimum_trust = policy.get("minimum_trust_level")
+    if (
+        observed_trust not in trust_rank
+        or minimum_trust not in trust_rank
+        or trust_rank[observed_trust] < trust_rank[minimum_trust]
+    ):
+        raise SystemExit("accepted Play Integrity session does not meet signed trust policy")
 if policy.get("require_play_recognized") and provider.get("app_recognition") != "PLAY_RECOGNIZED":
     raise SystemExit("signed gateway Play-recognition policy was not observed")
 if policy.get("require_licensed") and provider.get("account_licensing") != "LICENSED":
