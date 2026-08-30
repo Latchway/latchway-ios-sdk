@@ -18,6 +18,17 @@ public actor LatchwayAppAttestProvider: LatchwayAttestationProvider {
     private let stateStore: any AppAttestStateStoring
     private var state: State?
     private var lastOperation: String?
+    private var lifecycleEpoch: UInt64 = 0
+    private var creationEpoch: UInt64?
+    private var creationGeneration: UInt64 = 0
+    private var creationTaskGeneration: UInt64?
+    private var creationTask: Task<State, Error>?
+    private var acceptanceEpoch: UInt64?
+    private var acceptanceGeneration: UInt64 = 0
+    private var acceptanceTaskGeneration: UInt64?
+    private var acceptanceKeyID: String?
+    private var acceptanceTask: Task<Void, Error>?
+    private var resetting = false
 
     /// Creates App Attest state in a caller-managed namespace. The namespace
     /// must be unique for every application, environment, and client runtime;
@@ -47,29 +58,40 @@ public actor LatchwayAppAttestProvider: LatchwayAttestationProvider {
     }
 
     public func evidence(for challenge: LatchwayAttestationChallenge) async throws -> LatchwayAttestationEvidence {
-        try Task.checkCancellation()
+        guard !Task.isCancelled else { throw LatchwayError.cancelled }
+        guard !resetting else { throw LatchwayError.cancelled }
+        let operationEpoch = lifecycleEpoch
         guard challenge.provider == "app_attest" else { throw LatchwayError.attestationUnavailable }
         guard challenge.clientDataHash.count == 32, challenge.expiresAt > Date() else {
             throw LatchwayError.invalidAttestationBinding
         }
         guard await service.isSupported() else { throw LatchwayError.attestationUnavailable }
 
-        var current = try await loadState()
+        var current = try await loadState(expectedEpoch: operationEpoch)
         if current == nil {
-            current = try await createState()
+            current = try await createState(expectedEpoch: operationEpoch)
         }
         guard let current else { throw LatchwayError.attestationUnavailable }
+        try requireCurrentEpoch(operationEpoch)
 
         do {
-            return try await makeEvidence(state: current, clientDataHash: challenge.clientDataHash)
+            return try await makeEvidence(
+                state: current,
+                clientDataHash: challenge.clientDataHash,
+                expectedEpoch: operationEpoch
+            )
         } catch let error as AppAttestOperationError where error == .invalidKey {
-            do { try await stateStore.clear() }
-            catch { throw LatchwayError.keyStorageFailure }
-            state = nil
-            let recovered = try await createState()
+            let recovered = try await recoverState(
+                invalidState: current,
+                expectedEpoch: operationEpoch
+            )
             lastOperation = "key_recovered"
             do {
-                return try await makeEvidence(state: recovered, clientDataHash: challenge.clientDataHash)
+                return try await makeEvidence(
+                    state: recovered,
+                    clientDataHash: challenge.clientDataHash,
+                    expectedEpoch: operationEpoch
+                )
             } catch is CancellationError {
                 throw LatchwayError.cancelled
             } catch let error as LatchwayError {
@@ -88,29 +110,102 @@ public actor LatchwayAppAttestProvider: LatchwayAttestationProvider {
     }
 
     public func didAccept(_ evidence: LatchwayAttestationEvidence) async {
+        guard !resetting else { return }
+        let operationEpoch = lifecycleEpoch
         guard evidence.provider == "app_attest",
               case let .string(keyID)? = evidence.evidence["key_id"],
-              var current = try? await loadState(),
-              current.keyID == keyID
+              var current = try? await loadState(expectedEpoch: operationEpoch),
+              current.keyID == keyID,
+              !resetting,
+              lifecycleEpoch == operationEpoch
         else { return }
         if evidence.evidence["attestation_object"] != nil {
+            if current.acceptedByLatchway { return }
             current.acceptedByLatchway = true
-            state = current
-            do { try await stateStore.save(current) }
-            catch { lastOperation = "state_persistence_failed" }
+            let task: Task<Void, Error>
+            let taskGeneration: UInt64
+            if let currentTask = acceptanceTask,
+               acceptanceEpoch == operationEpoch,
+               let currentGeneration = acceptanceTaskGeneration,
+               acceptanceKeyID == current.keyID {
+                task = currentTask
+                taskGeneration = currentGeneration
+            } else {
+                let stateStore = self.stateStore
+                let accepted = current
+                task = Task.detached(priority: Task.currentPriority) {
+                    try await stateStore.save(accepted)
+                }
+                acceptanceTask = task
+                acceptanceEpoch = operationEpoch
+                acceptanceGeneration &+= 1
+                taskGeneration = acceptanceGeneration
+                acceptanceTaskGeneration = taskGeneration
+                acceptanceKeyID = current.keyID
+            }
+            do {
+                try await task.value
+                if acceptanceEpoch == operationEpoch,
+                   acceptanceTaskGeneration == taskGeneration,
+                   acceptanceKeyID == current.keyID {
+                    acceptanceTask = nil
+                    acceptanceEpoch = nil
+                    acceptanceTaskGeneration = nil
+                    acceptanceKeyID = nil
+                }
+                if !resetting, lifecycleEpoch == operationEpoch,
+                   creationTask == nil, state?.keyID == current.keyID {
+                    state = current
+                }
+            }
+            catch {
+                if acceptanceEpoch == operationEpoch,
+                   acceptanceTaskGeneration == taskGeneration,
+                   acceptanceKeyID == current.keyID {
+                    acceptanceTask = nil
+                    acceptanceEpoch = nil
+                    acceptanceTaskGeneration = nil
+                    acceptanceKeyID = nil
+                }
+                if !resetting, lifecycleEpoch == operationEpoch {
+                    lastOperation = "state_persistence_failed"
+                }
+            }
         }
     }
 
     public func reset() async throws {
+        guard !resetting else { throw LatchwayError.cancelled }
+        resetting = true
+        lifecycleEpoch &+= 1
         state = nil
         lastOperation = "reset"
-        do { try await stateStore.clear() }
-        catch { throw LatchwayError.keyStorageFailure }
+        let inFlightCreation = creationTask
+        let inFlightAcceptance = acceptanceTask
+        inFlightCreation?.cancel()
+        inFlightAcceptance?.cancel()
+        if let inFlightCreation { _ = try? await inFlightCreation.value }
+        if let inFlightAcceptance { _ = try? await inFlightAcceptance.value }
+        creationTask = nil
+        creationEpoch = nil
+        creationTaskGeneration = nil
+        acceptanceTask = nil
+        acceptanceEpoch = nil
+        acceptanceTaskGeneration = nil
+        acceptanceKeyID = nil
+        do {
+            try await stateStore.clear()
+            resetting = false
+        } catch {
+            resetting = false
+            throw LatchwayError.keyStorageFailure
+        }
     }
 
     public func status() async -> LatchwayAttestationStatus {
         let supported = await service.isSupported()
-        let current = try? await loadState()
+        let operationEpoch = lifecycleEpoch
+        let current = try? await loadState(expectedEpoch: operationEpoch)
         return LatchwayAttestationStatus(
             support: supported ? .supported : .unsupported,
             keyID: current?.keyID,
@@ -118,10 +213,17 @@ public actor LatchwayAppAttestProvider: LatchwayAttestationProvider {
         )
     }
 
-    private func makeEvidence(state: State, clientDataHash: Data) async throws -> LatchwayAttestationEvidence {
+    private func makeEvidence(
+        state: State,
+        clientDataHash: Data,
+        expectedEpoch: UInt64
+    ) async throws -> LatchwayAttestationEvidence {
+        guard !Task.isCancelled else { throw LatchwayError.cancelled }
+        try requireCurrentEpoch(expectedEpoch)
         if state.acceptedByLatchway {
             let assertion = try await service.generateAssertion(keyID: state.keyID, clientDataHash: clientDataHash)
             try Task.checkCancellation()
+            try requireCurrentEpoch(expectedEpoch)
             guard (1 ... 65_536).contains(assertion.count) else {
                 throw LatchwayError.attestationUnavailable
             }
@@ -135,6 +237,7 @@ public actor LatchwayAppAttestProvider: LatchwayAttestationProvider {
 
         let attestation = try await service.attestKey(keyID: state.keyID, clientDataHash: clientDataHash)
         try Task.checkCancellation()
+        try requireCurrentEpoch(expectedEpoch)
         guard (1 ... 65_536).contains(attestation.count) else {
             throw LatchwayError.attestationUnavailable
         }
@@ -146,11 +249,18 @@ public actor LatchwayAppAttestProvider: LatchwayAttestationProvider {
         ])
     }
 
-    private func loadState() async throws -> State? {
+    private func loadState(expectedEpoch: UInt64) async throws -> State? {
+        try requireCurrentEpoch(expectedEpoch)
         if let state { return state }
+        if creationTask != nil, creationEpoch == expectedEpoch { return nil }
         let loaded: State?
         do { loaded = try await stateStore.load() }
         catch { throw LatchwayError.keyStorageFailure }
+        try requireCurrentEpoch(expectedEpoch)
+        // A key transition may have completed (or become in flight) while the
+        // store read was suspended. Never overwrite it with a stale snapshot.
+        if let state { return state }
+        if creationTask != nil, creationEpoch == expectedEpoch { return nil }
         guard let loaded else { return nil }
         guard (1 ... 1_024).contains(loaded.keyID.utf8.count) else {
             throw LatchwayError.keyStorageFailure
@@ -159,23 +269,134 @@ public actor LatchwayAppAttestProvider: LatchwayAttestationProvider {
         return loaded
     }
 
-    private func createState() async throws -> State {
-        let keyID: String
-        do {
-            keyID = try await service.generateKey()
-            try Task.checkCancellation()
+    private func recoverState(invalidState: State, expectedEpoch: UInt64) async throws -> State {
+        try requireCurrentEpoch(expectedEpoch)
+        guard !Task.isCancelled else { throw LatchwayError.cancelled }
+        // An acceptance marker for the invalid key must finish before its
+        // replacement clears storage, otherwise the old marker could land
+        // after the new key. The completion path below also refuses to cache
+        // the old state once a creation transition is active.
+        if let pendingAcceptance = acceptanceTask,
+           acceptanceEpoch == expectedEpoch,
+           let pendingAcceptanceGeneration = acceptanceTaskGeneration,
+           acceptanceKeyID == invalidState.keyID {
+            pendingAcceptance.cancel()
+            _ = try? await pendingAcceptance.value
+            try requireCurrentEpoch(expectedEpoch)
+            guard !Task.isCancelled else { throw LatchwayError.cancelled }
+            if acceptanceEpoch == expectedEpoch,
+               acceptanceTaskGeneration == pendingAcceptanceGeneration,
+               acceptanceKeyID == invalidState.keyID {
+                acceptanceTask = nil
+                acceptanceEpoch = nil
+                acceptanceTaskGeneration = nil
+                acceptanceKeyID = nil
+            }
         }
-        catch is CancellationError { throw LatchwayError.cancelled }
-        catch { throw LatchwayError.attestationUnavailable }
-        guard (1 ... 1_024).contains(keyID.utf8.count) else {
+        if let state, state.keyID != invalidState.keyID {
+            return state
+        }
+        // Reserve the shared transition before the first awaited storage
+        // operation. Other stale invalid-key observations will join it instead
+        // of clearing a newly persisted replacement key.
+        state = nil
+        return try await createState(expectedEpoch: expectedEpoch, clearPersistedState: true)
+    }
+
+    private func createState(
+        expectedEpoch: UInt64,
+        clearPersistedState: Bool = false
+    ) async throws -> State {
+        try requireCurrentEpoch(expectedEpoch)
+        guard !Task.isCancelled else { throw LatchwayError.cancelled }
+        // Another waiter can populate state after this caller's load returned
+        // nil but before it reaches creation. Re-check here so a completed
+        // shared creation cannot be followed by a second key generation.
+        if let state {
+            guard !Task.isCancelled else { throw LatchwayError.cancelled }
+            return state
+        }
+        let task: Task<State, Error>
+        let taskGeneration: UInt64
+        if let currentTask = creationTask,
+           creationEpoch == expectedEpoch,
+           let currentGeneration = creationTaskGeneration {
+            task = currentTask
+            taskGeneration = currentGeneration
+        } else {
+            let service = self.service
+            let stateStore = self.stateStore
+            task = Task.detached(priority: Task.currentPriority) {
+                if clearPersistedState {
+                    do { try await stateStore.clear() }
+                    catch is CancellationError { throw LatchwayError.cancelled }
+                    catch { throw LatchwayError.keyStorageFailure }
+                    guard !Task.isCancelled else { throw LatchwayError.cancelled }
+                }
+                let keyID: String
+                do { keyID = try await service.generateKey() }
+                catch is CancellationError { throw LatchwayError.cancelled }
+                catch { throw LatchwayError.attestationUnavailable }
+                guard (1 ... 1_024).contains(keyID.utf8.count) else {
+                    throw LatchwayError.attestationUnavailable
+                }
+                // Ordinary waiter cancellation does not cancel this shared task,
+                // so a successfully generated key is persisted for the next call.
+                // reset() explicitly cancels it and waits before clearing storage.
+                guard !Task.isCancelled else { throw LatchwayError.cancelled }
+                let created = State(keyID: keyID, acceptedByLatchway: false)
+                do { try await stateStore.save(created) }
+                catch is CancellationError { throw LatchwayError.cancelled }
+                catch { throw LatchwayError.keyStorageFailure }
+                return created
+            }
+            creationTask = task
+            creationEpoch = expectedEpoch
+            creationGeneration &+= 1
+            taskGeneration = creationGeneration
+            creationTaskGeneration = taskGeneration
+        }
+
+        do {
+            let created = try await task.value
+            try requireCurrentEpoch(expectedEpoch)
+            state = created
+            lastOperation = "key_created"
+            if creationEpoch == expectedEpoch, creationTaskGeneration == taskGeneration {
+                creationTask = nil
+                creationEpoch = nil
+                creationTaskGeneration = nil
+            }
+            guard !Task.isCancelled else { throw LatchwayError.cancelled }
+            return created
+        } catch is CancellationError {
+            if creationEpoch == expectedEpoch, creationTaskGeneration == taskGeneration {
+                creationTask = nil
+                creationEpoch = nil
+                creationTaskGeneration = nil
+            }
+            throw LatchwayError.cancelled
+        } catch let error as LatchwayError {
+            if creationEpoch == expectedEpoch, creationTaskGeneration == taskGeneration {
+                creationTask = nil
+                creationEpoch = nil
+                creationTaskGeneration = nil
+            }
+            throw error
+        } catch {
+            if creationEpoch == expectedEpoch, creationTaskGeneration == taskGeneration {
+                creationTask = nil
+                creationEpoch = nil
+                creationTaskGeneration = nil
+            }
             throw LatchwayError.attestationUnavailable
         }
-        let created = State(keyID: keyID, acceptedByLatchway: false)
-        do { try await stateStore.save(created) }
-        catch { throw LatchwayError.keyStorageFailure }
-        state = created
-        lastOperation = "key_created"
-        return created
+    }
+
+    private func requireCurrentEpoch(_ expectedEpoch: UInt64) throws {
+        guard !resetting, lifecycleEpoch == expectedEpoch else {
+            throw LatchwayError.cancelled
+        }
     }
 
     private static func base64URL(_ data: Data) -> String {
