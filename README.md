@@ -142,9 +142,10 @@ The SDK:
   cookie fields—before session establishment or request signing
 - Keeps Firebase support optional and outside the core target
 
-The canonical package identity will be **Latchway**, with iOS 15 as the planned
-minimum deployment target unless an audited requirement changes it. Public APIs
-will use current Swift strict-concurrency conventions.
+The package identity is **Latchway** and its audited minimum deployment target
+is iOS 15. Public APIs use current Swift strict-concurrency conventions. These
+source coordinates remain pre-release until the signed package and CocoaPods
+artifacts are published and verified by clean consumers.
 
 ## Protocol ownership
 
