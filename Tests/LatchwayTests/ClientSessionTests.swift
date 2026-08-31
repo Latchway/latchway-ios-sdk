@@ -903,9 +903,12 @@ final class ClientSessionTests: XCTestCase {
 
         let stream = try await transport.bytes(for: request)
         stream.cancel()
-        for _ in 0 ..< 10_000 {
-            if StreamingRetryURLProtocol.snapshot().stopCount == 1 { break }
-            await Task.yield()
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(5))
+        while StreamingRetryURLProtocol.snapshot().stopCount != 1,
+              clock.now < deadline
+        {
+            try await Task.sleep(for: .milliseconds(10))
         }
 
         XCTAssertEqual(StreamingRetryURLProtocol.snapshot().stopCount, 1)

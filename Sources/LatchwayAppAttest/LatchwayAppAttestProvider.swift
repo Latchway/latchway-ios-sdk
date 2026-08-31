@@ -184,7 +184,17 @@ public actor LatchwayAppAttestProvider: LatchwayAttestationProvider {
                 clientDataHash: challenge.clientDataHash,
                 expectedEpoch: operationEpoch
             )
-        } catch let error as AppAttestOperationError where error == .invalidKey {
+        } catch let error as AppAttestOperationError where
+            error == .invalidKey || (error == .invalidInput && !current.acceptedByLatchway)
+        {
+            // Apple permits retrying `serverUnavailable` with the same key, but
+            // directs clients to discard a key after any other attestation
+            // failure. In particular, an attestation object can be produced
+            // locally and then rejected or lost before Latchway accepts it. A
+            // later attempt to attest that still-unaccepted key reports
+            // `invalidInput`; rotate it once instead of permanently stranding
+            // the installation. Never apply this classification to assertions
+            // from an accepted key.
             let recovered = try await recoverState(
                 invalidState: current,
                 expectedEpoch: operationEpoch
@@ -337,7 +347,16 @@ public actor LatchwayAppAttestProvider: LatchwayAttestationProvider {
         guard !Task.isCancelled else { throw LatchwayError.cancelled }
         try requireCurrentEpoch(expectedEpoch)
         if state.acceptedByLatchway {
-            let assertion = try await service.generateAssertion(keyID: state.keyID, clientDataHash: clientDataHash)
+            let assertion: Data
+            do {
+                assertion = try await service.generateAssertion(
+                    keyID: state.keyID,
+                    clientDataHash: clientDataHash
+                )
+            } catch let error as AppAttestOperationError {
+                lastOperation = error.assertionDiagnostic
+                throw error
+            }
             try Task.checkCancellation()
             try requireCurrentEpoch(expectedEpoch)
             guard (1 ... 65_536).contains(assertion.count) else {
@@ -351,7 +370,16 @@ public actor LatchwayAppAttestProvider: LatchwayAttestationProvider {
             ])
         }
 
-        let attestation = try await service.attestKey(keyID: state.keyID, clientDataHash: clientDataHash)
+        let attestation: Data
+        do {
+            attestation = try await service.attestKey(
+                keyID: state.keyID,
+                clientDataHash: clientDataHash
+            )
+        } catch let error as AppAttestOperationError {
+            lastOperation = error.attestationDiagnostic
+            throw error
+        }
         try Task.checkCancellation()
         try requireCurrentEpoch(expectedEpoch)
         guard (1 ... 65_536).contains(attestation.count) else {
@@ -452,6 +480,7 @@ public actor LatchwayAppAttestProvider: LatchwayAttestationProvider {
                 let keyID: String
                 do { keyID = try await service.generateKey() }
                 catch is CancellationError { throw LatchwayError.cancelled }
+                catch let error as AppAttestOperationError { throw error }
                 catch { throw LatchwayError.attestationUnavailable }
                 guard (1 ... 1_024).contains(keyID.utf8.count) else {
                     throw LatchwayError.attestationUnavailable
@@ -492,6 +521,14 @@ public actor LatchwayAppAttestProvider: LatchwayAttestationProvider {
                 creationTaskGeneration = nil
             }
             throw LatchwayError.cancelled
+        } catch let error as AppAttestOperationError {
+            if creationEpoch == expectedEpoch, creationTaskGeneration == taskGeneration {
+                creationTask = nil
+                creationEpoch = nil
+                creationTaskGeneration = nil
+            }
+            lastOperation = error.keyCreationDiagnostic
+            throw LatchwayError.attestationUnavailable
         } catch let error as LatchwayError {
             if creationEpoch == expectedEpoch, creationTaskGeneration == taskGeneration {
                 creationTask = nil
@@ -591,6 +628,34 @@ enum AppAttestOperationError: Error, Equatable {
     case invalidInput
     case serverUnavailable
     case failure
+
+    fileprivate var keyCreationDiagnostic: String {
+        switch self {
+        case .unsupported: "key_creation_unsupported"
+        case .invalidKey: "key_creation_invalid_key"
+        case .invalidInput: "key_creation_invalid_input"
+        case .serverUnavailable: "key_creation_server_unavailable"
+        case .failure: "key_creation_failed"
+        }
+    }
+
+    fileprivate var attestationDiagnostic: String {
+        diagnostic(operation: "attestation")
+    }
+
+    fileprivate var assertionDiagnostic: String {
+        diagnostic(operation: "assertion")
+    }
+
+    private func diagnostic(operation: String) -> String {
+        switch self {
+        case .unsupported: "\(operation)_unsupported"
+        case .invalidKey: "\(operation)_invalid_key"
+        case .invalidInput: "\(operation)_invalid_input"
+        case .serverUnavailable: "\(operation)_server_unavailable"
+        case .failure: "\(operation)_failed"
+        }
+    }
 }
 
 protocol AppAttestServicing: Sendable {

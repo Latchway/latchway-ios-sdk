@@ -234,6 +234,78 @@ final class AppAttestLifecycleTests: XCTestCase {
         XCTAssertEqual(status.lastOperation, "attestation")
     }
 
+    func testServerRejectedAttestationRotatesOnNextInvalidInput() async throws {
+        let service = FakeService()
+        let store = MemoryStateStore()
+        let firstProvider = LatchwayAppAttestProvider(service: service, stateStore: store)
+
+        let rejectedByServer = try await firstProvider.evidence(for: fixtureChallenge())
+        XCTAssertNotNil(rejectedByServer.evidence["attestation_object"])
+        // No didAccept call: the server rejected or lost the locally produced
+        // attestation before it became an accepted Latchway key.
+        await service.failNextAttestation(with: .invalidInput)
+
+        let reloadedProvider = LatchwayAppAttestProvider(service: service, stateStore: store)
+        let evidence = try await reloadedProvider.evidence(for: fixtureChallenge())
+
+        guard case let .string(keyID)? = evidence.evidence["key_id"] else {
+            return XCTFail("Expected a recovered key identifier")
+        }
+        XCTAssertEqual(keyID, "generated-key-2")
+        XCTAssertNotNil(evidence.evidence["attestation_object"])
+        XCTAssertNil(evidence.evidence["assertion_object"])
+        let persisted = try await store.load()
+        XCTAssertEqual(persisted, .init(keyID: "generated-key-2", acceptedByLatchway: false))
+        let counts = await service.counts()
+        XCTAssertEqual(counts.generateKey, 2)
+        XCTAssertEqual(counts.attestation, 3)
+        XCTAssertEqual(counts.assertion, 0)
+        let status = await reloadedProvider.status()
+        XCTAssertEqual(status.lastOperation, "attestation")
+    }
+
+    func testAcceptedAssertionInvalidInputDoesNotRotateKey() async throws {
+        let service = FakeService(assertionFailures: [.invalidInput])
+        let original = LatchwayAppAttestProvider.State(
+            keyID: "accepted",
+            acceptedByLatchway: true
+        )
+        let store = MemoryStateStore(initial: original)
+        let provider = LatchwayAppAttestProvider(service: service, stateStore: store)
+
+        await assertStableError(.attestationUnavailable) {
+            _ = try await provider.evidence(for: self.fixtureChallenge())
+        }
+
+        let persisted = try await store.load()
+        XCTAssertEqual(persisted, original)
+        let counts = await service.counts()
+        XCTAssertEqual(counts.generateKey, 0)
+        XCTAssertEqual(counts.attestation, 0)
+        XCTAssertEqual(counts.assertion, 1)
+        let status = await provider.status()
+        XCTAssertEqual(status.lastOperation, "assertion_invalid_input")
+    }
+
+    func testRepeatedUnacceptedInvalidInputStopsAfterOneRotation() async {
+        let service = FakeService(attestationFailures: [.invalidInput, .invalidInput])
+        let store = MemoryStateStore(
+            initial: .init(keyID: "previously-attested", acceptedByLatchway: false)
+        )
+        let provider = LatchwayAppAttestProvider(service: service, stateStore: store)
+
+        await assertStableError(.attestationUnavailable) {
+            _ = try await provider.evidence(for: self.fixtureChallenge())
+        }
+
+        let counts = await service.counts()
+        XCTAssertEqual(counts.generateKey, 1)
+        XCTAssertEqual(counts.attestation, 2)
+        XCTAssertEqual(counts.assertion, 0)
+        let persisted = try? await store.load()
+        XCTAssertEqual(persisted, .init(keyID: "generated-key-1", acceptedByLatchway: false))
+    }
+
     func testConcurrentInvalidKeyObservationsShareOneRecoveryGeneration() async throws {
         let service = SuspendedInvalidAssertionService()
         let store = MemoryStateStore(initial: .init(keyID: "stale", acceptedByLatchway: true))
@@ -561,17 +633,56 @@ final class AppAttestLifecycleTests: XCTestCase {
     }
 
     func testKeyCreationFailureUsesStableRedactedError() async {
-        let provider = LatchwayAppAttestProvider(
-            service: FakeService(generateKeyFailures: [.serverUnavailable]),
-            stateStore: MemoryStateStore()
-        )
-        do {
-            _ = try await provider.evidence(for: fixtureChallenge())
-            XCTFail("Expected App Attest key creation to fail")
-        } catch let error as LatchwayError {
-            XCTAssertEqual(error, .attestationUnavailable)
-        } catch {
-            XCTFail("Expected a stable LatchwayError, got \(type(of: error))")
+        for (failure, diagnostic) in [
+            (AppAttestOperationError.unsupported, "key_creation_unsupported"),
+            (.invalidKey, "key_creation_invalid_key"),
+            (.invalidInput, "key_creation_invalid_input"),
+            (.serverUnavailable, "key_creation_server_unavailable"),
+            (.failure, "key_creation_failed"),
+        ] {
+            let provider = LatchwayAppAttestProvider(
+                service: FakeService(generateKeyFailures: [failure]),
+                stateStore: MemoryStateStore()
+            )
+            do {
+                _ = try await provider.evidence(for: fixtureChallenge())
+                XCTFail("Expected App Attest key creation to fail")
+            } catch let error as LatchwayError {
+                XCTAssertEqual(error, .attestationUnavailable)
+            } catch {
+                XCTFail("Expected a stable LatchwayError, got \(type(of: error))")
+            }
+            let status = await provider.status()
+            XCTAssertEqual(status.lastOperation, diagnostic)
+        }
+    }
+
+    func testAttestationAndAssertionFailuresRecordRedactedOperationPhase() async {
+        let fixtures: [(LatchwayAppAttestProvider, String)] = [
+            (
+                LatchwayAppAttestProvider(
+                    service: FakeService(attestationFailures: [.serverUnavailable]),
+                    stateStore: MemoryStateStore()
+                ),
+                "attestation_server_unavailable"
+            ),
+            (
+                LatchwayAppAttestProvider(
+                    service: FakeService(assertionFailures: [.failure]),
+                    stateStore: MemoryStateStore(
+                        initial: .init(keyID: "accepted", acceptedByLatchway: true)
+                    )
+                ),
+                "assertion_failed"
+            ),
+        ]
+
+        for (provider, diagnostic) in fixtures {
+            await assertStableError(.attestationUnavailable) {
+                _ = try await provider.evidence(for: self.fixtureChallenge())
+            }
+            let status = await provider.status()
+            XCTAssertEqual(status.lastOperation, diagnostic)
         }
     }
 
@@ -643,6 +754,10 @@ private actor FakeService: AppAttestServicing {
         assertionCount += 1
         if !assertionFailures.isEmpty { throw assertionFailures.removeFirst() }
         return assertionResult
+    }
+
+    func failNextAttestation(with error: AppAttestOperationError) {
+        attestationFailures.append(error)
     }
 
     func counts() -> (generateKey: Int, attestation: Int, assertion: Int) {
