@@ -35,6 +35,21 @@ final class PublicAPITests: XCTestCase {
         XCTAssertFalse(description.contains(secret))
         XCTAssertTrue(description.contains("session_expired"))
         XCTAssertTrue(description.contains("request-12345678"))
+        XCTAssertEqual(
+            problem.documentationURL.absoluteString,
+            "https://docs.latchway.dev/errors/session_expired"
+        )
+    }
+
+    func testErrorDocumentationURLUsesOneEscapedStablePathSegment() {
+        XCTAssertEqual(
+            LatchwayErrorCode.quotaExceeded.documentationURL.absoluteString,
+            "https://docs.latchway.dev/errors/quota_exceeded"
+        )
+        XCTAssertEqual(
+            LatchwayErrorCode(rawValue: "future/code?fragment#value").documentationURL.absoluteString,
+            "https://docs.latchway.dev/errors/future%2Fcode%3Ffragment%23value"
+        )
     }
 
     func testRootStorageInitializersRequireConcreteGroupAndExposeLegacyScanList() {

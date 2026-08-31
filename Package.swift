@@ -61,6 +61,13 @@ let package = Package(
             dependencies: ["Latchway"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
+        .target(
+            name: "LatchwayGoldenJourneyExample",
+            dependencies: ["Latchway", "LatchwayAppAttest", "LatchwayFirebaseAuth"],
+            path: "Examples/BasicURLSession",
+            exclude: ["README.md"],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
         .testTarget(
             name: "LatchwayTests",
             dependencies: ["Latchway", "LatchwayTesting"],
@@ -95,6 +102,11 @@ let package = Package(
             name: "ConformanceTests",
             dependencies: ["Latchway", "LatchwayTesting"],
             resources: [.copy("Fixtures")],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .testTarget(
+            name: "LatchwayGoldenJourneyExampleTests",
+            dependencies: ["LatchwayGoldenJourneyExample"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
     ]

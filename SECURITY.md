@@ -44,6 +44,21 @@ metadata or nonce headers fail closed. Latchway server vulnerabilities should
 be reported against the core repository, with a cross-reference here when
 client behavior is involved.
 
+## Dependency vulnerability gate
+
+CI and release jobs bind both `Package.resolved` files, `Package.swift`, and the
+scanner policy scripts to the exact candidate commit before scanning. They
+install the checksum-and-size-pinned OSV-Scanner 2.4.0 binary, download the
+public SwiftURL advisory database, and then match dependencies locally with
+network resolution disabled. No package inventory or repository path is sent
+to OSV.dev.
+
+Run `scripts/scan-dependencies.sh "$(git rev-parse HEAD)"` to reproduce the
+gate. Critical, high, or unknown-severity findings fail the candidate;
+lower-severity findings remain visible for routine remediation. Scanner errors,
+malformed output, an empty inventory, or a missing offline database also fail
+closed.
+
 ## Disclosure
 
 Allow maintainers a reasonable opportunity to investigate and coordinate a fix

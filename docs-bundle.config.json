@@ -5,7 +5,7 @@
   "version": "1.0.0",
   "package": "Latchway",
   "documents": [
-    {"path": "quickstart/url-session.swift", "kind": "quickstart", "source": {"file": "Examples/BasicURLSession/BasicURLSession.swift", "start_line": 1, "end_line": 34}},
+    {"path": "quickstart/url-session.swift", "kind": "quickstart", "source": {"file": "Examples/BasicURLSession/BasicURLSession.swift", "start_line": 1, "end_line": 247}},
     {"path": "quickstart/app-extension-component.swift", "kind": "quickstart", "source": {"file": "Examples/AppExtensionComponents/Host/ComponentHostApp.swift", "start_line": 37, "end_line": 89}},
     {"path": "frameworks/swift-openai.swift", "kind": "framework", "source": {"file": "Sources/LatchwaySwiftOpenAI/LatchwaySwiftOpenAIHTTPClient.swift", "start_line": 11, "end_line": 99}},
     {"path": "frameworks/foundation-models.swift", "kind": "framework", "source": {"file": "Sources/LatchwayFoundationModels/LatchwayFoundationModels.swift", "start_line": 28, "end_line": 189}},
@@ -27,12 +27,12 @@
     {"glob": "Sources/**/*.swift", "pattern": "(?m)^\\s*public (?P<name>subscript)\\s*\\("}
   ],
   "errors": [
-    {"file": "Sources/Latchway/LatchwayError.swift", "start_line": 69, "end_line": 122, "pattern": "(?m)^\\s*\\\"(?P<name>[a-z][a-z0-9_]*)\\\":"},
-    {"file": "Sources/Latchway/LatchwayError.swift", "start_line": 160, "end_line": 172, "pattern": "(?m)^\\s*case (?P<name>[a-z][A-Za-z0-9_]*)"},
+    {"file": "Sources/Latchway/LatchwayError.swift", "start_line": 80, "end_line": 133, "pattern": "(?m)^\\s*\\\"(?P<name>[a-z][a-z0-9_]*)\\\":"},
+    {"file": "Sources/Latchway/LatchwayError.swift", "start_line": 178, "end_line": 190, "pattern": "(?m)^\\s*case (?P<name>[a-z][A-Za-z0-9_]*)"},
     {"file": "Sources/LatchwayFoundationModels/LatchwayFoundationModels.swift", "start_line": 8, "end_line": 12, "pattern": "(?m)^\\s*case (?P<name>[a-z][A-Za-z0-9_]*)"}
   ],
   "examples": [
-    {"name": "URLSession quickstart", "kind": "quickstart", "source": {"file": "Examples/BasicURLSession/BasicURLSession.swift", "start_line": 1, "end_line": 34}},
+    {"name": "Native App Attest golden journey", "kind": "quickstart", "source": {"file": "Examples/BasicURLSession/BasicURLSession.swift", "start_line": 1, "end_line": 247}},
     {"name": "App Attest physical-device application", "kind": "physical_device", "source": {"file": "Examples/AppAttestConformance/Sources/AppAttestConformanceApp.swift", "start_line": 1, "end_line": 109}},
     {"name": "App-extension component host", "kind": "component", "source": {"file": "Examples/AppExtensionComponents/Host/ComponentHostApp.swift", "start_line": 1, "end_line": 121}},
     {"name": "SwiftOpenAI adapter", "kind": "framework", "source": {"file": "Sources/LatchwaySwiftOpenAI/LatchwaySwiftOpenAIHTTPClient.swift", "start_line": 1, "end_line": 153}},

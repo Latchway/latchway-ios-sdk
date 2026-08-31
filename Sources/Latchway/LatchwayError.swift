@@ -66,6 +66,17 @@ public enum LatchwayErrorCode: Sendable, Equatable, Hashable, CustomStringConver
         }
     }
 
+    /// Stable public documentation for this wire error code.
+    ///
+    /// Unknown future codes remain linkable without allowing their value to
+    /// escape the final URL path segment.
+    public var documentationURL: URL {
+        let segment = description.addingPercentEncoding(
+            withAllowedCharacters: Self.documentationPathSegmentCharacters
+        )!
+        return URL(string: "https://docs.latchway.dev/errors/\(segment)")!
+    }
+
     private static let known: [String: Self] = [
         "request_invalid": .requestInvalid,
         "identity_token_missing": .identityTokenMissing,
@@ -122,6 +133,10 @@ public enum LatchwayErrorCode: Sendable, Equatable, Hashable, CustomStringConver
     ]
 
     private static let rawByKnown: [Self: String] = Dictionary(uniqueKeysWithValues: known.map { ($0.value, $0.key) })
+
+    private static let documentationPathSegmentCharacters = CharacterSet(
+        charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~"
+    )
 }
 
 public struct LatchwayProblem: Sendable, Equatable, Error {
@@ -155,6 +170,9 @@ public struct LatchwayProblem: Sendable, Equatable, Error {
         self.retryAfter = retryAfter
         self.operationID = operationID
     }
+
+    /// Stable remediation documentation for ``code``.
+    public var documentationURL: URL { code.documentationURL }
 }
 
 public enum LatchwayError: Error, Sendable, Equatable, CustomStringConvertible, LocalizedError {

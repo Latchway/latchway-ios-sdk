@@ -134,6 +134,14 @@ with a 64 KiB limit; successful and post-retry response bytes remain native,
 incremental `URLSession.AsyncBytes`. Call `finish()` after EOF or `cancel()`
 when stopping early to release the request's private URL session.
 
+The compiled [`Examples/BasicURLSession`](Examples/BasicURLSession) source is
+the complete Firebase + App Attest golden journey, including streamed
+Responses, diagnostic and response request IDs, quota, terminal revocation,
+and Firebase sign-out. For a server failure, use
+`problem.documentationURL` (or `problem.code.documentationURL`) to open the
+stable `https://docs.latchway.dev/errors/<code>` remediation page without
+rendering problem detail.
+
 Lower-level caller-owned transports that validate a same-origin rejection may
 use `authorize(_:feature:nonce:)` for `dpop_nonce_required` and `refresh()` for
 `session_expired`, then replay at most once while preserving the request ID.

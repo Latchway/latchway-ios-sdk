@@ -266,6 +266,11 @@ jobs:
           test "$(git cat-file -t "refs/tags/$RELEASE_TAG")" = tag
           test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$RELEASE_COMMIT"
           scripts/release-preflight.sh "$RELEASE_TAG"
+      - name: Scan the exact promoted dependency inventory offline
+        env:
+          LATCHWAY_OSV_EVIDENCE_PATH: ${{ runner.temp }}/ios-dependency-vulnerability-scan.json
+          SOURCE_COMMIT: ${{ needs.promote.outputs.commit }}
+        run: scripts/scan-dependencies.sh "$SOURCE_COMMIT"
       - name: Verify SwiftPM products and CocoaPods metadata
         run: scripts/verify-package.sh
       - name: Build deterministic source archive

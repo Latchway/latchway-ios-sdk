@@ -20,6 +20,10 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
+      - name: Scan the exact candidate dependency inventory offline
+        env:
+          SOURCE_COMMIT: ${{ github.sha }}
+        run: scripts/scan-dependencies.sh "$SOURCE_COMMIT"
       - name: Toolchain identity
         run: |
           xcodebuild -version
@@ -44,6 +48,7 @@ jobs:
             CODE_SIGNING_ALLOWED=NO build
       - name: Test fail-closed physical evidence policy
         run: |
+          python3 scripts/test-dependency-vulnerability-scan.py
           python3 scripts/test-device-evidence.py
           python3 scripts/test-physical-evidence-workflow.py
           python3 scripts/test-verify-gateway-deployment.py
