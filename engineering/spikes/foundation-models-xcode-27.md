@@ -3,9 +3,10 @@
 Date: 2026-08-30
 
 Decision: conditionally implemented for the Foundation Models custom
-`LanguageModel`/`LanguageModelExecutor` API available in the OS 27 SDK. Keep the
-adapter's compatibility state pending until runtime, gateway, and physical
-conformance pass.
+`LanguageModel`/`LanguageModelExecutor` API available in the OS 27 SDK. The
+narrow adapter passes its Xcode 27 / iOS 27 simulator runtime suite. Keep the
+compatibility state pending until hosted-gateway, exact release-image, and
+physical conformance pass.
 
 ## Exact SDK inspected
 
@@ -47,27 +48,51 @@ xcodebuild -version
 # Xcode 27.0 / Build version 27A5237l
 
 swift test --scratch-path /tmp/latchway-ios-addendum-build
-# LatchwayFoundationModels built; its availability test was skipped because
-# the test process ran on macOS 14 rather than macOS 27.
+# LatchwayFoundationModels built. The macOS process remains below macOS 27, so
+# it does not provide the simulator runtime evidence described below.
 
 swift build --disable-sandbox --configuration release \
   --scratch-path /tmp/latchway-ios-addendum-release
 # LatchwayFoundationModels compiled; Build complete
 ```
 
-This is compile evidence only. A runtime-skipped test is not treated as a
-successful Foundation Models execution.
+The retained `Latchway-Package` Xcode result ran
+`LatchwayFoundationModelsTests/FoundationModelsPublicAPITests` on an arm64
+iPhone 17 simulator with iOS 27.0. Its summary reports 9 passed, 0 failed, and
+0 skipped. The cases prove:
+
+1. safe public error descriptions;
+2. single-turn Responses streaming through `LanguageModelSession`;
+3. multi-turn instruction/user/assistant transcript preservation;
+4. incremental text snapshots and terminal token usage;
+5. fail-closed guided generation and tool calling without dispatch;
+6. truthful quota and unavailable-feature error mapping;
+7. cancellation reaching the native URL-loading stream;
+8. one canonical pre-dispatch session-refresh retry with a fresh
+   authorization value; and
+9. the app-extension client initializer as a first-class public compilation
+   boundary.
+
+The suite uses a protocol-valid local HTTP fixture through Apple's public
+Foundation Models session/executor APIs. It is real simulator runtime evidence,
+not merely compilation, but it does not prove a deployed gateway, physical
+device/native-key behavior, or release-image identity.
+
+The ninth case establishes only the initializer's public API boundary. An
+ordinary iOS extension cannot call `DCAppAttestService.generateKey`; a real
+Foundation Models extension must receive a separately keyed delegated
+component grant from its attested containing app.
 
 ## Evidence still required
 
-- Execute transcript translation, incremental delivery, usage, cancellation,
-  and every fail-closed capability case on a supported OS 27 runtime.
 - Run the adapter through a deployed Latchway Responses route with canonical
   request/stream fixtures and framework metadata enforcement.
 - Run signed physical-device coverage for native key ownership, background
-  behavior, memory bounds, and extension use where applicable.
+  behavior, memory bounds, and delegated extension use where applicable.
+- Repeat the same nine-case suite from the exact signed release candidate and
+  retain its machine-readable result bundle.
 - Establish and publish tested Apple framework version bounds in the core
   compatibility registry.
 
 Until those gates pass, documentation must describe this as a narrow optional
-adapter with pending runtime conformance, not as generally supported.
+adapter with passing local simulator conformance, not as generally supported.

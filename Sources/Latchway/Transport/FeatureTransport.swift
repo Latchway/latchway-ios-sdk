@@ -189,6 +189,7 @@ public struct LatchwayFeatureTransport: Sendable {
         framework: LatchwayFrameworkMetadata?,
         baseURL: URL,
         session: URLSession? = nil,
+        makeSession: (@Sendable () -> URLSession)? = nil,
         authorize: @escaping @Sendable (URLRequest) async throws -> URLRequest,
         send: @escaping @Sendable (URLRequest) async throws -> LatchwayHTTPResponse,
         streamingRetry: (@Sendable (
@@ -200,7 +201,9 @@ public struct LatchwayFeatureTransport: Sendable {
         self.feature = feature
         self.framework = framework
         self.baseURL = baseURL
-        if let session {
+        if let makeSession {
+            sessionFactory = makeSession
+        } else if let session {
             sessionFactory = { session }
         } else {
             sessionFactory = { LatchwayURLSessionFactory.make() }

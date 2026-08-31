@@ -580,6 +580,19 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn('find "$root" -mindepth 1 -print', publisher)
         self.assertIn('actual=("$asset_root"/*)', trusted)
         self.assertIn('test "${#actual[@]}" = "${#expected[@]}"', trusted)
+        self.assertIn("python3 scripts/build_docs_bundle.py", candidate)
+        self.assertIn(
+            "latchway-ios-docs-bundle-${{ needs.promote.outputs.version }}",
+            candidate,
+        )
+        self.assertGreaterEqual(
+            workflow.count('docs-bundle-$RELEASE_VERSION.tar.gz'),
+            3,
+        )
+        self.assertIn(
+            'test "$(sort -u "$RUNNER_TEMP/expected-assets.txt" | wc -l | tr -d \' \')" = 7',
+            trusted,
+        )
         self.assertIn(
             'cmp --silent "$RUNNER_TEMP/expected-assets.txt" "$RUNNER_TEMP/actual-assets.txt"',
             trusted,

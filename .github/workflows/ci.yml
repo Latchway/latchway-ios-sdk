@@ -49,5 +49,7 @@ jobs:
           python3 scripts/test-verify-gateway-deployment.py
           python3 -m py_compile scripts/inspect-physical-app-attest-candidate.py scripts/physical_app_bundle_tree.py
           bash -n scripts/build-physical-app-attest-candidate.sh scripts/gateway-deployment-evidence.sh scripts/run-physical-app-attest.sh
+      - name: Test deterministic documentation bundle production
+        run: python3 -m unittest scripts/test_build_docs_bundle.py
       - name: Verify SwiftPM products and CocoaPods metadata
         run: scripts/verify-package.sh

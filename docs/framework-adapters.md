@@ -76,13 +76,24 @@ The current translation is deliberately narrow and fail-closed:
   attachments, and sampling modes fail explicitly instead of being silently
   approximated;
 - availability begins with the Apple OS 27 SDK custom-executor API;
-- simulator compilation does not establish physical app-extension, native-key,
-  or production-gateway conformance.
+- the Xcode 27.0 / iOS 27.0 simulator suite passes all nine public-API cases:
+  safe errors, single- and multi-turn transcripts, incremental text and usage,
+  fail-closed schemas/tools, quota and feature errors, cancellation, safe
+  session-refresh retry, and the public app-extension initializer boundary;
+- simulator conformance does not establish physical app-extension/native-key
+  behavior, a deployed production gateway, or exact release-image evidence.
 
-Until those version and physical gates pass, the canonical compatibility
-registry remains the authority for its support state.
+The simulator result replaces the earlier compile-only evidence. Until the
+remaining hosted, release-image, and physical gates pass, the canonical
+compatibility registry remains the authority for its support state.
 
-## MacPaw/OpenAI 0.5.1: blocked, no adapter shipped
+The app-extension initializer accepts an already provisioned delegated
+`LatchwayExtensionClient`. It does not enable direct App Attest in an ordinary
+iOS extension: `DCAppAttestService.generateKey` is unavailable there, so the
+containing root app attests itself and delegates an independently keyed
+component grant without attesting on the extension's behalf.
+
+## MacPaw/OpenAI 0.5.1: stock release blocked
 
 Latchway intentionally does not ship an `OpenAIMiddleware` conformance for
 MacPaw/OpenAI 0.5.1. Its public request interceptor is synchronous
@@ -99,13 +110,29 @@ MacPaw support. Applications can use Latchway's raw transport directly while
 retaining their own Codable models, or use SwiftOpenAI's audited async client
 seam.
 
+### Verified upstream contribution
+
+Latchway carries an [upstream-ready patch](../engineering/upstream-contributions/macpaw-openai-0.5.1/README.md)
+against the official 0.5.1 source. It adds ordered asynchronous request
+interception to callback, async/await, Combine, and streaming clients,
+preserves the existing synchronous fast path, and bridges cancellation before
+and after dispatch. Applied to base commit
+`a532be89be9a30ec003e4ba0974a52a88d26fc6d`, the complete patched checkout passes
+217 tests: 187 XCTest cases and 30 Swift Testing cases, including five new
+ordering, callback, async/await, streaming, and cancellation cases.
+
+That patch is contribution evidence, not part of the published 0.5.1 release.
+No external pull request or merge is claimed, and Latchway still ships no
+MacPaw adapter. A released upstream seam plus Latchway adapter/common
+conformance would be required before the compatibility state can change.
+
 The capability decision was reproduced against:
 
 | Framework | Exact source | Result |
 | --- | --- | --- |
 | SwiftOpenAI | tag `4.6.0`, commit `b61ac3cce8018595412e5aa84275d1253645aab1`; public [`HTTPClient`](https://github.com/jamesrochabrun/SwiftOpenAI/blob/4.6.0/Sources/OpenAI/Private/Networking/HTTPClient.swift) | Buffered and line-stream hooks are injectable; compiled adapter and order/backpressure tests exist. |
-| MacPaw/OpenAI | tag `0.5.1`, commit `a532be89be9a30ec003e4ba0974a52a88d26fc6d`; public [`OpenAIMiddleware`](https://github.com/MacPaw/OpenAI/blob/0.5.1/Sources/OpenAI/Public/Protocols/OpenAIMiddleware.swift) and [`OpenAI` initializer](https://github.com/MacPaw/OpenAI/blob/0.5.1/Sources/OpenAI/OpenAI.swift) | Missing async request interception plus public streaming transport injection; blocked. |
-| FoundationModels | Xcode 27.0 SDK custom `LanguageModelExecutor` interfaces | Adapter compiles, but runtime/version/physical conformance remains pending. |
+| MacPaw/OpenAI | tag `0.5.1`, commit `a532be89be9a30ec003e4ba0974a52a88d26fc6d`; public [`OpenAIMiddleware`](https://github.com/MacPaw/OpenAI/blob/0.5.1/Sources/OpenAI/Public/Protocols/OpenAIMiddleware.swift) and [`OpenAI` initializer](https://github.com/MacPaw/OpenAI/blob/0.5.1/Sources/OpenAI/OpenAI.swift) | Stock release lacks the safe asynchronous seam; the patched official-source checkout passes all 217 tests, but the contribution is not merged or shipped. |
+| FoundationModels | Xcode 27.0 SDK custom `LanguageModelExecutor` interfaces on an iOS 27.0 simulator | All nine narrow public-API cases pass; hosted, exact-image, and physical conformance remain pending. |
 
 Adding a target or compiling a sample is not sufficient to change a framework's
 compatibility status. Tested version bounds, common conformance, security

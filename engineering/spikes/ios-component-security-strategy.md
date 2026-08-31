@@ -2,10 +2,12 @@
 
 Date: 2026-08-30
 
-Decision: accept the source architecture and local compile/unit evidence. Do
-not treat entitlement isolation, Secure Enclave operation, background signing,
-or lifecycle cleanup as release evidence until the signed physical-device
-matrix passes.
+Decision: accept the source architecture and local compile/unit evidence.
+Apple does not make App Attest key generation available to ordinary iOS app
+extensions, so those components are delegated-only rather than awaiting a
+future direct-attestation device result. Do not treat entitlement isolation,
+Secure Enclave operation, background signing, or lifecycle cleanup as release
+evidence until the signed physical-device matrix passes.
 
 ## Installation-family boundary
 
@@ -21,6 +23,16 @@ creation disabled. It cannot access the root key/session and cannot mint an
 orphan component key. Component refresh/session state is bound to the family,
 component definition/kind/platform/ID, key thumbprint, delegated feature set,
 trust source/parent/delegation, and bounded expiry.
+
+App Attest belongs only to the containing root app in this architecture. The
+installed Apple SDK documents that `DCAppAttestService.generateKey` fails when
+called from an ordinary iOS application extension (with a separate watchOS 9+
+exception that this package does not implement). Therefore Widget, Share,
+Action, App Intent, SSO, and notification extensions must use delegated trust:
+the host attests itself, prepares each component's independent DPoP key and
+delegated grant, and the extension uses only that component session. The host
+must not attest on an extension's behalf, and ordinary iOS extension targets
+must not carry the App Attest entitlement.
 
 ## Key and Keychain decision
 
@@ -130,7 +142,9 @@ evidence for:
 - slow streaming, cancellation, redirect rejection, and bounded memory;
 - component replacement, component revocation, and complete family sign-out;
 - reinstall migration behavior and uninstall cleanup; and
-- App Attest root proof followed by delegated component session establishment.
+- App Attest root proof in the containing app followed by delegated-only
+  component session establishment, with no extension `generateKey` attempt or
+  host attestation on an extension's behalf.
 
 An unsigned generic iOS build, a simulator test, a connected device, or a
 present signing identity does not satisfy any of those physical claims.

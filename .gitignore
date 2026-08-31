@@ -6,6 +6,7 @@ xcuserdata/
 
 # Swift Package Manager local output
 .build/
+.artifacts/
 .swiftpm/xcode/package.xcworkspace/xcuserdata/
 Examples/AppAttestConformance/AppAttestConformance.xcodeproj/
 Examples/AppAttestConformance/AppAttestConformance.xcworkspace/

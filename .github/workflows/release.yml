@@ -273,6 +273,15 @@ jobs:
           set -euo pipefail
           version="${RELEASE_TAG#v}"
           scripts/build-release-archive.sh "$RELEASE_TAG" "$RUNNER_TEMP"
+      - name: Build deterministic source-provenanced documentation bundle
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#v}"
+          python3 scripts/build_docs_bundle.py \
+            --output-dir "$RUNNER_TEMP/ios-docs-bundle" \
+            --version "$version" \
+            --commit "$RELEASE_COMMIT" \
+            --require-clean
       - name: Seal the closed CocoaPods publication candidate
         shell: bash
         run: |
@@ -316,6 +325,14 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 14
+      - name: Transfer the deterministic documentation bundle as inert release data
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: latchway-ios-docs-bundle-${{ needs.promote.outputs.version }}
+          path: ${{ runner.temp }}/ios-docs-bundle/docs-bundle-${{ needs.promote.outputs.version }}.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
 
   publish-cocoapods:
     name: Publish or adopt CocoaPods metadata without candidate checkout
@@ -336,6 +353,11 @@ jobs:
         with:
           name: latchway-ios-registry-candidate-${{ needs.promote.outputs.version }}
           path: ${{ runner.temp }}/ios-registry-candidate
+      - name: Download the deterministic documentation bundle as inert release data
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: latchway-ios-docs-bundle-${{ needs.promote.outputs.version }}
+          path: ${{ runner.temp }}/ios-docs-bundle
       - name: Validate the exact candidate without executing package content
         id: candidate
         shell: bash
@@ -480,6 +502,7 @@ jobs:
           install -m 600 -- \
             "$candidate/latchway-ios-sdk-$RELEASE_VERSION.tar.gz" \
             "$candidate/latchway-ios-sdk-$RELEASE_VERSION.tar.gz.sha256" \
+            "$RUNNER_TEMP/ios-docs-bundle/docs-bundle-$RELEASE_VERSION.tar.gz" \
             "$candidate/cocoapods-reviewed-podspec.json" \
             "$RUNNER_TEMP/cocoapods-published-podspec.json" \
             "$destination/"
@@ -583,6 +606,7 @@ jobs:
           expected=(
             "latchway-ios-sdk-$RELEASE_VERSION.tar.gz"
             "latchway-ios-sdk-$RELEASE_VERSION.tar.gz.sha256"
+            "docs-bundle-$RELEASE_VERSION.tar.gz"
             cocoapods-published-podspec.json
             cocoapods-reviewed-podspec.json
             cocoapods-release-evidence.json
@@ -630,6 +654,7 @@ jobs:
           assets=(
             "$asset_root/latchway-ios-sdk-$RELEASE_VERSION.tar.gz"
             "$asset_root/latchway-ios-sdk-$RELEASE_VERSION.tar.gz.sha256"
+            "$asset_root/docs-bundle-$RELEASE_VERSION.tar.gz"
             "$asset_root/cocoapods-published-podspec.json"
             "$asset_root/cocoapods-reviewed-podspec.json"
             "$asset_root/cocoapods-release-evidence.json"
@@ -642,7 +667,7 @@ jobs:
             test -s "$asset"
             printf '%s\n' "${asset##*/}" >> "$RUNNER_TEMP/expected-assets.txt"
           done
-          test "$(sort -u "$RUNNER_TEMP/expected-assets.txt" | wc -l | tr -d ' ')" = 6
+          test "$(sort -u "$RUNNER_TEMP/expected-assets.txt" | wc -l | tr -d ' ')" = 7
           expected_names=$(sort "$RUNNER_TEMP/expected-assets.txt" | jq --raw-input --slurp 'split("\n")[:-1]')
 
           gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" > "$RUNNER_TEMP/tag-ref.json"
