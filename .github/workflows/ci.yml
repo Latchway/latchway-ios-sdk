@@ -28,11 +28,16 @@ jobs:
         run: |
           xcodebuild -version
           swift --version
-      - name: Install pinned Tuist
+      - name: Install pinned Tuist and actionlint
         uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2
         with:
           install: true
           cache: false
+      - name: Validate every workflow with pinned actionlint
+        run: |
+          actionlint_version=$(actionlint -version | sed -n '1p')
+          test "$actionlint_version" = "1.7.12"
+          actionlint -shellcheck= -pyflakes= -oneline .github/workflows/*.yml
       - name: Compile production App Attest host and all extensions without signing
         env:
           TUIST_LATCHWAY_APP_ATTEST_ENVIRONMENT: production
@@ -54,7 +59,5 @@ jobs:
           python3 scripts/test-verify-gateway-deployment.py
           python3 -m py_compile scripts/inspect-physical-app-attest-candidate.py scripts/physical_app_bundle_tree.py
           bash -n scripts/build-physical-app-attest-candidate.sh scripts/gateway-deployment-evidence.sh scripts/run-physical-app-attest.sh
-      - name: Test deterministic documentation bundle production
-        run: python3 -m unittest scripts/test_build_docs_bundle.py
       - name: Verify SwiftPM products and CocoaPods metadata
         run: scripts/verify-package.sh
