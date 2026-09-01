@@ -6,6 +6,8 @@ public actor LatchwayClient {
     private let attestationProvider: any LatchwayAttestationProvider
     private let installationKey: any LatchwayInstallationKey
     private let sessionStorage: any LatchwaySessionStorage
+    private let componentRegistry: any LatchwayComponentRegistry
+    private let componentStateRetirer: any LatchwayComponentStateRetiring
     private let transport: any LatchwayHTTPTransport
     private let clock: any LatchwayClock
     private let proofFactory: LatchwayDPoPProofFactory
@@ -45,12 +47,21 @@ public actor LatchwayClient {
         let clock = LatchwaySystemClock()
         let attestation = configuration.attestationProvider ?? LatchwayUnavailableAttestationProvider()
         let proofFactory = LatchwayDPoPProofFactory(key: key, clock: clock)
+        let componentRegistry = LatchwayKeychainComponentRegistry(
+            applicationID: configuration.applicationID,
+            environment: configuration.environment,
+            rootKeychainAccessGroup: configuration.rootKeychainAccessGroup,
+            legacySharedKeychainAccessGroups: configuration.legacySharedKeychainAccessGroups,
+            clientRuntime: configuration.clientRuntime
+        )
 
         self.configuration = configuration
         self.identityTokenProvider = identityTokenProvider
         self.attestationProvider = attestation
         self.installationKey = key
         self.sessionStorage = storage
+        self.componentRegistry = componentRegistry
+        self.componentStateRetirer = LatchwayKeychainComponentStateRetirer(configuration: configuration)
         self.transport = transport
         self.clock = clock
         self.proofFactory = proofFactory
@@ -79,11 +90,20 @@ public actor LatchwayClient {
         clock: any LatchwayClock = LatchwaySystemClock()
     ) {
         let proofFactory = LatchwayDPoPProofFactory(key: installationKey, clock: clock)
+        let componentRegistry = LatchwayKeychainComponentRegistry(
+            applicationID: configuration.applicationID,
+            environment: configuration.environment,
+            rootKeychainAccessGroup: configuration.rootKeychainAccessGroup,
+            legacySharedKeychainAccessGroups: configuration.legacySharedKeychainAccessGroups,
+            clientRuntime: configuration.clientRuntime
+        )
         self.configuration = configuration
         self.identityTokenProvider = identityTokenProvider
         self.attestationProvider = attestationProvider
         self.installationKey = installationKey
         self.sessionStorage = sessionStorage
+        self.componentRegistry = componentRegistry
+        self.componentStateRetirer = LatchwayKeychainComponentStateRetirer(configuration: configuration)
         self.transport = transport
         self.clock = clock
         self.proofFactory = proofFactory
@@ -110,7 +130,9 @@ public actor LatchwayClient {
         sessionStorage: any LatchwaySessionStorage,
         transport: any LatchwayHTTPTransport,
         clock: any LatchwayClock,
-        rootKeychainPreflight: @escaping @Sendable () throws -> Void
+        rootKeychainPreflight: @escaping @Sendable () throws -> Void,
+        componentRegistry: (any LatchwayComponentRegistry)? = nil,
+        componentStateRetirer: (any LatchwayComponentStateRetiring)? = nil
     ) {
         let proofFactory = LatchwayDPoPProofFactory(key: installationKey, clock: clock)
         self.configuration = configuration
@@ -118,6 +140,15 @@ public actor LatchwayClient {
         self.attestationProvider = attestationProvider
         self.installationKey = installationKey
         self.sessionStorage = sessionStorage
+        self.componentRegistry = componentRegistry ?? LatchwayKeychainComponentRegistry(
+            applicationID: configuration.applicationID,
+            environment: configuration.environment,
+            rootKeychainAccessGroup: configuration.rootKeychainAccessGroup,
+            legacySharedKeychainAccessGroups: configuration.legacySharedKeychainAccessGroups,
+            clientRuntime: configuration.clientRuntime
+        )
+        self.componentStateRetirer = componentStateRetirer
+            ?? LatchwayKeychainComponentStateRetirer(configuration: configuration)
         self.transport = transport
         self.clock = clock
         self.proofFactory = proofFactory
@@ -496,23 +527,21 @@ public actor LatchwayClient {
         try await retireAfterRevocation()
     }
 
-    /// Revokes the complete installation family and retires the root key and
-    /// session material locally.
+    /// Revokes the complete installation family and retires the root plus every
+    /// durably registered delegated-component credential and key locally.
     ///
-    /// Use ``revokeCurrentInstallationFamily(retiring:)`` when the containing
-    /// app has delegated components so their component-specific Keychain state
-    /// is erased as part of the same sign-out operation.
+    /// Successful and reused component preparations are recorded as non-secret
+    /// descriptors in the root application's private Keychain group. Failed
+    /// component erasures remain registered so a later launch can retry them.
     public func revokeCurrentInstallationFamily() async throws {
         try await revokeCurrentInstallationFamily(retiring: [])
     }
 
-    /// Revokes the complete installation family, including every delegated
-    /// component, then erases the root and supplied component key material.
+    /// Revokes the complete installation family, including every registered or
+    /// explicitly supplied delegated component, then erases local key material.
     ///
-    /// Pass the same complete descriptor set used with
-    /// ``prepareComponents(_:)``. Access groups cannot be discovered from
-    /// Keychain safely, so omitting a component would leave only server-revoked
-    /// local material for that component behind.
+    /// The descriptor overload remains available for compatibility and for
+    /// retiring legacy component state that predates the durable registry.
     public func revokeCurrentInstallationFamily(
         retiring components: [LatchwayComponentConfiguration]
     ) async throws {
@@ -523,8 +552,9 @@ public actor LatchwayClient {
             )
         }
         try components.forEach(validateComponentConfiguration)
-        let active = try await activeSession()
+        var firstError: (any Error)?
         do {
+            let active = try await activeSession()
             do {
                 try await controlPlane.revokeFamily(accessToken: active.accessToken)
             } catch let error as LatchwayError where error.isSafeRefreshRejection {
@@ -533,20 +563,26 @@ public actor LatchwayClient {
             }
         } catch let error as LatchwayError {
             await record(error)
-            throw error
+            firstError = error
         } catch {
-            let error = LatchwayError.transportFailure
-            await record(error)
-            throw error
+            let transportError = LatchwayError.transportFailure
+            await record(transportError)
+            firstError = transportError
         }
-        var cleanupError: Error?
+
+        do {
+            try await LatchwayComponentFamilyRetirement.retireAll(
+                registry: componentRegistry,
+                including: components,
+                retire: { [self] component in try await retireComponentState(component) }
+            )
+        } catch {
+            firstError = firstError ?? error
+        }
         do { try await retireAfterRevocation() }
-        catch { cleanupError = error }
-        for component in components {
-            do { try await retireComponentState(component) }
-            catch { cleanupError = cleanupError ?? error }
-        }
-        if let cleanupError { throw cleanupError }
+        catch { firstError = firstError ?? error }
+
+        if let firstError { throw firstError }
     }
 
     /// Provisions every missing or expired delegated component. Existing,
@@ -596,6 +632,7 @@ public actor LatchwayClient {
             throw Self.componentError(from: error)
         }
         try await retireComponentState(component)
+        try await componentRegistry.unregister(component)
     }
 
     public func componentDiagnostics(
@@ -1073,6 +1110,11 @@ public actor LatchwayClient {
     ) async throws -> LatchwayComponentDiagnostics {
         try validateComponentConfiguration(component)
         let active = try await activeSession()
+        // Persist the safe Keychain coordinate before any component-local
+        // access or mutation. If provisioning later fails, retaining a
+        // harmless stale descriptor is preferable to leaving secret state
+        // untracked.
+        try await componentRegistry.register(component)
         let prior = try await componentStorage(for: component).load()
         let changedFamily = prior.map { stored in
             active.installationFamily?.id != stored.family.id
@@ -1167,48 +1209,13 @@ public actor LatchwayClient {
     private func retireComponentState(
         _ component: LatchwayComponentConfiguration
     ) async throws {
-        var cleanupFailed = false
-        do { try await componentStorage(for: component).clear() }
-        catch { cleanupFailed = true }
-        do { try await componentKey(for: component).reset() }
-        catch { cleanupFailed = true }
-        if cleanupFailed {
-            throw LatchwayComponentError.keychainAccessGroupUnavailable
-        }
+        try await componentStateRetirer.retire(component)
     }
 
     private func validateComponentConfiguration(
         _ component: LatchwayComponentConfiguration
     ) throws {
-        for (label, value) in [
-            ("definitionID", component.definitionID),
-            ("kind", component.kind),
-        ] {
-            guard value.range(of: "^[a-z][a-z0-9_-]{0,62}$", options: .regularExpression) != nil else {
-                throw LatchwayComponentError.invalidConfiguration(
-                    "\(label) must be a valid Latchway identifier"
-                )
-            }
-        }
-        guard component.keychainAccessGroup.range(
-            of: "^[A-Za-z0-9._-]{1,255}$",
-            options: .regularExpression
-        ) != nil else {
-            throw LatchwayComponentError.invalidConfiguration(
-                "keychainAccessGroup must be one fully resolved signed-entitlement access group"
-            )
-        }
-        guard !component.requestedFeatures.isEmpty,
-              component.requestedFeatures.count <= 256,
-              Set(component.requestedFeatures).count == component.requestedFeatures.count,
-              component.requestedFeatures.allSatisfy({ feature in
-                  feature.range(of: "^[a-z][a-z0-9_-]{0,62}$", options: .regularExpression) != nil
-              })
-        else {
-            throw LatchwayComponentError.invalidConfiguration(
-                "requestedFeatures must contain unique Latchway feature identifiers"
-            )
-        }
+        try component.validateForContainingApplication()
     }
 
     private static func validatedComponentProvisioning(
@@ -1397,8 +1404,7 @@ public actor LatchwayClient {
               (try? StrictJSON.validate(response.body)) != nil,
               let object = try? JSONSerialization.jsonObject(with: response.body) as? [String: Any],
               let type = object["type"] as? String,
-              let typeURL = URL(string: type),
-              typeURL.scheme != nil,
+              let documentationURL = object["documentation_url"] as? String,
               let title = object["title"] as? String,
               (1 ... 256).contains(title.utf8.count),
               let status = object["status"] as? Int,
@@ -1414,6 +1420,10 @@ public actor LatchwayClient {
               let retryable = object["retryable"] as? Bool
         else { return nil }
         let errorCode = LatchwayErrorCode(rawValue: code)
+        let canonicalDocumentationURL = errorCode.documentationURL.absoluteString
+        guard type == canonicalDocumentationURL,
+              documentationURL == canonicalDocumentationURL
+        else { return nil }
         let operationIDMemberPresent = object.keys.contains("operation_id")
         let operationID = object["operation_id"] as? String
         guard ProblemWire.hasValidOperationContract(
@@ -1684,18 +1694,6 @@ private extension LatchwayError {
     }
 
     var stableLocalCode: String {
-        switch self {
-        case .invalidConfiguration: "configuration_invalid"
-        case .invalidRequest: "request_invalid"
-        case .rootKeychainMigrationRequired: "root_keychain_migration_required"
-        case .secureEnclaveUnavailable, .keyStorageFailure: "key_unavailable"
-        case .attestationUnavailable: "attestation_unsupported"
-        case .invalidAttestationBinding: "attestation_invalid"
-        case .sessionUnavailable: "session_unavailable"
-        case .transportFailure: "transport_failure"
-        case .invalidServerResponse: "server_response_invalid"
-        case let .server(problem): problem.code.description
-        case .cancelled: "cancelled"
-        }
+        code
     }
 }

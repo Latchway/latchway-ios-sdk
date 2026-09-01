@@ -279,6 +279,30 @@ public enum LatchwayComponentError: Error, Sendable, Equatable, LocalizedError {
     }
 
     public var errorDescription: String? { recovery.action }
+
+    /// Stable redaction-safe code for component failures.
+    public var code: String {
+        switch self {
+        case .containingAppSetupRequired: "containing_app_setup_required"
+        case .componentNotProvisioned: "component_not_provisioned"
+        case .componentGrantExpired: "component_delegation_expired"
+        case .componentRevoked: "component_revoked"
+        case .installationFamilyRevoked: "installation_family_revoked"
+        case .parentTrustExpired: "component_parent_trust_expired"
+        case .featureNotDelegated: "component_feature_not_granted"
+        case .keychainAccessGroupUnavailable: "keychain_access_group_unavailable"
+        case .componentKeyUnavailable: "component_key_invalid"
+        case .identityChanged: "identity_reauthentication_required"
+        case .directAttestationRequired: "component_direct_attestation_required"
+        case .invalidConfiguration: "configuration_invalid"
+        case let .latchway(error): error.code
+        }
+    }
+
+    /// Stable public remediation documentation for ``code``.
+    public var documentationURL: URL {
+        URL(string: "https://docs.latchway.dev/errors/\(code.replacingOccurrences(of: "_", with: "-"))")!
+    }
 }
 
 enum LatchwayComponentCredentialKind: String, Sendable, Codable {

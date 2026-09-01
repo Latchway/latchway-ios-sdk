@@ -139,8 +139,17 @@ the complete Firebase + App Attest golden journey, including streamed
 Responses, diagnostic and response request IDs, quota, terminal revocation,
 and Firebase sign-out. For a server failure, use
 `problem.documentationURL` (or `problem.code.documentationURL`) to open the
-stable `https://docs.latchway.dev/errors/<code>` remediation page without
+stable `https://docs.latchway.dev/errors/<hyphenated-code>` remediation page.
+The SDK accepts a server Problem only when both `type` and
+`documentation_url` match that canonical URL, without
 rendering problem detail.
+
+For apps with delegated extensions, no-argument
+`revokeCurrentInstallationFamily()` also retires every component prepared on a
+current or earlier launch. The SDK persists only validated public component
+coordinates in the root-private Keychain group; failed component erasures stay
+registered for retry, while credentials and keys remain in their isolated
+component groups.
 
 Lower-level caller-owned transports that validate a same-origin rejection may
 use `authorize(_:feature:nonce:)` for `dpop_nonce_required` and `refresh()` for

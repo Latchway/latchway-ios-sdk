@@ -11,6 +11,11 @@ struct FoundationModelsPublicAPITests {
         guard #available(iOS 27.0, macOS 27.0, visionOS 27.0, watchOS 27.0, *) else { return }
         #expect(LatchwayFoundationModelsError.invalidGatewayStream.errorDescription != nil)
         #expect(LatchwayFoundationModelsError.invalidTranscript.errorDescription != nil)
+        #expect(LatchwayFoundationModelsError.invalidTranscript.code == "foundation_models_invalid_transcript")
+        #expect(
+            LatchwayFoundationModelsError.invalidTranscript.documentationURL.absoluteString
+                == "https://docs.latchway.dev/errors/foundation-models-invalid-transcript"
+        )
     }
 
     @Test func singleTurnGenerationUsesResponsesStreamingTransport() async throws {
@@ -21,6 +26,7 @@ struct FoundationModelsPublicAPITests {
             body: responsesStream(deltas: ["Hello", " from Latchway"])
         )])
         let fixture = makeTransport()
+        #expect(fixture.transport.frameworkMetadata == .foundationModels(version: "27.0.0"))
         let model = LatchwayLanguageModel(configuration: .init(transport: fixture.transport))
         let session = LanguageModelSession(model: model)
 
@@ -301,7 +307,7 @@ private func makeTransport(
     let recorder = FoundationModelsRequestRecorder()
     let transport = LatchwayFeatureTransport(
         feature: "foundation-models-test",
-        framework: .foundationModels(version: "27.0"),
+        framework: .foundationModels(version: "27.0.0"),
         baseURL: URL(string: "https://gateway.example.test")!,
         makeSession: {
             let configuration = URLSessionConfiguration.ephemeral
@@ -348,7 +354,8 @@ private func responsesStream(
 
 private func sessionExpiredProblem(requestID: String) throws -> Data {
     try JSONSerialization.data(withJSONObject: [
-        "type": "https://latchway.dev/problems/session_expired",
+        "type": "https://docs.latchway.dev/errors/session-expired",
+        "documentation_url": "https://docs.latchway.dev/errors/session-expired",
         "title": "Session expired",
         "status": 401,
         "detail": "The Latchway session is expired.",

@@ -23,6 +23,21 @@ public enum LatchwayFoundationModelsError: Error, Sendable, LocalizedError {
             "Latchway returned an invalid or incomplete Responses stream."
         }
     }
+
+    /// Stable redaction-safe code for adapter-local failures.
+    public var code: String {
+        switch self {
+        case .invalidTranscript: "foundation_models_invalid_transcript"
+        case .unsupportedSamplingMode: "foundation_models_sampling_unsupported"
+        case .gateway: "foundation_models_gateway_error"
+        case .invalidGatewayStream: "foundation_models_gateway_stream_invalid"
+        }
+    }
+
+    /// Stable public remediation documentation for ``code``.
+    public var documentationURL: URL {
+        URL(string: "https://docs.latchway.dev/errors/\(code.replacingOccurrences(of: "_", with: "-"))")!
+    }
 }
 
 /// A Foundation Models custom provider backed by a feature-bound Latchway

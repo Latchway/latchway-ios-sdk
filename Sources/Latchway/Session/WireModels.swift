@@ -327,6 +327,7 @@ struct ClientDiagnosticsWire: Decodable, Sendable {
 
 struct ProblemWire: Decodable {
     let type: String
+    let documentationURL: String
     let title: String
     let status: Int
     let detail: String
@@ -339,6 +340,7 @@ struct ProblemWire: Decodable {
 
     enum CodingKeys: String, CodingKey {
         case type, title, status, detail, code, retryable
+        case documentationURL = "documentation_url"
         case requestID = "request_id"
         case retryAfter = "retry_after"
         case operationID = "operation_id"
@@ -347,6 +349,7 @@ struct ProblemWire: Decodable {
     init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         type = try container.decode(String.self, forKey: .type)
+        documentationURL = try container.decode(String.self, forKey: .documentationURL)
         title = try container.decode(String.self, forKey: .title)
         status = try container.decode(Int.self, forKey: .status)
         detail = try container.decode(String.self, forKey: .detail)
@@ -372,7 +375,10 @@ struct ProblemWire: Decodable {
     }
 
     var isValid: Bool {
-        guard let typeURL = URL(string: type), typeURL.scheme != nil else { return false }
+        let canonicalDocumentationURL = LatchwayErrorCode(rawValue: code).documentationURL.absoluteString
+        guard type == canonicalDocumentationURL,
+              documentationURL == canonicalDocumentationURL
+        else { return false }
         return (1 ... 256).contains(title.utf8.count)
             && (400 ... 599).contains(status)
             && (1 ... 2_048).contains(detail.utf8.count)

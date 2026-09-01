@@ -17,9 +17,13 @@ public struct LatchwayFrameworkMetadata: Sendable, Hashable {
         .init(identifier: "swift-openai", version: version)
     }
 
+    public static func reactNativeFetch(version: String) -> Self {
+        .init(identifier: "react-native-fetch", version: version)
+    }
+
     func validate() throws {
         let supported: Set<String> = [
-            "foundation-models", "macpaw-openai", "swift-openai",
+            "foundation-models", "macpaw-openai", "react-native-fetch", "swift-openai",
         ]
         guard supported.contains(identifier) else {
             throw LatchwayError.invalidRequest("The framework integration is not registered")

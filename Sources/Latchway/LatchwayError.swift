@@ -71,7 +71,7 @@ public enum LatchwayErrorCode: Sendable, Equatable, Hashable, CustomStringConver
     /// Unknown future codes remain linkable without allowing their value to
     /// escape the final URL path segment.
     public var documentationURL: URL {
-        let segment = description.addingPercentEncoding(
+        let segment = description.replacingOccurrences(of: "_", with: "-").addingPercentEncoding(
             withAllowedCharacters: Self.documentationPathSegmentCharacters
         )!
         return URL(string: "https://docs.latchway.dev/errors/\(segment)")!
@@ -208,4 +208,31 @@ public enum LatchwayError: Error, Sendable, Equatable, CustomStringConvertible, 
     }
 
     public var errorDescription: String? { description }
+
+    /// Stable redaction-safe code for local and server failures.
+    public var code: String {
+        switch self {
+        case .invalidConfiguration: "configuration_invalid"
+        case .invalidRequest: "request_invalid"
+        case .rootKeychainMigrationRequired: "root_keychain_migration_required"
+        case .secureEnclaveUnavailable, .keyStorageFailure: "key_unavailable"
+        case .attestationUnavailable: "attestation_unsupported"
+        case .invalidAttestationBinding: "attestation_invalid"
+        case .sessionUnavailable: "session_unavailable"
+        case .transportFailure: "transport_failure"
+        case .invalidServerResponse: "server_response_invalid"
+        case let .server(problem): problem.code.description
+        case .cancelled: "cancelled"
+        }
+    }
+
+    /// Stable public remediation documentation for ``code``.
+    public var documentationURL: URL {
+        let segment = code.replacingOccurrences(of: "_", with: "-").addingPercentEncoding(
+            withAllowedCharacters: CharacterSet(
+                charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~"
+            )
+        )!
+        return URL(string: "https://docs.latchway.dev/errors/\(segment)")!
+    }
 }

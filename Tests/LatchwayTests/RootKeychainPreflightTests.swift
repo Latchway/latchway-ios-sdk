@@ -100,6 +100,7 @@ final class RootKeychainPreflightTests: XCTestCase {
         )
         XCTAssertTrue(records.contains(where: { $0.account == "installation-key" }))
         XCTAssertTrue(records.contains(where: { $0.account == "installation-key-kind" }))
+        XCTAssertTrue(records.contains(where: { $0.account == "component-registry" }))
         XCTAssertTrue(records.contains(where: { $0.account == "session" }))
         XCTAssertTrue(records.contains(where: {
             $0.account == "app-attest-state" && $0.service.hasSuffix(".default")

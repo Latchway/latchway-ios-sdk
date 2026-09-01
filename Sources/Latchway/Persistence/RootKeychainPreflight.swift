@@ -140,6 +140,10 @@ public enum LatchwayRootKeychainPreflight {
             LatchwayRootKeychainRecordCoordinate(service: rootService, account: "installation-key-kind"),
             LatchwayRootKeychainRecordCoordinate(service: rootService, account: "session"),
             LatchwayRootKeychainRecordCoordinate(
+                service: rootService,
+                account: LatchwayKeychainComponentRegistry.account
+            ),
+            LatchwayRootKeychainRecordCoordinate(
                 service: "dev.latchway.sdk.app-attest.\(appAttestNamespace)",
                 account: "app-attest-state"
             ),

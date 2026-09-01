@@ -753,11 +753,13 @@ private func sendBounded(_ request: URLRequest, maximumBytes: Int) async throws 
     let bodyStatus = object?["status"] as? Int
     let code = object?["code"] as? String
     let type = object?["type"] as? String
+    let documentationURL = object?["documentation_url"] as? String
     let bodyRequestID = object?["request_id"] as? String
     let headerRequestID = http.value(forHTTPHeaderField: "X-Latchway-Request-ID")
     let validProblem = bodyStatus == http.statusCode
         && bodyRequestID == headerRequestID
-        && type == code.map { "https://latchway.dev/problems/\($0)" }
+        && type == code.map { "https://docs.latchway.dev/errors/\($0.replacingOccurrences(of: "_", with: "-"))" }
+        && documentationURL == type
     return HTTPObservation(
         status: http.statusCode,
         body: body,

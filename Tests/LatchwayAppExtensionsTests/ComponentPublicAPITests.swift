@@ -14,6 +14,11 @@ import Testing
     #expect(component.requestedFeatures == ["weekly-summary"])
     #expect(LatchwayComponentError.containingAppSetupRequired.recovery.openingContainingAppCanFix)
     #expect(!LatchwayComponentError.componentKeyUnavailable.recovery.immediateRetryUseful)
+    #expect(LatchwayComponentError.componentGrantExpired.code == "component_delegation_expired")
+    #expect(
+        LatchwayComponentError.componentGrantExpired.documentationURL.absoluteString
+            == "https://docs.latchway.dev/errors/component-delegation-expired"
+    )
 }
 
 @Test func componentDiagnosticsNeverContainCredentials() {

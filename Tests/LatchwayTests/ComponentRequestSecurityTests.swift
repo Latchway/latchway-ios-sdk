@@ -100,6 +100,54 @@ final class ComponentRequestSecurityTests: XCTestCase {
         }
     }
 
+    func testReactNativeFrameworkMetadataUsesCanonicalHeaderPair() throws {
+        var request = URLRequest(
+            url: URL(string: "https://gateway.example.test/base/v1/responses")!
+        )
+        request.httpMethod = "POST"
+        let framework = LatchwayFrameworkMetadata.reactNativeFetch(version: "0.82.0")
+
+        try LatchwayComponentRequestSecurity.prepare(
+            &request,
+            configuration: configuration,
+            feature: "habit-assistant",
+            framework: framework,
+            allowManagedPlaceholder: true
+        )
+        LatchwayComponentRequestSecurity.addMetadata(
+            to: &request,
+            configuration: configuration,
+            framework: framework
+        )
+
+        XCTAssertEqual(request.value(forHTTPHeaderField: "X-Latchway-Framework"), "react-native-fetch")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "X-Latchway-Framework-Version"), "0.82.0")
+    }
+
+    func testFoundationModelsFrameworkMetadataUsesCanonicalHeaderPair() throws {
+        var request = URLRequest(
+            url: URL(string: "https://gateway.example.test/base/v1/responses")!
+        )
+        request.httpMethod = "POST"
+        let framework = LatchwayFrameworkMetadata.foundationModels(version: "27.0.0")
+
+        try LatchwayComponentRequestSecurity.prepare(
+            &request,
+            configuration: configuration,
+            feature: "habit-assistant",
+            framework: framework,
+            allowManagedPlaceholder: true
+        )
+        LatchwayComponentRequestSecurity.addMetadata(
+            to: &request,
+            configuration: configuration,
+            framework: framework
+        )
+
+        XCTAssertEqual(request.value(forHTTPHeaderField: "X-Latchway-Framework"), "foundation-models")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "X-Latchway-Framework-Version"), "27.0.0")
+    }
+
     private func prepare(_ request: inout URLRequest) throws {
         try LatchwayComponentRequestSecurity.prepare(
             &request,

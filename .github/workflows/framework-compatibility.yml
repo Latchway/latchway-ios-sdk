@@ -1,0 +1,156 @@
+name: Scheduled framework compatibility
+
+on:
+  schedule:
+    - cron: "23 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-framework-compatibility-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  compatibility:
+    name: ${{ matrix.profile }} framework profile
+    runs-on: macos-26
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        # Registry minimum and latest are both the exact audited 4.6.0/27.0.0 tuple.
+        profile: [registry-exact]
+    steps:
+      - name: Check out the iOS SDK
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Resolve the locked core source
+        id: core
+        shell: bash
+        run: |
+          set -euo pipefail
+          commit=$(awk '$1 == "core_commit:" {print $2}' contract.lock)
+          [[ "$commit" =~ ^[0-9a-f]{40}$ ]]
+          printf 'commit=%s\n' "$commit" >> "$GITHUB_OUTPUT"
+      - name: Check out the locked canonical registry and case validator
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: Latchway/latchway
+          ref: ${{ steps.core.outputs.commit }}
+          path: _core
+          persist-credentials: false
+      - name: Validate the complete iOS registry report
+        run: >-
+          python3 _core/scripts/framework_conformance.py
+          --manifest _core/conformance/framework-cases.json
+          --registry _core/compatibility/frameworks.yaml
+          --report Conformance/framework-report.json
+          --require-repository latchway-ios-sdk
+      - name: Resolve the exact registry profile
+        run: swift package resolve
+      - name: Install the pinned project generator
+        uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2
+        with:
+          install: true
+          cache: false
+      - name: Generate the iOS 27 Foundation Models test host
+        run: |
+          set -euo pipefail
+          test "$(tuist version)" = "4.200.4"
+          test "$(xcrun --sdk iphonesimulator --show-sdk-version)" = "27.0"
+          tuist generate --path IntegrationTests/FoundationModelsConformance --no-open
+      - name: Run the SwiftOpenAI adapter
+        id: swift-openai-tests
+        continue-on-error: true
+        run: swift test --filter LatchwaySwiftOpenAITests
+      - name: Run Foundation Models on the iOS 27 simulator
+        id: foundation-models-tests
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild -quiet \
+            -project IntegrationTests/FoundationModelsConformance/FoundationModelsConformance.xcodeproj \
+            -scheme FoundationModelsConformance \
+            -destination 'platform=iOS Simulator,OS=27.0,name=iPhone 17' \
+            -derivedDataPath "$RUNNER_TEMP/latchway-foundation-models" \
+            CODE_SIGNING_ALLOWED=NO test
+          foundation_result=$(find "$RUNNER_TEMP/latchway-foundation-models/Logs/Test" \
+            -maxdepth 1 -name 'Test-FoundationModelsConformance-*.xcresult' -print -quit)
+          test -n "$foundation_result"
+          xcrun xcresulttool get test-results summary --path "$foundation_result" \
+            > "$RUNNER_TEMP/foundation-models-summary.json"
+          jq --exit-status \
+            '.result == "Passed" and .totalTestCount == 9 and .passedTests == 9 and .failedTests == 0 and .skippedTests == 0' \
+            "$RUNNER_TEMP/foundation-models-summary.json" > /dev/null
+      - name: Reprove the exact unsupported MacPaw transport boundary
+        id: macpaw-tests
+        continue-on-error: true
+        run: swift run --package-path IntegrationTests/MacPawOpenAITransportSpike MacPawOpenAITransportSpike
+      - name: Emit machine-readable compatibility evidence
+        if: always()
+        env:
+          PROFILE: ${{ matrix.profile }}
+          OUTCOME: ${{ (steps.swift-openai-tests.outcome == 'success' && steps.foundation-models-tests.outcome == 'success' && steps.macpaw-tests.outcome == 'success') && 'success' || 'failure' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          swift_openai=$(jq --raw-output '.pins[] | select(.identity == "swiftopenai") | .state.version' Package.resolved)
+          test -n "$swift_openai"
+          xcode_version=$(xcodebuild -version | paste -sd ' ' -)
+          python3 _core/scripts/framework_observation.py \
+            --repository latchway-ios-sdk \
+            --profile "$PROFILE" \
+            --outcome "$OUTCOME" \
+            --report Conformance/framework-report.json \
+            --version "SwiftOpenAI=$swift_openai" \
+            --version "FoundationModels=27.0.0" \
+            --version "MacPawOpenAI=0.5.1" \
+            --version "iOSSimulatorSDK=$(xcrun --sdk iphonesimulator --show-sdk-version)" \
+            --version "Xcode=$xcode_version" \
+            --output "$RUNNER_TEMP/ios-framework-$PROFILE.json"
+      - name: Retain the report, locks, and observation
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ios-framework-${{ matrix.profile }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/ios-framework-${{ matrix.profile }}.json
+            ${{ runner.temp }}/foundation-models-summary.json
+            Conformance/framework-report.json
+            Package.resolved
+            IntegrationTests/MacPawOpenAITransportSpike/Package.resolved
+          if-no-files-found: error
+          retention-days: 30
+      - name: Fail after evidence retention
+        if: >-
+          steps.swift-openai-tests.outcome != 'success' ||
+          steps.foundation-models-tests.outcome != 'success' ||
+          steps.macpaw-tests.outcome != 'success'
+        run: exit 1
+
+  issue-on-failure:
+    name: Open one scheduled compatibility issue
+    needs: compatibility
+    if: always() && github.event_name == 'schedule' && needs.compatibility.result == 'failure'
+    runs-on: ubuntu-24.04
+    permissions:
+      issues: write
+    steps:
+      - name: Create or update the deduplicated issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TITLE: "Scheduled iOS framework compatibility failed"
+        shell: bash
+        run: |
+          set -euo pipefail
+          body="The exact audited iOS framework tuple failed. SwiftOpenAI and Foundation Models currently have no wider registry range to label as minimum/latest/newest-compatible. Evidence: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          number=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "$TITLE in:title" --json number,title --jq '.[] | select(.title == env.TITLE) | .number' | head -n 1)
+          if [[ -n "$number" ]]; then
+            gh issue comment "$number" --repo "$GITHUB_REPOSITORY" --body "$body"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$TITLE" --body "$body"
+          fi

@@ -1,6 +1,7 @@
 # MacPaw/OpenAI 0.5.1 transport spike
 
-Date: 2026-08-30; contribution verified 2026-08-31
+Date: 2026-08-30; contribution verified 2026-08-31; stock transport
+fallback verified 2026-09-01
 
 Decision: the stock 0.5.1 release remains blocked; no MacPaw adapter product or
 Latchway conformance is shipped or advertised. An upstream-ready patch now
@@ -28,6 +29,38 @@ The public initializer can accept a `URLSession` for buffered requests, but
 `Sources/OpenAI/Private/Streaming/ServerSentEventsStreamingSessionFactory.swift`
 is not public. An adapter therefore cannot own both ordinary and streaming
 request dispatch through the required native security boundary.
+
+## Stock release executable gate
+
+[`IntegrationTests/MacPawOpenAITransportSpike`](../../IntegrationTests/MacPawOpenAITransportSpike/README.md)
+is a standalone executable package whose manifest pins the official dependency
+with `exact: "0.5.1"`. Its resolved revision is
+`a532be89be9a30ec003e4ba0974a52a88d26fc6d`.
+
+The executable gives `OpenAI` an ephemeral `URLSession` with a custom
+`URLProtocol`, and also registers that protocol process-wide. It sends only to
+an isolated ephemeral loopback HTTP listener. Ordinary Chat Completions and
+Responses requests both reach the injected protocol. Their streaming
+equivalents do not: the stock internal factory constructs
+`URLSession(configuration: .default)`, which ignores the custom session and the
+globally registered protocol on the tested Darwin runtime. The gate additionally
+requires both streams to reach the listener on their exact endpoint paths,
+excluding a local pre-dispatch rejection as a false positive.
+
+```bash
+swift run --package-path IntegrationTests/MacPawOpenAITransportSpike \
+  MacPawOpenAITransportSpike
+# ordinary Chat Completions + Responses interception: covered
+# streaming Chat Completions + Responses interception: unavailable
+# MacPaw/OpenAI 0.5.1 full Latchway transport: BLOCKED
+```
+
+This closes the proposed custom-URLSession/custom-URLProtocol fallback. A
+buffered adapter could authorize ordinary dispatch, but no public stock-0.5.1
+hook can apply asynchronous session refresh and a fresh DPoP proof to streaming
+dispatch or preserve cancellation through Latchway's transport. Shipping a
+`LatchwayOpenAI` product for that partial surface would create a credential
+bypass, so the product is intentionally absent.
 
 ## Upstream-ready contribution
 
@@ -79,8 +112,8 @@ swift test
   exports native credentials.
 - Blocking an async actor refresh inside synchronous middleware risks deadlock
   and violates structured concurrency/cancellation.
-- A global `URLProtocol` interception hook cannot provide a narrow,
-  framework-owned streaming/cancellation boundary and is process-global.
+- A global `URLProtocol` registration is process-global and, as the executable
+  gate demonstrates, is not consulted by the stock streaming session.
 - A buffered-only facade would omit MacPaw's streaming path and must not be
   labeled transparent MacPaw support.
 

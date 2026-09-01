@@ -169,7 +169,22 @@ siblings active:
 try await rootClient.revokeComponent(weeklyWidget)
 ```
 
-For sign-out, pass the same complete descriptor set used during preparation:
+For sign-out, the no-argument API retires every component prepared by this SDK,
+including components prepared by an earlier process launch:
+
+```swift
+try await rootClient.revokeCurrentInstallationFamily()
+```
+
+The containing app stores a bounded registry of validated, non-secret component
+descriptors in its private root Keychain group. Credentials and private keys
+remain isolated in each component access group. A descriptor is registered
+before component-local state can be created, and it is removed only after both
+that component's credential and key have been erased. Failed erasures remain
+registered for a later retry.
+
+The explicit overload remains compatible and can retire legacy state created
+before the durable registry was introduced:
 
 ```swift
 try await rootClient.revokeCurrentInstallationFamily(
@@ -177,12 +192,11 @@ try await rootClient.revokeCurrentInstallationFamily(
 )
 ```
 
-The server revokes the family first. The SDK then attempts every root and
-component cleanup even if one Keychain group is unavailable, and returns a
-cleanup error after the remaining erasures have been attempted. The no-argument
-family revocation API retires root state only because Keychain access groups
-cannot be enumerated safely; use the descriptor overload whenever delegated
-components exist.
+The SDK attempts server revocation, every registered or supplied component
+cleanup, and root cleanup even if an earlier step fails. It returns the first
+error after the remaining erasures have been attempted. A successful component
+cleanup removes its registry entry immediately; a failed one keeps the safe
+coordinate durable so a later launch can retry it.
 
 ## Recovery and diagnostics
 

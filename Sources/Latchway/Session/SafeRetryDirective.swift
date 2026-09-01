@@ -7,11 +7,12 @@ enum SafeRetryDirective: Sendable, Equatable {
     static let maximumProblemBytes = 65_536
 
     private static let requiredProblemMembers: Set<String> = [
-        "type", "title", "status", "detail", "code", "request_id", "retryable",
+        "type", "documentation_url", "title", "status", "detail", "code", "request_id", "retryable",
     ]
 
     private struct Problem: Decodable {
         let type: String
+        let documentationURL: String
         let title: String
         let status: Int
         let detail: String
@@ -21,6 +22,7 @@ enum SafeRetryDirective: Sendable, Equatable {
 
         enum CodingKeys: String, CodingKey {
             case type, title, status, detail, code, retryable
+            case documentationURL = "documentation_url"
             case requestID = "request_id"
         }
     }
@@ -49,14 +51,16 @@ enum SafeRetryDirective: Sendable, Equatable {
 
         switch problem.code {
         case "session_expired":
-            guard problem.type == "https://latchway.dev/problems/session_expired",
+            guard problem.type == "https://docs.latchway.dev/errors/session-expired",
+                  problem.documentationURL == problem.type,
                   problem.title == "Session expired",
                   problem.detail == "The Latchway session is expired.",
                   matchingHeaders("DPoP-Nonce", in: response).isEmpty
             else { return nil }
             return .sessionExpired
         case "dpop_nonce_required":
-            guard problem.type == "https://latchway.dev/problems/dpop_nonce_required",
+            guard problem.type == "https://docs.latchway.dev/errors/dpop-nonce-required",
+                  problem.documentationURL == problem.type,
                   problem.title == "DPoP nonce required",
                   problem.detail == "A fresh server DPoP nonce is required.",
                   let nonce = uniqueHeader("DPoP-Nonce", in: response),

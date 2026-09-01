@@ -58,6 +58,25 @@ final class ProblemWireTests: XCTestCase {
         }
     }
 
+    func testProblemRequiresMatchingCanonicalDocumentationURLs() throws {
+        let canonical = problemDocument(code: "future_safe_code", status: 418, retryable: false)
+        XCTAssertTrue(try decode(canonical).isValid)
+        XCTAssertEqual(
+            try decode(canonical).problem.documentationURL.absoluteString,
+            "https://docs.latchway.dev/errors/future-safe-code"
+        )
+
+        for key in ["type", "documentation_url"] {
+            var mismatch = canonical
+            mismatch[key] = "https://malicious.invalid/future-safe-code"
+            XCTAssertFalse(try decode(mismatch).isValid)
+        }
+
+        var missing = canonical
+        missing.removeValue(forKey: "documentation_url")
+        XCTAssertThrowsError(try decode(missing))
+    }
+
     private func problemDocument(
         code: String,
         status: Int,
@@ -65,7 +84,8 @@ final class ProblemWireTests: XCTestCase {
         operationID: String? = nil
     ) -> [String: Any] {
         var document: [String: Any] = [
-            "type": "https://latchway.dev/problems/\(code)",
+            "type": "https://docs.latchway.dev/errors/\(code.replacingOccurrences(of: "_", with: "-"))",
+            "documentation_url": "https://docs.latchway.dev/errors/\(code.replacingOccurrences(of: "_", with: "-"))",
             "title": "Safe failure",
             "status": status,
             "detail": "The request was rejected safely.",

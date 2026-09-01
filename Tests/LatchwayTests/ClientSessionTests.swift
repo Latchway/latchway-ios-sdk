@@ -502,6 +502,71 @@ final class ClientSessionTests: XCTestCase {
         XCTAssertEqual(countsAfterRefresh.refresh, counts.refresh)
     }
 
+    func testNoArgumentFamilyRevocationCleansRegisteredComponentsAndRetainsFailures() async throws {
+        let widget = LatchwayComponentConfiguration.widget(
+            definitionID: "home_widget",
+            keychainAccessGroup: "TEAM123456.com.example.widget",
+            requestedFeatures: ["habit_assistant"]
+        )
+        let share = LatchwayComponentConfiguration.shareExtension(
+            definitionID: "share_extension",
+            keychainAccessGroup: "TEAM123456.com.example.share",
+            requestedFeatures: ["habit_summary"]
+        )
+        let registry = ClientComponentRegistry(components: [widget, share])
+        let retirer = ClientComponentRetirer(failingDefinitionIDs: [share.definitionID])
+        let fixture = try await makeFixture(
+            componentRegistry: registry,
+            componentStateRetirer: retirer
+        )
+
+        do {
+            try await fixture.client.revokeCurrentInstallationFamily()
+            XCTFail("Expected one component Keychain cleanup failure")
+        } catch let error as LatchwayComponentError {
+            XCTAssertEqual(error, .keychainAccessGroupUnavailable)
+        }
+
+        let counts = await fixture.server.counts()
+        let attempts = await retirer.attempts()
+        let remaining = await registry.components()
+        let clearCount = await fixture.storage.clearCount
+        let resetCount = await fixture.attestation.resetCount
+        XCTAssertEqual(counts.familyRevoke, 1)
+        XCTAssertEqual(Set(attempts), Set([widget.definitionID, share.definitionID]))
+        XCTAssertEqual(remaining, [share])
+        XCTAssertEqual(clearCount, 1)
+        XCTAssertEqual(resetCount, 1)
+    }
+
+    func testFamilyRevocationStillCleansRegisteredAndRootStateAfterServerFailure() async throws {
+        let widget = LatchwayComponentConfiguration.widget(
+            definitionID: "home_widget",
+            keychainAccessGroup: "TEAM123456.com.example.widget",
+            requestedFeatures: ["habit_assistant"]
+        )
+        let registry = ClientComponentRegistry(components: [widget])
+        let retirer = ClientComponentRetirer(failingDefinitionIDs: [])
+        let fixture = try await makeFixture(
+            familyRevokeFailure: true,
+            componentRegistry: registry,
+            componentStateRetirer: retirer
+        )
+
+        await XCTAssertThrowsErrorAsync {
+            try await fixture.client.revokeCurrentInstallationFamily()
+        }
+
+        let attempts = await retirer.attempts()
+        let remaining = await registry.components()
+        let clearCount = await fixture.storage.clearCount
+        let resetCount = await fixture.attestation.resetCount
+        XCTAssertEqual(attempts, [widget.definitionID])
+        XCTAssertEqual(remaining, [])
+        XCTAssertEqual(clearCount, 1)
+        XCTAssertEqual(resetCount, 1)
+    }
+
     func testBufferedSendRetriesSessionExpiryOnceBeforeDispatch() async throws {
         let fixture = try await makeFixture(dataPlaneRejection: "session_expired")
         var request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
@@ -512,6 +577,30 @@ final class ClientSessionTests: XCTestCase {
         let counts = await fixture.server.counts()
         XCTAssertEqual(counts.dataPlane, 2)
         XCTAssertEqual(counts.refresh, 1)
+    }
+
+    func testReactNativeTransportAutomaticallyRefreshesExpiredSessionBeforeReplay() async throws {
+        let fixture = try await makeFixture(dataPlaneRejection: "session_expired")
+        let transport = fixture.client.transport(
+            feature: "habit-assistant",
+            framework: .reactNativeFetch(version: "0.82.0")
+        )
+        var request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        request.httpMethod = "POST"
+        request.httpBody = Data("{}".utf8)
+
+        let response = try await transport.send(request)
+
+        XCTAssertEqual(response.statusCode, 200)
+        let counts = await fixture.server.counts()
+        let frameworkIDs = await fixture.server.dataPlaneFrameworkIDs()
+        let frameworkVersions = await fixture.server.dataPlaneFrameworkVersions()
+        XCTAssertEqual(counts.dataPlane, 2)
+        XCTAssertEqual(counts.refresh, 1)
+        XCTAssertEqual(frameworkIDs, [
+            "react-native-fetch", "react-native-fetch",
+        ])
+        XCTAssertEqual(frameworkVersions, ["0.82.0", "0.82.0"])
     }
 
     func testBufferedSendDoesNotRetrySessionExpiryWithoutRetryGuidance() async throws {
@@ -551,8 +640,10 @@ final class ClientSessionTests: XCTestCase {
     func testBufferedSendRequiresCanonicalSafeRetryProblemBeforeReplay() async throws {
         let cases: [(String, SafeRetryProblemMutation)] = [
             ("missing member", .missingMember),
+            ("missing documentation URL", .missingDocumentationURL),
             ("extra member", .extraMember),
             ("wrong type", .wrongType),
+            ("wrong documentation URL", .wrongDocumentationURL),
             ("wrong title", .wrongTitle),
             ("wrong detail", .wrongDetail),
             ("wrong status", .wrongStatus),
@@ -1054,6 +1145,7 @@ final class ClientSessionTests: XCTestCase {
         challengeExpired: Bool = false,
         challengeClockOffset: TimeInterval = 0,
         refreshRejection: String? = nil,
+        familyRevokeFailure: Bool = false,
         failSecondAttestation: Bool = false,
         failingSaveCalls: Set<Int> = [],
         storedRefreshToken: String? = nil,
@@ -1061,7 +1153,9 @@ final class ClientSessionTests: XCTestCase {
         clientRuntime: LatchwayClientRuntime = .iOS,
         clientSDKVersion: String = LatchwayVersion.sdk,
         baseURL: URL = URL(string: "https://gateway.example.test")!,
-        rootKeychainPreflight: @escaping @Sendable () throws -> Void = {}
+        rootKeychainPreflight: @escaping @Sendable () throws -> Void = {},
+        componentRegistry: (any LatchwayComponentRegistry)? = nil,
+        componentStateRetirer: (any LatchwayComponentStateRetiring)? = nil
     ) async throws -> Fixture {
         let raw = try decodeBase64URL("2ZFd1bc5bCB8zu8OEf5l7O9x_SxbsQNQMNn0si4NxxI")
         let key = try LatchwayDeterministicInstallationKey(rawPrivateKey: raw)
@@ -1079,6 +1173,7 @@ final class ClientSessionTests: XCTestCase {
             challengeExpired: challengeExpired,
             challengeClockOffset: challengeClockOffset,
             refreshRejection: refreshRejection,
+            familyRevokeFailure: familyRevokeFailure,
             platform: clientRuntime.platformIdentifier
         )
         let identity = CountingIdentityProvider(token: String(repeating: "i", count: 32))
@@ -1125,7 +1220,9 @@ final class ClientSessionTests: XCTestCase {
             sessionStorage: storage,
             transport: server,
             clock: clock,
-            rootKeychainPreflight: rootKeychainPreflight
+            rootKeychainPreflight: rootKeychainPreflight,
+            componentRegistry: componentRegistry,
+            componentStateRetirer: componentStateRetirer
         )
         return Fixture(client: client, server: server, identity: identity, attestation: attestation, storage: storage, clock: clock)
     }
@@ -1157,8 +1254,10 @@ final class ClientSessionTests: XCTestCase {
 
 private enum SafeRetryProblemMutation: Sendable, Equatable {
     case missingMember
+    case missingDocumentationURL
     case extraMember
     case wrongType
+    case wrongDocumentationURL
     case wrongTitle
     case wrongDetail
     case wrongStatus
@@ -1197,6 +1296,7 @@ private actor SessionServerTransport: LatchwayHTTPTransport {
     private var refreshCount = 0
     private var quotaCount = 0
     private var revokeCount = 0
+    private var familyRevokeCount = 0
     private var dataPlaneCount = 0
     private var proofs: [String] = []
     private var protectedProofs: [String] = []
@@ -1206,6 +1306,8 @@ private actor SessionServerTransport: LatchwayHTTPTransport {
     private var requestedSDKVersions: [String] = []
     private var refreshBodies: [[String]] = []
     private var protectedRequestIDs: [String] = []
+    private var protectedFrameworkIDs: [String] = []
+    private var protectedFrameworkVersions: [String] = []
     private let dataPlaneRejection: String?
     private let dataPlaneRetryable: Bool
     private let dataPlaneOperationID: String?
@@ -1213,6 +1315,7 @@ private actor SessionServerTransport: LatchwayHTTPTransport {
     private let challengeExpired: Bool
     private let challengeClockOffset: TimeInterval
     private let refreshRejection: String?
+    private let familyRevokeFailure: Bool
     private let platform: String
 
     init(
@@ -1227,6 +1330,7 @@ private actor SessionServerTransport: LatchwayHTTPTransport {
         challengeExpired: Bool,
         challengeClockOffset: TimeInterval,
         refreshRejection: String?,
+        familyRevokeFailure: Bool,
         platform: String
     ) {
         self.thumbprint = thumbprint
@@ -1240,6 +1344,7 @@ private actor SessionServerTransport: LatchwayHTTPTransport {
         self.challengeExpired = challengeExpired
         self.challengeClockOffset = challengeClockOffset
         self.refreshRejection = refreshRejection
+        self.familyRevokeFailure = familyRevokeFailure
         self.platform = platform
     }
 
@@ -1304,6 +1409,12 @@ private actor SessionServerTransport: LatchwayHTTPTransport {
         case "/client/v1/installations/current":
             revokeCount += 1
             return LatchwayHTTPResponse(statusCode: 204, headers: [:], body: Data())
+        case "/client/v1/installation-families/current":
+            familyRevokeCount += 1
+            if familyRevokeFailure {
+                return problem(status: 503, code: "upstream_unavailable", retryable: true)
+            }
+            return LatchwayHTTPResponse(statusCode: 204, headers: [:], body: Data())
         case "/client/v1/diagnostics":
             return json(status: 200, object: [
                 "request_id": "request-12345678",
@@ -1325,6 +1436,10 @@ private actor SessionServerTransport: LatchwayHTTPTransport {
             dataPlaneCount += 1
             protectedProofs.append(request.value(forHTTPHeaderField: "DPoP") ?? "")
             protectedRequestIDs.append(request.value(forHTTPHeaderField: "X-Latchway-Request-ID") ?? "")
+            protectedFrameworkIDs.append(request.value(forHTTPHeaderField: "X-Latchway-Framework") ?? "")
+            protectedFrameworkVersions.append(
+                request.value(forHTTPHeaderField: "X-Latchway-Framework-Version") ?? ""
+            )
             if dataPlaneCount == 1, let dataPlaneRejection {
                 if dataPlaneRejection == "malformed" {
                     return LatchwayHTTPResponse(
@@ -1360,8 +1475,24 @@ private actor SessionServerTransport: LatchwayHTTPTransport {
         }
     }
 
-    func counts() -> (challenge: Int, exchange: Int, refresh: Int, quota: Int, revoke: Int, dataPlane: Int) {
-        (challengeCount, exchangeCount, refreshCount, quotaCount, revokeCount, dataPlaneCount)
+    func counts() -> (
+        challenge: Int,
+        exchange: Int,
+        refresh: Int,
+        quota: Int,
+        revoke: Int,
+        familyRevoke: Int,
+        dataPlane: Int
+    ) {
+        (
+            challengeCount,
+            exchangeCount,
+            refreshCount,
+            quotaCount,
+            revokeCount,
+            familyRevokeCount,
+            dataPlaneCount
+        )
     }
     func refreshBodyFields() -> [[String]] { refreshBodies }
 
@@ -1372,6 +1503,8 @@ private actor SessionServerTransport: LatchwayHTTPTransport {
     func challengeSDKVersions() -> [String] { requestedSDKVersions }
     func dataPlaneProofs() -> [String] { protectedProofs }
     func dataPlaneRequestIDs() -> [String] { protectedRequestIDs }
+    func dataPlaneFrameworkIDs() -> [String] { protectedFrameworkIDs }
+    func dataPlaneFrameworkVersions() -> [String] { protectedFrameworkVersions }
 
     private func grant(status: Int, sequence: Int) -> LatchwayHTTPResponse {
         json(status: status, object: [
@@ -1400,8 +1533,10 @@ private actor SessionServerTransport: LatchwayHTTPTransport {
         operationID: String? = nil,
         headers: [String: String] = [:]
     ) -> LatchwayHTTPResponse {
+        let documentationURL = "https://docs.latchway.dev/errors/\(code.replacingOccurrences(of: "_", with: "-"))"
         var object: [String: Any] = [
-            "type": "https://latchway.dev/problems/\(code)",
+            "type": documentationURL,
+            "documentation_url": documentationURL,
             "title": "Safe failure",
             "status": status,
             "detail": "The request was rejected safely.",
@@ -1421,8 +1556,10 @@ private actor SessionServerTransport: LatchwayHTTPTransport {
     ) -> LatchwayHTTPResponse {
         let isNonce = code == "dpop_nonce_required"
         var status = 401
+        let documentationURL = "https://docs.latchway.dev/errors/\(code.replacingOccurrences(of: "_", with: "-"))"
         var object: [String: Any] = [
-            "type": "https://latchway.dev/problems/\(code)",
+            "type": documentationURL,
+            "documentation_url": documentationURL,
             "title": isNonce ? "DPoP nonce required" : "Session expired",
             "status": status,
             "detail": isNonce
@@ -1441,10 +1578,14 @@ private actor SessionServerTransport: LatchwayHTTPTransport {
         switch mutation {
         case .missingMember:
             object.removeValue(forKey: "detail")
+        case .missingDocumentationURL:
+            object.removeValue(forKey: "documentation_url")
         case .extraMember:
             object["extra"] = true
         case .wrongType:
-            object["type"] = "https://latchway.dev/problems/session_expired"
+            object["type"] = "https://malicious.invalid/session-expired"
+        case .wrongDocumentationURL:
+            object["documentation_url"] = "https://malicious.invalid/session-expired"
         case .wrongTitle:
             object["title"] = "Retry request"
         case .wrongDetail:
@@ -1480,7 +1621,7 @@ private actor SessionServerTransport: LatchwayHTTPTransport {
         if mutation == .duplicateMember || mutation == .unicodeDuplicateMember {
             let duplicateName = mutation == .duplicateMember ? "code" : #"co\u0064e"#
             let body = """
-            {"type":"https://latchway.dev/problems/dpop_nonce_required","title":"DPoP nonce required","status":401,"detail":"A fresh server DPoP nonce is required.","code":"dpop_nonce_required","\(duplicateName)":"dpop_nonce_required","request_id":"\(requestID)","retryable":true}
+            {"type":"https://docs.latchway.dev/errors/dpop-nonce-required","documentation_url":"https://docs.latchway.dev/errors/dpop-nonce-required","title":"DPoP nonce required","status":401,"detail":"A fresh server DPoP nonce is required.","code":"dpop_nonce_required","\(duplicateName)":"dpop_nonce_required","request_id":"\(requestID)","retryable":true}
             """
             return LatchwayHTTPResponse(statusCode: status, headers: headers, body: Data(body.utf8))
         }
@@ -1689,8 +1830,10 @@ private final class StreamingRetryURLProtocol: URLProtocol, @unchecked Sendable 
             retryable: Bool = true
         ) -> Output {
             let isNonce = code == "dpop_nonce_required"
+            let documentationURL = "https://docs.latchway.dev/errors/\(code.replacingOccurrences(of: "_", with: "-"))"
             var object: [String: Any] = [
-                "type": "https://latchway.dev/problems/\(code)",
+                "type": documentationURL,
+                "documentation_url": documentationURL,
                 "title": isNonce ? "DPoP nonce required" : "Session expired",
                 "status": 401,
                 "detail": isNonce
@@ -1719,6 +1862,51 @@ private final class StreamingRetryURLProtocol: URLProtocol, @unchecked Sendable 
             )
         }
     }
+}
+
+private actor ClientComponentRegistry: LatchwayComponentRegistry {
+    private var stored: [LatchwayComponentConfiguration]
+
+    init(components: [LatchwayComponentConfiguration]) {
+        stored = components
+    }
+
+    func components() -> [LatchwayComponentConfiguration] { stored }
+
+    func register(_ component: LatchwayComponentConfiguration) {
+        stored.removeAll {
+            $0.definitionID == component.definitionID
+                && $0.kind == component.kind
+                && $0.keychainAccessGroup == component.keychainAccessGroup
+        }
+        stored.append(component)
+    }
+
+    func unregister(_ component: LatchwayComponentConfiguration) {
+        stored.removeAll {
+            $0.definitionID == component.definitionID
+                && $0.kind == component.kind
+                && $0.keychainAccessGroup == component.keychainAccessGroup
+        }
+    }
+}
+
+private actor ClientComponentRetirer: LatchwayComponentStateRetiring {
+    private let failingDefinitionIDs: Set<String>
+    private var retired: [String] = []
+
+    init(failingDefinitionIDs: Set<String>) {
+        self.failingDefinitionIDs = failingDefinitionIDs
+    }
+
+    func retire(_ component: LatchwayComponentConfiguration) throws {
+        retired.append(component.definitionID)
+        if failingDefinitionIDs.contains(component.definitionID) {
+            throw LatchwayComponentError.keychainAccessGroupUnavailable
+        }
+    }
+
+    func attempts() -> [String] { retired }
 }
 
 private func XCTAssertThrowsErrorAsync(

@@ -93,6 +93,74 @@ import Testing
     )
 }
 
+@Test func officialServicePreservesChatToolsStructuredOutputAndEmbeddings() async throws {
+    let recorder = SwiftOpenAIRequestRecorder()
+    let transport = LatchwayFeatureTransport(
+        feature: "habit-assistant",
+        framework: .swiftOpenAI(version: "4.6.0"),
+        baseURL: URL(string: "https://gateway.example.test")!,
+        authorize: { request in request },
+        send: { request in
+            await recorder.record(request)
+            let body: String
+            switch request.url?.path {
+            case "/v1/chat/completions":
+                body = #"{"id":"chatcmpl_latchway","object":"chat.completion","created":1,"model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"{\"answer\":\"ok\"}"},"finish_reason":"stop"}]}"#
+            case "/v1/embeddings":
+                body = #"{"object":"list","data":[{"object":"embedding","embedding":[0.25,0.75],"index":0}],"model":"text-embedding-3-small","usage":{"prompt_tokens":1,"total_tokens":1}}"#
+            default:
+                body = #"{"error":"unexpected path"}"#
+            }
+            return LatchwayHTTPResponse(
+                statusCode: 200,
+                headers: ["Content-Type": "application/json"],
+                body: Data(body.utf8)
+            )
+        }
+    )
+    let service = try LatchwaySwiftOpenAIHTTPClient(transport: transport).makeService()
+    let schema = JSONSchema(
+        type: .object,
+        properties: ["answer": JSONSchema(type: .string)],
+        required: ["answer"]
+    )
+
+    let chat = try await service.startChat(parameters: .init(
+        messages: [.init(role: .user, content: .text("Return JSON"))],
+        model: .gpt4o,
+        tools: [.init(function: .init(
+            name: "fixture_lookup",
+            strict: true,
+            description: "Returns fixture data",
+            parameters: schema
+        ))],
+        responseFormat: .jsonSchema(.init(name: "fixture_answer", strict: true, schema: schema))
+    ))
+    let embeddings = try await service.createEmbeddings(parameters: .init(
+        input: "hello",
+        model: .textEmbedding3Small,
+        encodingFormat: "float",
+        dimensions: 2
+    ))
+
+    #expect(chat.id == "chatcmpl_latchway")
+    #expect(embeddings.data.first?.embedding == [0.25, 0.75])
+    let requests = await recorder.requests
+    #expect(requests.map { $0.url?.path } == ["/v1/chat/completions", "/v1/embeddings"])
+    let chatData = try #require(requests[0].httpBody)
+    let chatBody = try #require(
+        JSONSerialization.jsonObject(with: chatData) as? [String: Any]
+    )
+    #expect((chatBody["tools"] as? [[String: Any]])?.count == 1)
+    #expect((chatBody["response_format"] as? [String: Any])?["type"] as? String == "json_schema")
+    let embeddingData = try #require(requests[1].httpBody)
+    let embeddingBody = try #require(
+        JSONSerialization.jsonObject(with: embeddingData) as? [String: Any]
+    )
+    #expect(embeddingBody["input"] as? String == "hello")
+    #expect(embeddingBody["dimensions"] as? Int == 2)
+}
+
 @Test func streamingAdapterPreservesEveryLineWithBoundedBuffering() async throws {
     let configuration = URLSessionConfiguration.ephemeral
     configuration.protocolClasses = [SwiftOpenAIStreamingURLProtocol.self]
@@ -128,11 +196,40 @@ import Testing
     #expect(received == (0 ..< 64).map { "data: line-\($0)" })
 }
 
+@Test func officialServiceDecodesStreamingChatThroughInjectedByteTransport() async throws {
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [SwiftOpenAIOfficialStreamingURLProtocol.self]
+    let session = URLSession(configuration: configuration)
+    defer { session.invalidateAndCancel() }
+    let transport = LatchwayFeatureTransport(
+        feature: "habit-assistant",
+        framework: .swiftOpenAI(version: "4.6.0"),
+        baseURL: URL(string: "https://gateway.example.test")!,
+        session: session,
+        authorize: { request in request },
+        send: { _ in throw LatchwayError.transportFailure }
+    )
+    let service = try LatchwaySwiftOpenAIHTTPClient(transport: transport).makeService()
+
+    let stream = try await service.startStreamedChat(parameters: .init(
+        messages: [.init(role: .user, content: .text("Stream one word"))],
+        model: .gpt4o
+    ))
+    var received = ""
+    for try await chunk in stream {
+        received += chunk.choices?.first?.delta?.content ?? ""
+    }
+
+    #expect(received == "hello")
+}
+
 private actor SwiftOpenAIRequestRecorder {
     private(set) var lastRequest: URLRequest?
+    private(set) var requests: [URLRequest] = []
 
     func record(_ request: URLRequest) {
         lastRequest = request
+        requests.append(request)
     }
 }
 
@@ -157,6 +254,35 @@ private final class SwiftOpenAIStreamingURLProtocol: URLProtocol {
         }
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         let body = (0 ..< 64).map { "data: line-\($0)\n" }.joined()
+        client?.urlProtocol(self, didLoad: Data(body.utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+
+private final class SwiftOpenAIOfficialStreamingURLProtocol: URLProtocol {
+    override class func canInit(with request: URLRequest) -> Bool {
+        request.url?.host == "gateway.example.test"
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        guard let url = request.url,
+              let response = HTTPURLResponse(
+                  url: url,
+                  statusCode: 200,
+                  httpVersion: "HTTP/1.1",
+                  headerFields: ["Content-Type": "text/event-stream"]
+              )
+        else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+            return
+        }
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        let body = #"data: {"id":"chatcmpl_latchway","object":"chat.completion.chunk","created":1,"model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant","content":"hello"},"finish_reason":null}]}"#
+            + "\n\ndata: [DONE]\n\n"
         client?.urlProtocol(self, didLoad: Data(body.utf8))
         client?.urlProtocolDidFinishLoading(self)
     }

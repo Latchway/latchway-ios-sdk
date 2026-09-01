@@ -822,7 +822,8 @@ private actor ComponentServerTransport: LatchwayHTTPTransport {
                         "X-Latchway-Request-ID": requestID,
                     ],
                     body: try JSONSerialization.data(withJSONObject: [
-                        "type": "https://latchway.dev/problems/\(refreshRejection)",
+                        "type": "https://docs.latchway.dev/errors/\(refreshRejection.replacingOccurrences(of: "_", with: "-"))",
+                        "documentation_url": "https://docs.latchway.dev/errors/\(refreshRejection.replacingOccurrences(of: "_", with: "-"))",
                         "title": "Refresh rejected",
                         "status": 401,
                         "detail": "The component refresh chain is no longer active.",
