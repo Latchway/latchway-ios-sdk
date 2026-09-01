@@ -1,9 +1,11 @@
 # Releasing the iOS SDK
 
-Stable releases are created only from an annotated `vMAJOR.MINOR.PATCH` tag.
-The tag, `LatchwayVersion.sdk`, podspec version, changelog section, and checked
-out commit must agree. `contract.lock` must identify a published core contract
-with an exact commit and deterministic bundle digest.
+Stable releases use an annotated `vMAJOR.MINOR.PATCH` tag created, or verified,
+only by the evidence-gated `.github/workflows/release.yml` promotion. Operators
+must not create or push the tag manually. The tag, `LatchwayVersion.sdk`,
+podspec version, changelog section, and checked-out commit must agree.
+`contract.lock` must identify a published core contract with an exact commit
+and deterministic bundle digest.
 
 Three protected GitHub environments keep release authority disjoint and should
 each require an authorized reviewer. `release-administration` supplies only a
@@ -15,6 +17,15 @@ protects the final GitHub-token/OIDC publication job. After the registry result
 is sealed, a second no-OIDC administration job rechecks the immutable-release
 policy before the final job validates the exact local asset closure and requests
 an attestation.
+
+Before promotion, make `Latchway/latchway-ios-sdk` publicly fetchable. The
+podspec resolves its source from the public HTTPS Git tag, and advertised
+Swift Package Manager consumers resolve the same repository and tag. A private
+source repository is therefore not a supported stable-publication state. Also
+install an active repository ruleset for `refs/tags/v*`: allow creation only
+through the GitHub Actions integration used by the release workflow, and deny
+tag updates, deletion, and non-fast-forward changes. These public-visibility
+and server-side ruleset controls are external release prerequisites.
 
 The credential-free candidate job runs the complete SwiftPM
 build/test/consumer gate and full CocoaPods lint, builds the source archive
