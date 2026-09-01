@@ -14,7 +14,7 @@ Versioning once package publication begins.
   Security query, and fail closed when known root records remain in declared
   extension-shared groups.
 
-## [1.0.0] - 2026-08-29
+## Planned 1.0.0 candidate baseline (unreleased)
 
 ### Added
 
