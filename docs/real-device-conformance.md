@@ -367,6 +367,13 @@ rerun this suite casually: it deliberately creates a fresh App Attest key for
 the dedicated conformance installation so registration and assertion are both
 observed.
 
+Every authorization, lease, identity grant, and retained artifact is bound to
+one workflow run and attempt. Do not use **Re-run failed jobs** to recover a
+partial physical proof: a successful authorization job from an earlier attempt
+is intentionally unusable by a later collector. Start a fresh complete
+workflow dispatch so all single-use grants and attempt-bound evidence are
+reissued together.
+
 The retained artifact contains:
 
 ```text
