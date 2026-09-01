@@ -9,7 +9,7 @@
     {"path": "quickstart/app-extension-component.swift", "kind": "quickstart", "source": {"file": "Examples/AppExtensionComponents/Host/ComponentHostApp.swift", "start_line": 37, "end_line": 89}},
     {"path": "frameworks/swift-openai.swift", "kind": "framework", "source": {"file": "Sources/LatchwaySwiftOpenAI/LatchwaySwiftOpenAIHTTPClient.swift", "start_line": 11, "end_line": 99}},
     {"path": "frameworks/foundation-models.swift", "kind": "framework", "source": {"file": "Sources/LatchwayFoundationModels/LatchwayFoundationModels.swift", "start_line": 43, "end_line": 204}},
-    {"path": "release-notes.md", "kind": "release_notes", "source": {"file": "CHANGELOG.md", "start_line": 1, "end_line": 68}}
+    {"path": "release-notes.md", "kind": "release_notes", "source": {"file": "CHANGELOG.md", "start_line": 1, "end_line": 69}}
   ],
   "supported_versions": [
     {"name": "Latchway", "version": "1.0.0", "source": {"file": "Latchway.podspec", "start_line": 1, "end_line": 20}},
