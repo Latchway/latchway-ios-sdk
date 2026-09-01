@@ -14,7 +14,7 @@ Versioning once package publication begins.
   Security query, and fail closed when known root records remain in declared
   extension-shared groups.
 
-## Planned 1.0.0 candidate baseline (unreleased)
+## [1.0.0] - 2026-09-01
 
 ### Added
 
@@ -41,9 +41,9 @@ Versioning once package publication begins.
 
 ### Changed
 
-- Synchronized the source candidate with draft core contract 1.0.0 at commit
-  `a59a2c1c807aec50093ae6346492a05148c72899` and deterministic bundle SHA-256
-  `3a88fb69b911724da849229f34f735608e829bcfb0658087313c8d31441e9927`.
+- Synchronized the 1.0.0 release with released core contract 1.0.0 at commit
+  `5063351711ea7a781e398112cbcc34b99b3770b2` and deterministic bundle SHA-256
+  `36641cfb4276b5f0fe645ac3ed102dc803f58f0073967423bd431328b82be8fd`.
   New requests identify current wire protocol 2, while optional root metadata
   keeps compatible legacy wire-1 grant decoding fail-closed. The minimum server
   version is 1.0.0 and the maximum tested server series is 1.0.x.

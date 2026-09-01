@@ -22,9 +22,8 @@ final class ProtocolManifestTests: XCTestCase {
         )
 
         XCTAssertEqual(root["contract_version"] as? String, LatchwayVersion.contract)
-        XCTAssertEqual(root["contract_status"] as? String, "draft")
-        XCTAssertTrue(root.keys.contains("released_at"))
-        XCTAssertTrue(root["released_at"] is NSNull)
+        XCTAssertEqual(root["contract_status"] as? String, "released")
+        XCTAssertEqual(root["released_at"] as? String, "2026-09-01T20:25:00Z")
         XCTAssertEqual(wire["current"] as? Int, LatchwayVersion.protocolVersion)
         XCTAssertEqual(wire["supported"] as? [Int], LatchwayVersion.supportedProtocolVersions)
         XCTAssertEqual(wire["minimum"] as? Int, LatchwayVersion.minimumProtocolVersion)
