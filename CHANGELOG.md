@@ -36,7 +36,8 @@ Versioning once package publication begins.
   identifier preserved on the public problem value.
 - A release-gated Swift Package and CocoaPods publication workflow, including
   a clean-tag/version preflight, nested consumer build, deterministic source
-  archive, checksum, and optional credentialed CocoaPods publication.
+  archive, checksum, and credential-isolated CocoaPods publication required by
+  the full React Native/iOS version 1 release.
 
 ### Changed
 
