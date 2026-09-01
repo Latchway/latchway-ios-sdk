@@ -8,7 +8,7 @@
     {"path": "quickstart/url-session.swift", "kind": "quickstart", "source": {"file": "Examples/BasicURLSession/BasicURLSession.swift", "start_line": 1, "end_line": 247}},
     {"path": "quickstart/app-extension-component.swift", "kind": "quickstart", "source": {"file": "Examples/AppExtensionComponents/Host/ComponentHostApp.swift", "start_line": 37, "end_line": 89}},
     {"path": "frameworks/swift-openai.swift", "kind": "framework", "source": {"file": "Sources/LatchwaySwiftOpenAI/LatchwaySwiftOpenAIHTTPClient.swift", "start_line": 11, "end_line": 99}},
-    {"path": "frameworks/foundation-models.swift", "kind": "framework", "source": {"file": "Sources/LatchwayFoundationModels/LatchwayFoundationModels.swift", "start_line": 28, "end_line": 189}},
+    {"path": "frameworks/foundation-models.swift", "kind": "framework", "source": {"file": "Sources/LatchwayFoundationModels/LatchwayFoundationModels.swift", "start_line": 43, "end_line": 204}},
     {"path": "release-notes.md", "kind": "release_notes", "source": {"file": "CHANGELOG.md", "start_line": 1, "end_line": 68}}
   ],
   "supported_versions": [

@@ -42,6 +42,17 @@ class DocumentationBundleTests(unittest.TestCase):
             manifest = json.loads(payloads["bundle-manifest.json"])
             self.assertEqual(manifest["schema_version"], MODULE.SCHEMA)
             self.assertEqual(manifest["release"]["version"], "1.0.0")
+            foundation_models = payloads["frameworks/foundation-models.swift"].decode("utf-8")
+            self.assertTrue(foundation_models.startswith(
+                "/// A Foundation Models custom provider backed by a feature-bound Latchway\n"
+            ))
+            self.assertIn("public struct LatchwayLanguageModelExecutor", foundation_models)
+            self.assertTrue(foundation_models.endswith(
+                "        guard receivedTerminalEvent else {\n"
+                "            throw LatchwayFoundationModelsError.invalidGatewayStream\n"
+                "        }\n"
+                "    }\n"
+            ))
             self.assertEqual({item["kind"] for item in manifest["files"]} >= {
                 "quickstart", "framework", "release_notes", "supported_versions",
                 "public_symbols", "errors", "examples",
