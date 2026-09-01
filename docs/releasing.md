@@ -7,16 +7,46 @@ podspec version, changelog section, and checked-out commit must agree.
 `contract.lock` must identify a published core contract with an exact commit
 and deterministic bundle digest.
 
-Three protected GitHub environments keep release authority disjoint and should
-each require an authorized reviewer. `release-administration` supplies only a
-fine-grained `LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN` with read-only repository
-Administration permission. Its fresh no-checkout job proves GitHub immutable
-releases are enabled before either registry publication or release mutation.
-`cocoapods-trunk` supplies only `COCOAPODS_TRUNK_TOKEN`, and `github-release`
-protects the final GitHub-token/OIDC publication job. After the registry result
-is sealed, a second no-OIDC administration job rechecks the immutable-release
-policy before the final job validates the exact local asset closure and requests
-an attestation.
+Three protected GitHub environments keep release authority disjoint. Each must
+require an authorized reviewer, enable **Prevent self-review**, disable
+administrator bypass where GitHub offers it, and allow deployments only from
+the exact `main` branch. Each environment also owns the non-secret
+`LATCHWAY_RELEASE_CONTROL_POLICY_ID` variable with its unique value:
+
+```text
+release-administration = latchway-release-controls-v1:latchway-ios-sdk:release-administration
+cocoapods-trunk       = latchway-release-controls-v1:latchway-ios-sdk:cocoapods-trunk
+github-release        = latchway-release-controls-v1:latchway-ios-sdk:github-release
+```
+
+Never define that reserved variable at repository or organization scope. A
+missing referenced GitHub environment is otherwise auto-created without
+protections; the first step in every privileged job checks the environment-only
+value and fails closed before any action or step uses a credential, requests an
+OIDC token, or performs a mutation. `release-administration` supplies only a fine-grained
+`LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN` with read-only repository Administration
+permission. Its fresh no-checkout job proves GitHub immutable releases are
+enabled and owner-enforced before either registry publication or release
+mutation. `cocoapods-trunk` supplies only `COCOAPODS_TRUNK_TOKEN`, and
+`github-release` protects the final GitHub-token/OIDC publication job. After the
+registry result is sealed, a second no-OIDC administration job rechecks the
+immutable-release policy before the final job validates the exact local asset
+closure and requests an attestation. Both administration checks emit a
+SHA-256-bound policy lease that names the repository, phase, workflow run, and
+run attempt and expires in at most ten minutes. The consumer checks the exact
+one-file closure, hash, complete binding, and expiry immediately before every
+registry or GitHub mutation, including provenance attestation. If only a
+downstream job needs retry after its policy producer succeeded, use
+**Re-run all jobs**; a partial or single-job rerun deliberately rejects the
+prior attempt's lease.
+
+The privileged names `LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN` and
+`COCOAPODS_TRUNK_TOKEN` must exist only in their named environments. Never
+define either name as a repository secret or as an organization secret visible
+to this repository: GitHub secret lookup otherwise falls through to that broader
+scope if an environment secret is missing. The central release-control
+reconciler rejects that configuration using secret names and visibility only;
+it never reads secret values.
 
 Before promotion, make `Latchway/latchway-ios-sdk` publicly fetchable. The
 podspec resolves its source from the public HTTPS Git tag, and advertised
@@ -44,11 +74,9 @@ verification record, and checksum manifest are retained beside the source
 archive; every retained file receives a GitHub build-provenance attestation in
 a separate fresh no-checkout job.
 
-If the core repository is private, configure
-`LATCHWAY_SIBLING_REPOSITORIES_READ_TOKEN` as a fine-grained Contents: read
-credential for `Latchway/latchway`. It authenticates only the pinned promotion
-asset download and attestation verification, is never persisted by checkout,
-and is unnecessary when the core repository is public.
+The public `Latchway/latchway` release asset and attestation are read with the
+SDK workflow's read-only `github.token`. Do not configure a sibling-repository
+token for this public-core path.
 
 Swift Package Manager consumes the same tag locked by GitHub's immutable
 release. The GitHub release is deliberately last: a failed CocoaPods

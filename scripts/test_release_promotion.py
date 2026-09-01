@@ -374,6 +374,17 @@ class PromotionVerifierTests(unittest.TestCase):
 
 
 class ReleaseWorkflowTests(unittest.TestCase):
+    @staticmethod
+    def workflow_step_script(workflow: str, step_name: str) -> str:
+        match = re.search(
+            rf"(?ms)^      - name: {re.escape(step_name)}\n.*?^        run: \|\n"
+            r"(?P<body>(?:^          [^\n]*(?:\n|$))+)",
+            workflow,
+        )
+        if match is None:
+            raise AssertionError(f"workflow step has no shell body: {step_name}")
+        return "\n".join(line[10:] for line in match.group("body").splitlines())
+
     def test_only_attested_core_dispatch_can_reach_tag_and_publication(self) -> None:
         workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
         self.assertIn("repository_dispatch:", workflow)
@@ -389,7 +400,8 @@ class ReleaseWorkflowTests(unittest.TestCase):
         )
         self.assertIn("--proto-redir '=https'", workflow)
         self.assertIn("--max-filesize 2097152", workflow)
-        self.assertIn("LATCHWAY_SIBLING_REPOSITORIES_READ_TOKEN || github.token", workflow)
+        self.assertNotIn("LATCHWAY_SIBLING_REPOSITORIES_READ_TOKEN", workflow)
+        self.assertIn("CORE_READ_TOKEN: ${{ github.token }}", workflow)
         self.assertIn("latchway-core-release-auth", workflow)
         self.assertIn("trap 'rm -f -- \"$auth_config\"' EXIT", workflow)
         self.assertIn("--config \"$auth_config\"", workflow)
@@ -469,7 +481,8 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertNotIn("scripts/", authorization)
         self.assertNotIn("python3 ", authorization)
         self.assertNotIn("node ", authorization)
-        self.assertIn("LATCHWAY_SIBLING_REPOSITORIES_READ_TOKEN", authorization)
+        self.assertNotIn("secrets.", authorization)
+        self.assertIn("CORE_READ_TOKEN: ${{ github.token }}", authorization)
         self.assertIn("gh attestation verify", authorization)
 
         self.assertIn("actions/checkout", verification)
@@ -684,6 +697,208 @@ class ReleaseWorkflowTests(unittest.TestCase):
             consumer_package,
         )
         self.assertIn("import LatchwayAppExtensions", consumer_source)
+
+    def test_ios_registry_policy_validator_rejects_wrong_bindings_and_nested_files(self) -> None:
+        if REPOSITORY_ID != "ios":
+            self.skipTest("iOS-only release-control policy")
+        workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+        script = self.workflow_step_script(
+            workflow, "Validate the short-lived registry policy lease before registry work"
+        )
+        now = int(datetime.now(timezone.utc).timestamp())
+        base = {
+            "schema_version": 1,
+            "kind": "latchway_github_immutable_release_policy",
+            "phase": "registry-publication",
+            "repository": "Latchway/latchway-ios-sdk",
+            "run_id": 123456,
+            "run_attempt": 7,
+            "issued_at": now - 1,
+            "expires_at": now + 300,
+            "settings": {"enabled": True, "enforced_by_owner": True},
+        }
+        with tempfile.TemporaryDirectory(prefix="latchway-ios-policy-") as directory:
+            runner_temp = Path(directory)
+            test_bin = runner_temp / "bin"
+            test_bin.mkdir()
+            date_stub = test_bin / "date"
+            date_stub.write_text("#!/bin/sh\nexec /bin/date +%s\n", encoding="utf-8")
+            date_stub.chmod(0o700)
+            sha256sum_stub = test_bin / "sha256sum"
+            sha256sum_stub.write_text(
+                "#!/bin/sh\n"
+                "if [ \"$#\" -eq 2 ] && [ \"$1\" = --check ] && [ \"$2\" = --strict ]; then\n"
+                "  exec /sbin/sha256sum -c -\n"
+                "fi\n"
+                "exec /sbin/sha256sum \"$@\"\n",
+                encoding="utf-8",
+            )
+            sha256sum_stub.chmod(0o700)
+            root = runner_temp / "registry-publication-policy"
+            root.mkdir()
+            policy = root / "registry-publication-policy.json"
+
+            def invoke(payload: dict[str, object], digest: str | None = None) -> subprocess.CompletedProcess[str]:
+                encoded = (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode()
+                policy.write_bytes(encoded)
+                environment = {
+                    "PATH": f"{test_bin}:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+                    "RUNNER_TEMP": str(runner_temp),
+                    "GITHUB_REPOSITORY": "Latchway/latchway-ios-sdk",
+                    "GITHUB_RUN_ID": "123456",
+                    "GITHUB_RUN_ATTEMPT": "7",
+                    "POLICY_EVIDENCE_SHA256": digest or hashlib.sha256(encoded).hexdigest(),
+                }
+                return subprocess.run(
+                    ["bash", "-c", script],
+                    check=False,
+                    text=True,
+                    capture_output=True,
+                    env=environment,
+                )
+
+            valid = invoke(base)
+            self.assertEqual(valid.returncode, 0, valid.stderr)
+            wrong_bindings = {
+                "repository": {**base, "repository": "Latchway/wrong"},
+                "phase": {**base, "phase": "github-release"},
+                "run_id": {**base, "run_id": 123457},
+                "run_attempt": {**base, "run_attempt": 8},
+                "expired": {**base, "issued_at": now - 10, "expires_at": now - 1},
+            }
+            for name, payload in wrong_bindings.items():
+                with self.subTest(name=name):
+                    self.assertNotEqual(invoke(payload).returncode, 0)
+            self.assertNotEqual(invoke(base, "0" * 64).returncode, 0)
+            nested = root / "unexpected" / "payload"
+            nested.parent.mkdir()
+            nested.write_text("unexpected", encoding="utf-8")
+            self.assertNotEqual(invoke(base).returncode, 0)
+
+    def test_ios_privileged_environments_and_policy_leases_fail_closed(self) -> None:
+        if REPOSITORY_ID != "ios":
+            self.skipTest("iOS-only release-control policy")
+        workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+
+        def job(name: str, following: str | None = None) -> str:
+            value = workflow.split(f"\n  {name}:\n", 1)[1]
+            return value if following is None else value.split(f"\n  {following}:\n", 1)[0]
+
+        administration = job("authorize-release", "package")
+        publisher = job("publish-cocoapods", "github-release-policy")
+        final_policy = job("github-release-policy", "github-release")
+        final_release = job("github-release")
+        self.assertIn("timeout-minutes: 45", final_release)
+        expected_ids = {
+            "authorize-release": "latchway-release-controls-v1:latchway-ios-sdk:release-administration",
+            "publish-cocoapods": "latchway-release-controls-v1:latchway-ios-sdk:cocoapods-trunk",
+            "github-release-policy": "latchway-release-controls-v1:latchway-ios-sdk:release-administration",
+            "github-release": "latchway-release-controls-v1:latchway-ios-sdk:github-release",
+        }
+        blocks = {
+            "authorize-release": administration,
+            "publish-cocoapods": publisher,
+            "github-release-policy": final_policy,
+            "github-release": final_release,
+        }
+        for name, expected in expected_ids.items():
+            block = blocks[name]
+            sentinel = "Verify the exact protected"
+            self.assertIn("LATCHWAY_RELEASE_CONTROL_POLICY_ID", block)
+            self.assertIn(expected, block)
+            self.assertLess(block.index(sentinel), block.index("uses:") if "uses:" in block else len(block))
+            secret_index = block.find("${{ secrets.")
+            if secret_index >= 0:
+                self.assertLess(block.index(sentinel), secret_index)
+
+        self.assertIn("needs: [promote, package]", administration)
+        self.assertIn("phase: $phase", administration)
+        self.assertIn("registry-publication-policy.json", administration)
+        self.assertIn("immutable-release-policy-registry-%s-%s", administration)
+        self.assertIn("needs: [promote, package, authorize-release]", publisher)
+        self.assertIn("needs.authorize-release.outputs.evidence_sha256", publisher)
+        self.assertIn(".run_attempt == $run_attempt", publisher)
+        self.assertIn("$now < .expires_at", publisher)
+        self.assertIn("(.expires_at - .issued_at) <= 600", publisher)
+        self.assertIn(".settings == {enabled:true,enforced_by_owner:true}", publisher)
+        self.assertNotIn("-maxdepth 1 -type f", publisher)
+        self.assertGreaterEqual(
+            publisher.count('find "$root" -mindepth 1 -print'),
+            2,
+        )
+        self.assertRegex(
+            publisher,
+            r"require_fresh_policy\n\s+set \+e\n\s+code=\$\(curl[\s\S]*?"
+            r"https://trunk\.cocoapods\.org/api/v1/pods\?allow_warnings=false",
+        )
+        self.assertIn("immutable-release-policy-final-%s-%s", final_policy)
+        self.assertIn("needs.github-release-policy.outputs.evidence_sha256", final_release)
+        self.assertNotIn("-maxdepth 1 -type f", final_release)
+        pre_attestation = final_release.index(
+            "Revalidate the complete final-release policy immediately before OIDC attestation"
+        )
+        attestation = final_release.index(
+            "      - name: Attest exact source archive and CocoaPods evidence",
+            pre_attestation,
+        )
+        self.assertEqual(
+            final_release.find("      - name:", pre_attestation + 1),
+            attestation,
+        )
+        pre_attestation_block = final_release[pre_attestation:attestation]
+        for marker in (
+            "sha256sum --check --strict",
+            ".phase == $phase and .repository == $repository",
+            ".run_id == $run_id and .run_attempt == $run_attempt",
+            "$now < .expires_at",
+            "find \"$root\" -mindepth 1 -print",
+        ):
+            self.assertIn(marker, pre_attestation_block)
+        self.assertRegex(
+            final_release,
+            r"validate_remote_tag\n\s+require_fresh_policy\n\s+gh release create",
+        )
+        self.assertRegex(
+            final_release,
+            r"require_fresh_policy\n\s+gh release upload",
+        )
+        self.assertRegex(
+            final_release,
+            r"validate_remote_tag\n\s+require_fresh_policy\n\s+gh release edit",
+        )
+        self.assertGreaterEqual(final_release.count("require_fresh_policy"), 5)
+        for block in (administration, final_policy):
+            self.assertIn("permissions: {}", block)
+            self.assertIn(".enforced_by_owner == true", block)
+
+        expected_secrets = {
+            "authorize-release": {"LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN"},
+            "publish-cocoapods": {"COCOAPODS_TRUNK_TOKEN"},
+            "github-release-policy": {"LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN"},
+        }
+        headers = list(re.finditer(r"(?m)^  ([a-z0-9_-]+):\n", workflow))
+        for index, header in enumerate(headers):
+            end = headers[index + 1].start() if index + 1 < len(headers) else len(workflow)
+            block = workflow[header.start():end]
+            references = set(re.findall(r"secrets\.([A-Z][A-Z0-9_]*)", block))
+            self.assertEqual(references, expected_secrets.get(header.group(1), set()), header.group(1))
+            if header.group(1) in {"authorize-release", "publish-cocoapods", "github-release-policy"}:
+                self.assertNotRegex(block, r"\$\{\{\s*secrets\.[A-Z0-9_]+\s*(?:\|\||&&|\[)")
+                self.assertNotIn("secrets[", block)
+
+        documentation = (ROOT / "docs/releasing.md").read_text(encoding="utf-8")
+        for marker in (
+            "Prevent self-review",
+            "Never define that reserved variable at repository or organization scope",
+            "enabled and owner-enforced",
+            "Re-run all jobs",
+            "partial or single-job rerun",
+            "OIDC token",
+            "repository secret",
+        ):
+            self.assertIn(marker, documentation)
+        self.assertRegex(documentation, r"organization\s+secret visible")
+        self.assertRegex(documentation, r"sibling-repository\s+token")
 
     def test_oidc_permissions_are_confined_to_no_checkout_fixed_jobs(self) -> None:
         workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
