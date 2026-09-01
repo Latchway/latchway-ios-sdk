@@ -26,5 +26,18 @@ swift build \
 
 ruby -c Latchway.podspec >/dev/null
 if command -v pod >/dev/null 2>&1; then
-  pod lib lint Latchway.podspec --platforms=ios --fail-fast
+  podspec_json="$temporary_root/Latchway.podspec.json"
+  pod ipc spec Latchway.podspec > "$podspec_json"
+  ruby -rjson -e '
+    spec = JSON.parse(File.read(ARGV.fetch(0)))
+    names = spec.fetch("subspecs").map { |entry| entry.fetch("name") }.sort
+    expected = %w[AppAttest AppExtensions Core FirebaseAuth]
+    abort "CocoaPods subspec surface mismatch: expected #{expected.inspect}, got #{names.inspect}" unless names == expected
+  ' "$podspec_json"
+  for subspec in AppAttest AppExtensions Core FirebaseAuth; do
+    pod lib lint Latchway.podspec \
+      --platforms=ios \
+      --fail-fast \
+      --subspec="$subspec"
+  done
 fi

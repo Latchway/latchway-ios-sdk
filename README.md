@@ -49,15 +49,18 @@ version, then link `Latchway` and `LatchwayAppAttest` to the application target:
 ```
 
 Swift Package Manager is the canonical distribution. The production
-`Latchway.podspec` additionally supports React Native autolinking through
-`Latchway/Core`, `Latchway/AppAttest`, and `Latchway/FirebaseAuth` subspecs:
+`Latchway.podspec` publishes the `Latchway/Core`, `Latchway/AppAttest`,
+`Latchway/AppExtensions`, and `Latchway/FirebaseAuth` subspecs, including the
+extension-safe surface used by Widget, Share, and Action targets:
 
 ```ruby
 pod 'Latchway/AppAttest', '1.0.0'
+pod 'Latchway/AppExtensions', '1.0.0'
 ```
 
 CocoaPods compiles selected subspecs into the `Latchway` module; SwiftPM keeps
-`LatchwayAppAttest` and `LatchwayFirebaseAuth` as separate modules.
+`LatchwayAppAttest`, `LatchwayAppExtensions`, and `LatchwayFirebaseAuth` as
+separate modules.
 
 ## Basic usage
 
@@ -221,7 +224,9 @@ tuist generate --path Examples/AppAttestConformance --no-open
 
 `verify-package.sh` parses the manifest, builds every library in release mode,
 runs the suite in parallel, compiles a separate consumer package importing all
-public products, and strictly lints the podspec when CocoaPods is installed.
+public products, requires the exact four-subspec CocoaPods surface, and
+strictly lints every published subspec individually when CocoaPods is
+installed.
 Pull requests and pushes to `main` run the same gate on the pinned macOS runner.
 
 Stable `vMAJOR.MINOR.PATCH` tags drive publication. The tag, public SDK version,

@@ -54,7 +54,7 @@ ruby -rjson -e '
   abort "published CocoaPods source mismatch" unless source["git"] == "https://github.com/Latchway/latchway-ios-sdk.git"
   abort "published CocoaPods tag mismatch" unless source["tag"] == "v#{version}"
   names = spec.fetch("subspecs").map { |entry| entry.fetch("name") }.sort
-  abort "published CocoaPods subspec mismatch" unless names == %w[AppAttest Core FirebaseAuth]
+  abort "published CocoaPods subspec mismatch" unless names == %w[AppAttest AppExtensions Core FirebaseAuth]
 ' "$temporary_spec" "$version"
 
 expected_archive=${LATCHWAY_COCOAPODS_EXPECTED_ARCHIVE:-}

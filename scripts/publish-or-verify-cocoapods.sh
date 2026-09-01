@@ -22,6 +22,12 @@ trap cleanup EXIT HUP INT TERM
 local_spec="$temporary_root/local.json"
 remote_spec="$temporary_root/remote.json"
 (cd "$repository_root" && pod ipc spec Latchway.podspec) >"$local_spec"
+ruby -rjson -e '
+  spec = JSON.parse(File.read(ARGV.fetch(0)))
+  names = spec.fetch("subspecs").map { |entry| entry.fetch("name") }.sort
+  expected = %w[AppAttest AppExtensions Core FirebaseAuth]
+  abort "reviewed CocoaPods subspec mismatch" unless names == expected
+' "$local_spec"
 
 fetch_spec() {
   local output=$1

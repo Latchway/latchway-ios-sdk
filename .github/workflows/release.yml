@@ -300,7 +300,7 @@ jobs:
           jq --exit-status --arg version "$version" '
             type == "object" and .name == "Latchway" and .version == $version and
             .source == {git: "https://github.com/Latchway/latchway-ios-sdk.git", tag: ("v" + $version)} and
-            ([.subspecs[].name] | sort) == ["AppAttest", "Core", "FirebaseAuth"] and
+            ([.subspecs[].name] | sort) == ["AppAttest", "AppExtensions", "Core", "FirebaseAuth"] and
             ([.. | objects | has("prepare_command") or has("script_phase") or has("script_phases")] | any | not)
           ' "$reviewed" >/dev/null
           install -m 600 -- "$archive" "${archive}.sha256" "$destination/"
@@ -410,7 +410,7 @@ jobs:
           jq --exit-status --arg version "$RELEASE_VERSION" '
             type == "object" and .name == "Latchway" and .version == $version and
             .source == {git: "https://github.com/Latchway/latchway-ios-sdk.git", tag: ("v" + $version)} and
-            ([.subspecs[].name] | sort) == ["AppAttest", "Core", "FirebaseAuth"] and
+            ([.subspecs[].name] | sort) == ["AppAttest", "AppExtensions", "Core", "FirebaseAuth"] and
             ([.. | objects | has("prepare_command") or has("script_phase") or has("script_phases")] | any | not)
           ' "$reviewed" >/dev/null
           shard=$(printf '%s' Latchway | md5sum | cut -c1-3 | sed 's/./&\//g;s#/$##')

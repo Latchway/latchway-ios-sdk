@@ -624,7 +624,51 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("source_commit", verifier)
         self.assertIn("reviewed_spec_sha256", verifier)
 
+    def test_ios_cocoapods_surface_is_exact_and_every_subspec_is_consumer_checked(self) -> None:
+        if REPOSITORY_ID != "ios":
+            self.skipTest("iOS-only CocoaPods surface")
+        workflow = (ROOT / ".github/workflows/release.yml").read_text(
+            encoding="utf-8"
+        )
+        podspec = (ROOT / "Latchway.podspec").read_text(encoding="utf-8")
+        verifier = (ROOT / "scripts/verify-cocoapods-release.sh").read_text(
+            encoding="utf-8"
+        )
+        publisher = (ROOT / "scripts/publish-or-verify-cocoapods.sh").read_text(
+            encoding="utf-8"
+        )
+        package_gate = (ROOT / "scripts/verify-package.sh").read_text(
+            encoding="utf-8"
+        )
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        consumer_package = (
+            ROOT / "IntegrationTests/Consumer/Package.swift"
+        ).read_text(encoding="utf-8")
+        consumer_source = (
+            ROOT / "IntegrationTests/Consumer/Sources/Consumer/main.swift"
+        ).read_text(encoding="utf-8")
 
+        expected = {"AppAttest", "AppExtensions", "Core", "FirebaseAuth"}
+        declared = set(re.findall(r"spec\.subspec '([^']+)'", podspec))
+        self.assertEqual(declared, expected)
+        expected_json = '["AppAttest", "AppExtensions", "Core", "FirebaseAuth"]'
+        expected_ruby = "%w[AppAttest AppExtensions Core FirebaseAuth]"
+        self.assertEqual(workflow.count(expected_json), 2)
+        self.assertIn(expected_ruby, verifier)
+        self.assertIn(expected_ruby, publisher)
+        self.assertIn(expected_ruby, package_gate)
+        self.assertIn(
+            "for subspec in AppAttest AppExtensions Core FirebaseAuth; do",
+            package_gate,
+        )
+        self.assertIn('--subspec="$subspec"', package_gate)
+        for subspec in sorted(expected):
+            self.assertIn(f"`Latchway/{subspec}`", readme)
+        self.assertIn(
+            '.product(name: "LatchwayAppExtensions", package: "Latchway")',
+            consumer_package,
+        )
+        self.assertIn("import LatchwayAppExtensions", consumer_source)
 
     def test_oidc_permissions_are_confined_to_no_checkout_fixed_jobs(self) -> None:
         workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")

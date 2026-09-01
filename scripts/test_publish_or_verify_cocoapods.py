@@ -26,6 +26,7 @@ class CocoaPodsPublicationTests(unittest.TestCase):
         self.local = self.root / "local.json"
         self.remote = self.root / "remote.json"
         self.mismatch = self.root / "mismatch.json"
+        self.missing_subspec = self.root / "missing-subspec.json"
         document = {
             "name": "Latchway",
             "version": "1.0.0",
@@ -33,10 +34,24 @@ class CocoaPodsPublicationTests(unittest.TestCase):
                 "git": "https://github.com/Latchway/latchway-ios-sdk.git",
                 "tag": "v1.0.0",
             },
-            "subspecs": [{"name": "Core"}, {"name": "AppAttest"}, {"name": "FirebaseAuth"}],
+            "subspecs": [
+                {"name": "Core"},
+                {"name": "AppAttest"},
+                {"name": "AppExtensions"},
+                {"name": "FirebaseAuth"},
+            ],
         }
         self.local.write_text(json.dumps(document), encoding="utf-8")
         self.remote.write_text(json.dumps(document), encoding="utf-8")
+        missing_subspec = json.loads(json.dumps(document))
+        missing_subspec["subspecs"] = [
+            {"name": "Core"},
+            {"name": "AppAttest"},
+            {"name": "FirebaseAuth"},
+        ]
+        self.missing_subspec.write_text(
+            json.dumps(missing_subspec), encoding="utf-8"
+        )
         document["source"]["tag"] = "v9.9.9"
         self.mismatch.write_text(json.dumps(document), encoding="utf-8")
         self.write_executable("pod", """#!/bin/bash
@@ -65,6 +80,7 @@ done
 case "$FAKE_REGISTRY_MODE" in
   exact) cp "$FAKE_REMOTE_SPEC" "$output"; printf 200 ;;
   mismatch) cp "$FAKE_MISMATCH_SPEC" "$output"; printf 200 ;;
+  missing_subspec) cp "$FAKE_MISSING_SUBSPEC" "$output"; printf 200 ;;
   missing_then_publish)
     if [[ -f "$FAKE_PUBLISHED_STATE" ]]; then
       cp "$FAKE_REMOTE_SPEC" "$output"
@@ -88,13 +104,20 @@ esac
         path.write_text(source, encoding="utf-8")
         path.chmod(0o755)
 
-    def invoke(self, mode: str, *, token: bool = False) -> subprocess.CompletedProcess[str]:
+    def invoke(
+        self,
+        mode: str,
+        *,
+        token: bool = False,
+        local_spec: Path | None = None,
+    ) -> subprocess.CompletedProcess[str]:
         environment = {
             **os.environ,
             "PATH": f"{self.bin}:/usr/bin:/bin",
-            "FAKE_LOCAL_SPEC": str(self.local),
+            "FAKE_LOCAL_SPEC": str(local_spec or self.local),
             "FAKE_REMOTE_SPEC": str(self.remote),
             "FAKE_MISMATCH_SPEC": str(self.mismatch),
+            "FAKE_MISSING_SUBSPEC": str(self.missing_subspec),
             "FAKE_PUBLISHED_STATE": str(self.state),
             "FAKE_POD_LOG": str(self.log),
             "FAKE_REGISTRY_MODE": mode,
@@ -123,6 +146,18 @@ esac
         result = self.invoke("mismatch", token=True)
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("not exactly", result.stderr)
+        self.assertFalse(self.log.exists())
+
+    def test_published_spec_missing_app_extensions_is_rejected(self) -> None:
+        result = self.invoke("missing_subspec", token=True)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("not exactly", result.stderr)
+        self.assertFalse(self.log.exists())
+
+    def test_reviewed_spec_missing_app_extensions_is_rejected_before_network(self) -> None:
+        result = self.invoke("exact", token=True, local_spec=self.missing_subspec)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("reviewed CocoaPods subspec mismatch", result.stderr)
         self.assertFalse(self.log.exists())
 
     def test_missing_coordinate_publishes_once_then_verifies(self) -> None:
