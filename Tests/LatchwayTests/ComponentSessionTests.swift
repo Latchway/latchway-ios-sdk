@@ -4,6 +4,73 @@ import LatchwayTesting
 import XCTest
 
 final class ComponentSessionTests: XCTestCase {
+    func testSeparateExtensionClientsCoordinateProvisioningAndRefresh() async throws {
+        let fixture = try await makeSharedComponentFixture(kind: .provisioningGrant)
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for client in fixture.clients {
+                group.addTask {
+                    var request = URLRequest(
+                        url: URL(string: "https://gateway.example.test/v1/responses")!
+                    )
+                    request.httpMethod = "POST"
+                    try await client.authorize(&request, feature: "habit-assistant")
+                }
+            }
+            try await group.waitForAll()
+        }
+        let establishmentCount = await fixture.server.requestCount(
+            path: "/client/v1/component-sessions"
+        )
+        XCTAssertEqual(establishmentCount, 1)
+
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for client in fixture.clients {
+                group.addTask { try await client.refresh() }
+            }
+            try await group.waitForAll()
+        }
+        let refreshCount = await fixture.server.requestCount(
+            path: "/client/v1/sessions/refresh"
+        )
+        let saveCount = await fixture.storage.saveCount
+        XCTAssertEqual(refreshCount, 1)
+        XCTAssertEqual(saveCount, 2)
+    }
+
+    func testSeparateExtensionClientsCoordinateDirectAttestationProviders() async throws {
+        let fixture = try await makeSharedDirectAttestationFixture()
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for client in fixture.clients {
+                group.addTask {
+                    try await client.establishDirectAttestationForContractConformance()
+                }
+            }
+            try await group.waitForAll()
+        }
+
+        let componentBase = "/client/v1/installation-families/current/components/"
+            + "cmp_01J00000000000000000000000"
+        let refreshCount = await fixture.server.requestCount(
+            path: "/client/v1/sessions/refresh"
+        )
+        let challengeCount = await fixture.server.requestCount(
+            path: componentBase + "/attestation-challenges"
+        )
+        let exchangeCount = await fixture.server.requestCount(
+            path: componentBase + "/attestation-exchanges"
+        )
+        XCTAssertEqual(refreshCount, 1)
+        XCTAssertEqual(challengeCount, 1)
+        XCTAssertEqual(exchangeCount, 1)
+        var providerChallengeCount = 0
+        for provider in fixture.providers {
+            providerChallengeCount += await provider.challenges.count
+        }
+        XCTAssertEqual(providerChallengeCount, 1)
+        let stored = await fixture.storage.load()
+        XCTAssertEqual(stored?.trustSource, .delegatedDirectAttested)
+    }
+
     func testExtensionConsumesOnlyItsProvisioningGrantAndAddsFrameworkMetadata() async throws {
         let fixture = try await makeFixture(kind: .provisioningGrant)
         let transport = fixture.client.transport(
@@ -535,6 +602,151 @@ final class ComponentSessionTests: XCTestCase {
         let server: ComponentServerTransport
     }
 
+    private struct SharedComponentFixture {
+        let clients: [LatchwayExtensionClient]
+        let storage: ComponentMemoryStorage
+        let server: ComponentServerTransport
+    }
+
+    private func makeSharedComponentFixture(
+        kind: LatchwayComponentCredentialKind
+    ) async throws -> SharedComponentFixture {
+        let raw = try decodeBase64URL("2ZFd1bc5bCB8zu8OEf5l7O9x_SxbsQNQMNn0si4NxxI")
+        let key = try LatchwayDeterministicInstallationKey(rawPrivateKey: raw)
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let clock = LatchwayTestClock(now: now)
+        let thumbprint = try await LatchwayDPoPProofFactory(key: key, clock: clock).thumbprint()
+        let component = LatchwayComponentConfiguration.widget(
+            definitionID: "home_widget",
+            keychainAccessGroup: "TEAM123456.com.example.latchway.widget",
+            requestedFeatures: ["habit-assistant"]
+        )
+        let stored = LatchwayStoredComponentCredential(
+            family: .init(id: "fam_01J00000000000000000000000", status: "active"),
+            component: .init(
+                id: "cmp_01J00000000000000000000000",
+                definitionID: component.definitionID,
+                kind: component.kind,
+                platform: "ios",
+                isRoot: false,
+                dpopJKT: thumbprint,
+                status: "active",
+                grantedFeatures: component.requestedFeatures
+            ),
+            requestedFeatures: component.requestedFeatures,
+            trustSource: .delegatedFromAttestedRoot,
+            trustExpiresAt: now.addingTimeInterval(7_200),
+            keyThumbprint: thumbprint,
+            rotationToken: String(repeating: kind == .provisioningGrant ? "p" : "s", count: 64),
+            rotationExpiresAt: now.addingTimeInterval(7_200),
+            kind: kind
+        )
+        let storage = ComponentMemoryStorage(credential: stored)
+        let server = ComponentServerTransport(
+            thumbprint: thumbprint,
+            refreshExpiresAt: now.addingTimeInterval(3_600),
+            refreshPlatform: "ios",
+            refreshRejection: nil,
+            delay: .milliseconds(10)
+        )
+        let configuration = LatchwayConfiguration(
+            baseURL: URL(string: "https://gateway.example.test")!,
+            applicationID: "app_01J00000000000000000000000",
+            environment: "production",
+            rootKeychainAccessGroup: "ABCDE12345.com.example.latchway",
+            appVersion: "1.2.3"
+        )
+        let namespace = "shared-component-\(UUID().uuidString)"
+        let clients = try (0 ..< 2).map { _ in
+            try LatchwayExtensionClient(
+                configuration: configuration,
+                component: component,
+                key: key,
+                storage: storage,
+                transport: server,
+                clock: clock,
+                processScopeNamespace: namespace
+            )
+        }
+        return SharedComponentFixture(clients: clients, storage: storage, server: server)
+    }
+
+    private struct SharedDirectAttestationFixture {
+        let clients: [LatchwayExtensionClient]
+        let storage: ComponentMemoryStorage
+        let server: DirectComponentAttestationServer
+        let providers: [DirectComponentAttestationProvider]
+    }
+
+    private func makeSharedDirectAttestationFixture() async throws
+        -> SharedDirectAttestationFixture
+    {
+        let raw = try decodeBase64URL("2ZFd1bc5bCB8zu8OEf5l7O9x_SxbsQNQMNn0si4NxxI")
+        let key = try LatchwayDeterministicInstallationKey(rawPrivateKey: raw)
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let clock = LatchwayTestClock(now: now)
+        let thumbprint = try await LatchwayDPoPProofFactory(key: key, clock: clock).thumbprint()
+        let component = LatchwayComponentConfiguration(
+            definitionID: "action_extension",
+            kind: "action_extension",
+            keychainAccessGroup: "TEAM123456.com.example.latchway.action",
+            requestedFeatures: ["habit-assistant"]
+        )
+        let stored = LatchwayStoredComponentCredential(
+            family: .init(id: "fam_01J00000000000000000000000", status: "active"),
+            component: .init(
+                id: "cmp_01J00000000000000000000000",
+                definitionID: component.definitionID,
+                kind: component.kind,
+                platform: "ios",
+                isRoot: false,
+                dpopJKT: thumbprint,
+                status: "active",
+                grantedFeatures: component.requestedFeatures
+            ),
+            requestedFeatures: component.requestedFeatures,
+            trustSource: .delegatedFromAttestedRoot,
+            trustExpiresAt: now.addingTimeInterval(7_200),
+            keyThumbprint: thumbprint,
+            rotationToken: String(repeating: "s", count: 64),
+            rotationExpiresAt: now.addingTimeInterval(7_200),
+            kind: .sessionRefreshToken
+        )
+        let storage = ComponentMemoryStorage(credential: stored)
+        let server = DirectComponentAttestationServer(
+            thumbprint: thumbprint,
+            now: now,
+            componentPlatform: "ios"
+        )
+        let providers = [DirectComponentAttestationProvider(), DirectComponentAttestationProvider()]
+        let configuration = LatchwayConfiguration(
+            baseURL: URL(string: "https://gateway.example.test")!,
+            applicationID: "app_01J00000000000000000000000",
+            environment: "production",
+            rootKeychainAccessGroup: "ABCDE12345.com.example.latchway",
+            appVersion: "1.2.3"
+        )
+        let namespace = "shared-direct-\(UUID().uuidString)"
+        let clients = try providers.map { provider in
+            try LatchwayExtensionClient(
+                configuration: configuration,
+                component: component,
+                key: key,
+                storage: storage,
+                transport: server,
+                clock: clock,
+                directAttestationProvider: provider,
+                processScopeNamespace: namespace
+            )
+        }
+        return SharedDirectAttestationFixture(
+            clients: clients,
+            storage: storage,
+            server: server,
+            providers: providers
+        )
+    }
+
     private func makeFixture(
         kind: LatchwayComponentCredentialKind,
         failingSaveCalls: Set<Int> = [],
@@ -688,6 +900,10 @@ private actor DirectComponentAttestationServer: LatchwayHTTPTransport {
         default:
             return try jsonResponse(statusCode: 500, object: [:])
         }
+    }
+
+    func requestCount(path: String) -> Int {
+        requests.filter { $0.url?.path == path }.count
     }
 
     private func grant(

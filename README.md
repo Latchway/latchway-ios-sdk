@@ -160,6 +160,16 @@ use `authorize(_:feature:nonce:)` for `dpop_nonce_required` and `refresh()` for
 The v1 refresh request contains only `refresh_token`. If the gateway requires
 identity reauthentication or attestation step-up, the SDK clears the old
 session and performs a new identity challenge and attested exchange.
+
+Independent `LatchwayClient` instances that use the same root Keychain
+namespace coordinate installation-key creation, establishment, refresh, and
+retirement across the current process. They re-read Keychain state while
+holding the shared mutation permit and reuse only the in-memory access session
+accepted by that exact configuration. Cancellation, failed establishment, and
+sign-out release the permit; retirement revisions invalidate sibling clients'
+cached sessions before another request can use them. Component clients apply
+the same rule per component service and access group.
+
 The React Native bridge configures `clientRuntime: .reactNativeIOS` and its own
 `clientSDKVersion`. The runtime atomically selects installation platform
 `react_native_ios` and SDK header `react-native`; ordinary Swift clients keep

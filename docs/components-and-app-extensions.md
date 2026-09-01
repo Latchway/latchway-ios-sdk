@@ -183,6 +183,16 @@ before component-local state can be created, and it is removed only after both
 that component's credential and key have been erased. Failed erasures remain
 registered for a later retry.
 
+Multiple client actors in one process share a cancellation-safe mutation
+coordinator keyed by the exact component Keychain service and access group.
+Before consuming a provisioning grant, rotating a refresh token, replacing a
+key, or performing the contract-only direct-attestation flow, a client obtains
+that permit and re-reads the durable credential. A completed rotation advances
+a process revision and invalidates stale actor-local state. This complements
+Keychain access-group isolation; it does not turn the containing app and an app
+extension into one process or expose either process's access token to the
+other.
+
 The explicit overload remains compatible and can retire legacy state created
 before the durable registry was introduced:
 

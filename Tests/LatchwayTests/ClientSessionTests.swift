@@ -4,6 +4,187 @@ import LatchwayTesting
 import XCTest
 
 final class ClientSessionTests: XCTestCase {
+    func testSeparateClientsShareFirstSessionEstablishment() async throws {
+        let fixture = try await makeSharedFixture()
+
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for client in fixture.clients {
+                group.addTask {
+                    var request = URLRequest(
+                        url: URL(string: "https://gateway.example.test/v1/responses")!
+                    )
+                    request.httpMethod = "POST"
+                    try await client.authorize(&request, feature: "habit-assistant")
+                    XCTAssertNotNil(request.value(forHTTPHeaderField: "DPoP"))
+                }
+            }
+            try await group.waitForAll()
+        }
+
+        let counts = await fixture.server.counts()
+        XCTAssertEqual(counts.challenge, 1)
+        XCTAssertEqual(counts.exchange, 1)
+        XCTAssertEqual(counts.refresh, 0)
+        let saveCount = await fixture.storage.saveCount
+        let identityCount = await fixture.identity.count()
+        XCTAssertEqual(saveCount, 1)
+        XCTAssertEqual(identityCount, 1)
+    }
+
+    func testSeparateClientsShareForcedRefreshSingleFlight() async throws {
+        let fixture = try await makeSharedFixture()
+        var request = URLRequest(
+            url: URL(string: "https://gateway.example.test/v1/responses")!
+        )
+        request.httpMethod = "POST"
+        try await fixture.clients[0].authorize(&request, feature: "habit-assistant")
+
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for client in fixture.clients {
+                group.addTask { try await client.refresh() }
+            }
+            try await group.waitForAll()
+        }
+
+        let counts = await fixture.server.counts()
+        XCTAssertEqual(counts.challenge, 1)
+        XCTAssertEqual(counts.exchange, 1)
+        XCTAssertEqual(counts.refresh, 1)
+        let saveCount = await fixture.storage.saveCount
+        XCTAssertEqual(saveCount, 2)
+    }
+
+    func testProcessCoordinatorCancelledWaiterAndFailedOwnerDoNotStrandScope() async throws {
+        let coordinator = LatchwayProcessScopeCoordinator<RuntimeSession>(
+            configurationFingerprint: "coordinator-test"
+        )
+        let owner = try await coordinator.acquire(
+            configurationFingerprint: "coordinator-test"
+        )
+        let cancelledWaiter = Task {
+            try await coordinator.acquire(configurationFingerprint: "coordinator-test")
+        }
+        for _ in 0 ..< 10_000 {
+            if await coordinator.pendingWaiterCount() == 1 { break }
+            await Task.yield()
+        }
+        let pendingWaiterCount = await coordinator.pendingWaiterCount()
+        XCTAssertEqual(pendingWaiterCount, 1)
+        cancelledWaiter.cancel()
+        do {
+            _ = try await cancelledWaiter.value
+            XCTFail("A cancelled waiter must leave the queue")
+        } catch is CancellationError {
+            // Expected.
+        }
+        await coordinator.release(owner)
+        let recovered = try await coordinator.acquire(
+            configurationFingerprint: "coordinator-test"
+        )
+        await coordinator.release(recovered)
+
+        let fixture = try await makeSharedFixture(
+            attestationResults: [
+                .failure(LatchwayError.attestationUnavailable),
+                .success(Self.fixtureEvidence),
+            ]
+        )
+        var failed = URLRequest(
+            url: URL(string: "https://gateway.example.test/v1/responses")!
+        )
+        failed.httpMethod = "POST"
+        do {
+            try await fixture.clients[0].authorize(&failed, feature: "habit-assistant")
+            XCTFail("The scripted first establishment must fail")
+        } catch let error as LatchwayError {
+            XCTAssertEqual(error, .attestationUnavailable)
+        }
+        var recoveredRequest = URLRequest(
+            url: URL(string: "https://gateway.example.test/v1/responses")!
+        )
+        recoveredRequest.httpMethod = "POST"
+        try await fixture.clients[1].authorize(
+            &recoveredRequest,
+            feature: "habit-assistant"
+        )
+        let counts = await fixture.server.counts()
+        XCTAssertEqual(counts.challenge, 2)
+        XCTAssertEqual(counts.exchange, 1)
+    }
+
+    func testRevocationInvalidatesSiblingClientAndLeavesNoStaleWrite() async throws {
+        let fixture = try await makeSharedFixture()
+        var request = URLRequest(
+            url: URL(string: "https://gateway.example.test/v1/responses")!
+        )
+        request.httpMethod = "POST"
+        try await fixture.clients[0].authorize(&request, feature: "habit-assistant")
+        var siblingRequest = URLRequest(
+            url: URL(string: "https://gateway.example.test/v1/responses")!
+        )
+        siblingRequest.httpMethod = "POST"
+        try await fixture.clients[1].authorize(
+            &siblingRequest,
+            feature: "habit-assistant"
+        )
+
+        try await fixture.clients[0].revokeCurrentInstallation()
+
+        do {
+            try await fixture.clients[1].refresh()
+            XCTFail("A sibling refresh must not write after process retirement")
+        } catch let error as LatchwayError {
+            XCTAssertEqual(error, .sessionUnavailable)
+        }
+        var stale = URLRequest(
+            url: URL(string: "https://gateway.example.test/v1/responses")!
+        )
+        stale.httpMethod = "POST"
+        do {
+            try await fixture.clients[1].authorize(&stale, feature: "habit-assistant")
+            XCTFail("A sibling client must not reuse the retired process session")
+        } catch let error as LatchwayError {
+            XCTAssertEqual(error, .sessionUnavailable)
+        }
+        let stored = try await fixture.storage.load()
+        let saveCount = await fixture.storage.saveCount
+        let clearCount = await fixture.storage.clearCount
+        XCTAssertNil(stored)
+        XCTAssertEqual(saveCount, 1)
+        XCTAssertEqual(clearCount, 1)
+        let counts = await fixture.server.counts()
+        XCTAssertEqual(counts.refresh, 0)
+        XCTAssertEqual(counts.revoke, 1)
+    }
+
+    func testNewClientCanReauthenticateAfterProcessRevocation() async throws {
+        let fixture = try await makeSharedFixture(clientCount: 3)
+        for client in fixture.clients.prefix(2) {
+            var request = URLRequest(
+                url: URL(string: "https://gateway.example.test/v1/responses")!
+            )
+            request.httpMethod = "POST"
+            try await client.authorize(&request, feature: "habit-assistant")
+        }
+        try await fixture.clients[0].revokeCurrentInstallation()
+
+        var request = URLRequest(
+            url: URL(string: "https://gateway.example.test/v1/responses")!
+        )
+        request.httpMethod = "POST"
+        try await fixture.clients[2].authorize(&request, feature: "habit-assistant")
+
+        let counts = await fixture.server.counts()
+        let saveCount = await fixture.storage.saveCount
+        let stored = try await fixture.storage.load()
+        XCTAssertEqual(counts.challenge, 2)
+        XCTAssertEqual(counts.exchange, 2)
+        XCTAssertEqual(counts.refresh, 0)
+        XCTAssertEqual(counts.revoke, 1)
+        XCTAssertEqual(saveCount, 2)
+        XCTAssertNotNil(stored)
+    }
+
     func testRootKeychainPreflightFailsBeforeIdentityAttestationOrTransport() async throws {
         let fixture = try await makeFixture(rootKeychainPreflight: {
             throw LatchwayError.rootKeychainMigrationRequired
@@ -1133,6 +1314,85 @@ final class ClientSessionTests: XCTestCase {
         let attestation: LatchwayScriptedAttestationProvider
         let storage: LatchwayInMemorySessionStorage
         let clock: LatchwayTestClock
+    }
+
+    private struct SharedFixture {
+        let clients: [LatchwayClient]
+        let server: SessionServerTransport
+        let identity: CountingIdentityProvider
+        let storage: LatchwayInMemorySessionStorage
+    }
+
+    private static let fixtureEvidence = LatchwayAttestationEvidence(
+        provider: "app_attest",
+        evidence: [
+            "key_id": .string("fixture-key"),
+            "attestation_object": .string("YXR0ZXN0YXRpb24"),
+        ]
+    )
+
+    private func makeSharedFixture(
+        attestationResults: [Result<LatchwayAttestationEvidence, Error>]? = nil,
+        clientCount: Int = 2
+    ) async throws -> SharedFixture {
+        let raw = try decodeBase64URL("2ZFd1bc5bCB8zu8OEf5l7O9x_SxbsQNQMNn0si4NxxI")
+        let key = try LatchwayDeterministicInstallationKey(rawPrivateKey: raw)
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let clock = LatchwayTestClock(now: now)
+        let thumbprint = try await LatchwayDPoPProofFactory(
+            key: key,
+            clock: clock
+        ).thumbprint()
+        let server = SessionServerTransport(
+            thumbprint: thumbprint,
+            now: now,
+            requireNonce: false,
+            delayNanoseconds: 10_000_000,
+            dataPlaneRejection: nil,
+            dataPlaneRetryable: true,
+            dataPlaneOperationID: nil,
+            safeRetryProblemMutation: nil,
+            challengeExpired: false,
+            challengeClockOffset: 0,
+            refreshRejection: nil,
+            familyRevokeFailure: false,
+            platform: LatchwayClientRuntime.iOS.platformIdentifier
+        )
+        let identity = CountingIdentityProvider(token: String(repeating: "i", count: 32))
+        let attestation = LatchwayScriptedAttestationProvider(
+            results: attestationResults ?? [
+                .success(Self.fixtureEvidence),
+                .success(Self.fixtureEvidence),
+            ]
+        )
+        let storage = LatchwayInMemorySessionStorage()
+        let configuration = LatchwayConfiguration(
+            baseURL: URL(string: "https://gateway.example.test")!,
+            applicationID: "app_01J00000000000000000000000",
+            environment: "production",
+            rootKeychainAccessGroup: "ABCDE12345.com.example.latchway",
+            appVersion: "1.2.3"
+        )
+        let namespace = "shared-root-\(UUID().uuidString)"
+        let clients = (0 ..< clientCount).map { _ in
+            LatchwayClient(
+                configuration: configuration,
+                identityTokenProvider: identity,
+                attestationProvider: attestation,
+                installationKey: key,
+                sessionStorage: storage,
+                transport: server,
+                clock: clock,
+                rootKeychainPreflight: {},
+                processScopeNamespace: namespace
+            )
+        }
+        return SharedFixture(
+            clients: clients,
+            server: server,
+            identity: identity,
+            storage: storage
+        )
     }
 
     private func makeFixture(

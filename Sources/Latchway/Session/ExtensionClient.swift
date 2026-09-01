@@ -1,6 +1,6 @@
 @preconcurrency import Foundation
 
-private struct LatchwayComponentRuntimeSession: Sendable {
+struct LatchwayComponentRuntimeSession: Sendable {
     let accessToken: String
     let expiresAt: Date
     let credential: LatchwayStoredComponentCredential
@@ -8,6 +8,11 @@ private struct LatchwayComponentRuntimeSession: Sendable {
     func isUsable(at now: Date, leeway: TimeInterval = 30) -> Bool {
         expiresAt.timeIntervalSince(now) > leeway
     }
+}
+
+private struct CoordinatedComponentSession: Sendable {
+    let value: LatchwayComponentRuntimeSession
+    let revision: UInt64
 }
 
 /// A client for an independently executing iOS app extension.
@@ -25,10 +30,13 @@ public actor LatchwayExtensionClient {
     private let proofFactory: LatchwayDPoPProofFactory
     private let controlPlane: LatchwayControlPlane
     private let directAttestationProvider: (any LatchwayAttestationProvider)?
+    private let processCoordinator: LatchwayProcessScopeCoordinator<LatchwayComponentRuntimeSession>
+    private let processConfigurationFingerprint: String
 
     private var session: LatchwayComponentRuntimeSession?
-    private var refreshTask: Task<LatchwayComponentRuntimeSession, Error>?
-    private var directAttestationTask: Task<LatchwayComponentRuntimeSession, Error>?
+    private var sessionRevision: UInt64?
+    private var refreshTask: Task<CoordinatedComponentSession, Error>?
+    private var directAttestationTask: Task<CoordinatedComponentSession, Error>?
 
     public init(
         configuration: LatchwayConfiguration,
@@ -52,6 +60,10 @@ public actor LatchwayExtensionClient {
         let network = LatchwayURLSessionTransport(session: LatchwayURLSessionFactory.make())
         let clock = LatchwaySystemClock()
         let proofFactory = LatchwayDPoPProofFactory(key: key, clock: clock)
+        let processConfigurationFingerprint = LatchwayProcessScopeIdentity.componentFingerprint(
+            configuration: configuration,
+            component: component
+        )
         self.configuration = configuration
         self.component = component
         self.key = key
@@ -59,6 +71,15 @@ public actor LatchwayExtensionClient {
         transport = network
         self.clock = clock
         self.proofFactory = proofFactory
+        self.processConfigurationFingerprint = processConfigurationFingerprint
+        self.processCoordinator = LatchwayProcessScopeCoordinatorPool.shared.component(
+            identity: LatchwayProcessScopeIdentity.component(
+                configuration: configuration,
+                component: component,
+                namespace: LatchwayProcessScopeIdentity.productionNamespace
+            ),
+            configurationFingerprint: processConfigurationFingerprint
+        )
         directAttestationProvider = nil
         controlPlane = LatchwayControlPlane(
             configuration: configuration,
@@ -88,9 +109,14 @@ public actor LatchwayExtensionClient {
         storage: any LatchwayComponentCredentialStorage,
         transport: any LatchwayHTTPTransport,
         clock: any LatchwayClock,
-        directAttestationProvider: (any LatchwayAttestationProvider)? = nil
+        directAttestationProvider: (any LatchwayAttestationProvider)? = nil,
+        processScopeNamespace: String = UUID().uuidString
     ) throws {
         try Self.validate(component)
+        let processConfigurationFingerprint = LatchwayProcessScopeIdentity.componentFingerprint(
+            configuration: configuration,
+            component: component
+        )
         self.configuration = configuration
         self.component = component
         self.key = key
@@ -98,6 +124,15 @@ public actor LatchwayExtensionClient {
         self.transport = transport
         self.clock = clock
         self.directAttestationProvider = directAttestationProvider
+        self.processConfigurationFingerprint = processConfigurationFingerprint
+        self.processCoordinator = LatchwayProcessScopeCoordinatorPool.shared.component(
+            identity: LatchwayProcessScopeIdentity.component(
+                configuration: configuration,
+                component: component,
+                namespace: processScopeNamespace
+            ),
+            configurationFingerprint: processConfigurationFingerprint
+        )
         proofFactory = LatchwayDPoPProofFactory(key: key, clock: clock)
         controlPlane = LatchwayControlPlane(
             configuration: configuration,
@@ -165,16 +200,18 @@ public actor LatchwayExtensionClient {
             throw LatchwayComponentError.directAttestationRequired
         }
         if let directAttestationTask {
-            let value = try await directAttestationTask.value
-            session = value
+            let resolution = try await directAttestationTask.value
+            session = resolution.value
+            sessionRevision = resolution.revision
             try Task.checkCancellation()
             return
         }
 
         let active = try await refreshSession(force: false)
         if let directAttestationTask {
-            let value = try await directAttestationTask.value
-            session = value
+            let resolution = try await directAttestationTask.value
+            session = resolution.value
+            sessionRevision = resolution.revision
             try Task.checkCancellation()
             return
         }
@@ -190,21 +227,26 @@ public actor LatchwayExtensionClient {
             // was waiting for the shared component-session refresh.
             return
         }
-        let task = Task {
-            try await Self.performDirectAttestation(
+        let observedRevision = (await processCoordinator.snapshot()).revision
+        let task = Task { [processCoordinator, processConfigurationFingerprint] in
+            try await Self.performCoordinatedDirectAttestation(
                 active: active,
+                observedRevision: observedRevision,
                 provider: directAttestationProvider,
                 controlPlane: controlPlane,
                 storage: storage,
                 clock: clock,
-                expectedPlatform: configuration.clientRuntime.platformIdentifier
+                expectedPlatform: configuration.clientRuntime.platformIdentifier,
+                processCoordinator: processCoordinator,
+                processConfigurationFingerprint: processConfigurationFingerprint
             )
         }
         directAttestationTask = task
         defer { directAttestationTask = nil }
         do {
-            let value = try await task.value
-            session = value
+            let resolution = try await task.value
+            session = resolution.value
+            sessionRevision = resolution.revision
             try Task.checkCancellation()
         } catch is CancellationError {
             throw LatchwayError.cancelled
@@ -215,6 +257,79 @@ public actor LatchwayExtensionClient {
             throw Self.map(error)
         } catch {
             throw LatchwayError.transportFailure
+        }
+    }
+
+    private static func performCoordinatedDirectAttestation(
+        active: LatchwayComponentRuntimeSession,
+        observedRevision: UInt64,
+        provider: any LatchwayAttestationProvider,
+        controlPlane: LatchwayControlPlane,
+        storage: any LatchwayComponentCredentialStorage,
+        clock: any LatchwayClock,
+        expectedPlatform: String,
+        processCoordinator: LatchwayProcessScopeCoordinator<LatchwayComponentRuntimeSession>,
+        processConfigurationFingerprint: String
+    ) async throws -> CoordinatedComponentSession {
+        let permit = try await processCoordinator.acquire(
+            configurationFingerprint: processConfigurationFingerprint
+        )
+        do {
+            try Task.checkCancellation()
+            let snapshot = await processCoordinator.snapshot(for: permit)
+            guard !snapshot.terminal else {
+                throw LatchwayComponentError.componentRevoked
+            }
+            let now = await clock.now()
+            if let shared = snapshot.value,
+               shared.isUsable(at: now),
+               shared.credential.trustSource == .delegatedDirectAttested,
+               snapshot.revision != observedRevision {
+                await processCoordinator.release(permit)
+                return CoordinatedComponentSession(
+                    value: shared,
+                    revision: snapshot.revision
+                )
+            }
+            let current: LatchwayComponentRuntimeSession
+            if let shared = snapshot.value, shared.isUsable(at: now) {
+                current = shared
+            } else {
+                current = active
+            }
+            guard let durable = try await storage.load(),
+                  durable == current.credential
+            else { throw LatchwayComponentError.componentNotProvisioned }
+            if durable.trustSource == .delegatedDirectAttested {
+                await processCoordinator.release(permit)
+                return CoordinatedComponentSession(
+                    value: current,
+                    revision: snapshot.revision
+                )
+            }
+            let accepted = try await performDirectAttestation(
+                active: current,
+                provider: provider,
+                controlPlane: controlPlane,
+                storage: storage,
+                clock: clock,
+                expectedPlatform: expectedPlatform
+            )
+            let revision = await processCoordinator.publish(accepted, for: permit)
+            await processCoordinator.release(permit)
+            return CoordinatedComponentSession(value: accepted, revision: revision)
+        } catch {
+            if let componentError = error as? LatchwayComponentError,
+               componentError == .componentRevoked
+                   || componentError == .installationFamilyRevoked {
+                try? await storage.clear()
+                _ = await processCoordinator.invalidate(terminal: true, for: permit)
+            } else if let latchwayError = error as? LatchwayError,
+                      latchwayError == .keyStorageFailure {
+                _ = await processCoordinator.invalidate(terminal: false, for: permit)
+            }
+            await processCoordinator.release(permit)
+            throw error
         }
     }
 
@@ -395,11 +510,32 @@ public actor LatchwayExtensionClient {
     }
 
     private func activeSession(feature: String) async throws -> LatchwayComponentRuntimeSession {
-        if let session, session.isUsable(at: await clock.now()) {
+        let now = await clock.now()
+        let processSnapshot = await processCoordinator.snapshot()
+        if processSnapshot.terminal {
+            session = nil
+            sessionRevision = processSnapshot.revision
+            throw LatchwayComponentError.componentRevoked
+        }
+        if let shared = processSnapshot.value, shared.isUsable(at: now) {
+            session = shared
+            sessionRevision = processSnapshot.revision
+            guard shared.credential.component.grantedFeatures.contains(feature) else {
+                throw LatchwayComponentError.featureNotDelegated
+            }
+            return shared
+        }
+        if let session,
+           sessionRevision == processSnapshot.revision,
+           session.isUsable(at: now) {
             guard session.credential.component.grantedFeatures.contains(feature) else {
                 throw LatchwayComponentError.featureNotDelegated
             }
             return session
+        }
+        if sessionRevision != processSnapshot.revision {
+            session = nil
+            sessionRevision = processSnapshot.revision
         }
         let refreshed = try await refreshSession(force: true)
         guard refreshed.credential.component.grantedFeatures.contains(feature) else {
@@ -557,23 +693,108 @@ public actor LatchwayExtensionClient {
 
     private func refreshSession(force: Bool) async throws -> LatchwayComponentRuntimeSession {
         guard !Task.isCancelled else { throw LatchwayError.cancelled }
-        if !force, let session, session.isUsable(at: await clock.now()) { return session }
+        let processSnapshot = await processCoordinator.snapshot()
+        if processSnapshot.terminal {
+            session = nil
+            sessionRevision = processSnapshot.revision
+            throw LatchwayComponentError.componentRevoked
+        }
+        if !force,
+           let shared = processSnapshot.value,
+           shared.isUsable(at: await clock.now()) {
+            session = shared
+            sessionRevision = processSnapshot.revision
+            return shared
+        }
+        if !force,
+           let session,
+           sessionRevision == processSnapshot.revision,
+           session.isUsable(at: await clock.now()) { return session }
         if let refreshTask {
             do {
-                let value = try await refreshTask.value
-                session = value
+                let resolution = try await refreshTask.value
+                session = resolution.value
+                sessionRevision = resolution.revision
                 try Task.checkCancellation()
-                return value
+                return resolution.value
             } catch is CancellationError {
                 throw LatchwayError.cancelled
             }
         }
         let expectedPlatform = configuration.clientRuntime.platformIdentifier
-        let task = Task { [controlPlane, proofFactory, storage, component, clock, expectedPlatform] in
-            // Loading the shared credential belongs inside the single-flight
-            // task.  Keychain reads suspend, so performing one before publishing
-            // refreshTask would let concurrent extension requests each consume
-            // the same one-time provisioning grant.
+        let observedRevision = processSnapshot.revision
+        let task = Task { [controlPlane, proofFactory, storage, component, clock, expectedPlatform, processCoordinator, processConfigurationFingerprint] in
+            try await Self.performCoordinatedRefresh(
+                force: force,
+                observedRevision: observedRevision,
+                controlPlane: controlPlane,
+                proofFactory: proofFactory,
+                storage: storage,
+                component: component,
+                clock: clock,
+                expectedPlatform: expectedPlatform,
+                processCoordinator: processCoordinator,
+                processConfigurationFingerprint: processConfigurationFingerprint
+            )
+        }
+        refreshTask = task
+        defer { refreshTask = nil }
+        do {
+            let resolution = try await task.value
+            session = resolution.value
+            sessionRevision = resolution.revision
+            try Task.checkCancellation()
+            return resolution.value
+        } catch let error as LatchwayComponentError {
+            if error == .componentRevoked || error == .installationFamilyRevoked {
+                session = nil
+                sessionRevision = (await processCoordinator.snapshot()).revision
+            }
+            throw error
+        } catch let error as LatchwayError {
+            throw error
+        } catch is CancellationError {
+            throw LatchwayError.cancelled
+        } catch {
+            throw LatchwayError.transportFailure
+        }
+    }
+
+    private static func performCoordinatedRefresh(
+        force: Bool,
+        observedRevision: UInt64,
+        controlPlane: LatchwayControlPlane,
+        proofFactory: LatchwayDPoPProofFactory,
+        storage: any LatchwayComponentCredentialStorage,
+        component: LatchwayComponentConfiguration,
+        clock: any LatchwayClock,
+        expectedPlatform: String,
+        processCoordinator: LatchwayProcessScopeCoordinator<LatchwayComponentRuntimeSession>,
+        processConfigurationFingerprint: String
+    ) async throws -> CoordinatedComponentSession {
+        let permit = try await processCoordinator.acquire(
+            configurationFingerprint: processConfigurationFingerprint
+        )
+        do {
+            try Task.checkCancellation()
+            let snapshot = await processCoordinator.snapshot(for: permit)
+            guard !snapshot.terminal else {
+                throw LatchwayComponentError.componentRevoked
+            }
+            let now = await clock.now()
+            if let shared = snapshot.value,
+               shared.isUsable(at: now),
+               !force || snapshot.revision != observedRevision {
+                await processCoordinator.release(permit)
+                return CoordinatedComponentSession(
+                    value: shared,
+                    revision: snapshot.revision
+                )
+            }
+
+            // The durable credential is deliberately re-read only after the
+            // process-wide permit is held. It may have been rotated while this
+            // client was queued behind another client instance.
             let stored: LatchwayStoredComponentCredential
             do {
                 guard let value = try await storage.load() else {
@@ -585,7 +806,6 @@ public actor LatchwayExtensionClient {
             } catch {
                 throw LatchwayComponentError.keychainAccessGroupUnavailable
             }
-            let now = await clock.now()
             let thumbprint = try await proofFactory.thumbprint()
             guard stored.component.definitionID == component.definitionID,
                   stored.component.kind == component.kind,
@@ -624,9 +844,9 @@ public actor LatchwayExtensionClient {
                     )
                 }
             } catch let error as LatchwayError {
-                throw Self.map(error)
+                throw map(error)
             }
-            let accepted = try Self.accept(
+            let accepted = try accept(
                 grant,
                 replacing: stored,
                 issuedAt: await clock.now(),
@@ -636,37 +856,25 @@ public actor LatchwayExtensionClient {
                 try await storage.save(accepted.credential)
             } catch {
                 if stored.kind == .provisioningGrant {
-                    // Initial provisioning grants are one-time exchanges, not
-                    // ADR-0024 rotations. Never leave a consumed grant looking
-                    // usable; the containing app must provision it again.
                     try? await storage.clear()
                 }
-                // For an ordinary component refresh, the old value remains in
-                // storage so an exact same-key duplicate can recover the cached
-                // rotation result within the server's 30-second window.
                 throw LatchwayError.keyStorageFailure
             }
-            return accepted
-        }
-        refreshTask = task
-        defer { refreshTask = nil }
-        do {
-            let value = try await task.value
-            session = value
-            try Task.checkCancellation()
-            return value
-        } catch let error as LatchwayComponentError {
-            if error == .componentRevoked || error == .installationFamilyRevoked {
-                session = nil
-                try? await storage.clear()
-            }
-            throw error
-        } catch let error as LatchwayError {
-            throw error
-        } catch is CancellationError {
-            throw LatchwayError.cancelled
+            let revision = await processCoordinator.publish(accepted, for: permit)
+            await processCoordinator.release(permit)
+            return CoordinatedComponentSession(value: accepted, revision: revision)
         } catch {
-            throw LatchwayError.transportFailure
+            if let componentError = error as? LatchwayComponentError,
+               componentError == .componentRevoked
+                   || componentError == .installationFamilyRevoked {
+                try? await storage.clear()
+                _ = await processCoordinator.invalidate(terminal: true, for: permit)
+            } else if let latchwayError = error as? LatchwayError,
+                      latchwayError == .keyStorageFailure {
+                _ = await processCoordinator.invalidate(terminal: false, for: permit)
+            }
+            await processCoordinator.release(permit)
+            throw error
         }
     }
 

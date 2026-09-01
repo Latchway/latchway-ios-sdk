@@ -1,5 +1,10 @@
 @preconcurrency import Foundation
 
+private struct CoordinatedRootSession: Sendable {
+    let value: RuntimeSession
+    let revision: UInt64
+}
+
 public actor LatchwayClient {
     private let configuration: LatchwayConfiguration
     private let identityTokenProvider: any LatchwayIdentityTokenProvider
@@ -13,10 +18,14 @@ public actor LatchwayClient {
     private let proofFactory: LatchwayDPoPProofFactory
     private let controlPlane: LatchwayControlPlane
     private let rootKeychainPreflight: @Sendable () throws -> Void
+    private let processScopeNamespace: String
+    private let processCoordinator: LatchwayProcessScopeCoordinator<RuntimeSession>
+    private let processConfigurationFingerprint: String
 
     private var session: RuntimeSession?
-    private var establishmentTask: Task<RuntimeSession, Error>?
-    private var refreshTask: Task<RuntimeSession, Error>?
+    private var sessionRevision: UInt64?
+    private var establishmentTask: Task<CoordinatedRootSession, Error>?
+    private var refreshTask: Task<CoordinatedRootSession, Error>?
     private var state: LatchwayDiagnostics.SessionState = .absent
     private var lastRequestID: String?
     private var lastErrorCode: String?
@@ -54,6 +63,10 @@ public actor LatchwayClient {
             legacySharedKeychainAccessGroups: configuration.legacySharedKeychainAccessGroups,
             clientRuntime: configuration.clientRuntime
         )
+        let processScopeNamespace = LatchwayProcessScopeIdentity.productionNamespace
+        let processConfigurationFingerprint = LatchwayProcessScopeIdentity.rootFingerprint(
+            configuration: configuration
+        )
 
         self.configuration = configuration
         self.identityTokenProvider = identityTokenProvider
@@ -65,6 +78,15 @@ public actor LatchwayClient {
         self.transport = transport
         self.clock = clock
         self.proofFactory = proofFactory
+        self.processScopeNamespace = processScopeNamespace
+        self.processConfigurationFingerprint = processConfigurationFingerprint
+        self.processCoordinator = LatchwayProcessScopeCoordinatorPool.shared.root(
+            identity: LatchwayProcessScopeIdentity.root(
+                configuration: configuration,
+                namespace: processScopeNamespace
+            ),
+            configurationFingerprint: processConfigurationFingerprint
+        )
         self.rootKeychainPreflight = LatchwayRootKeychainPreflight.verifier(
             rootKeychainAccessGroup: configuration.rootKeychainAccessGroup,
             legacySharedKeychainAccessGroups: configuration.legacySharedKeychainAccessGroups,
@@ -97,6 +119,10 @@ public actor LatchwayClient {
             legacySharedKeychainAccessGroups: configuration.legacySharedKeychainAccessGroups,
             clientRuntime: configuration.clientRuntime
         )
+        let processScopeNamespace = LatchwayProcessScopeIdentity.productionNamespace
+        let processConfigurationFingerprint = LatchwayProcessScopeIdentity.rootFingerprint(
+            configuration: configuration
+        )
         self.configuration = configuration
         self.identityTokenProvider = identityTokenProvider
         self.attestationProvider = attestationProvider
@@ -107,6 +133,15 @@ public actor LatchwayClient {
         self.transport = transport
         self.clock = clock
         self.proofFactory = proofFactory
+        self.processScopeNamespace = processScopeNamespace
+        self.processConfigurationFingerprint = processConfigurationFingerprint
+        self.processCoordinator = LatchwayProcessScopeCoordinatorPool.shared.root(
+            identity: LatchwayProcessScopeIdentity.root(
+                configuration: configuration,
+                namespace: processScopeNamespace
+            ),
+            configurationFingerprint: processConfigurationFingerprint
+        )
         self.rootKeychainPreflight = LatchwayRootKeychainPreflight.verifier(
             rootKeychainAccessGroup: configuration.rootKeychainAccessGroup,
             legacySharedKeychainAccessGroups: configuration.legacySharedKeychainAccessGroups,
@@ -132,9 +167,13 @@ public actor LatchwayClient {
         clock: any LatchwayClock,
         rootKeychainPreflight: @escaping @Sendable () throws -> Void,
         componentRegistry: (any LatchwayComponentRegistry)? = nil,
-        componentStateRetirer: (any LatchwayComponentStateRetiring)? = nil
+        componentStateRetirer: (any LatchwayComponentStateRetiring)? = nil,
+        processScopeNamespace: String = UUID().uuidString
     ) {
         let proofFactory = LatchwayDPoPProofFactory(key: installationKey, clock: clock)
+        let processConfigurationFingerprint = LatchwayProcessScopeIdentity.rootFingerprint(
+            configuration: configuration
+        )
         self.configuration = configuration
         self.identityTokenProvider = identityTokenProvider
         self.attestationProvider = attestationProvider
@@ -152,6 +191,15 @@ public actor LatchwayClient {
         self.transport = transport
         self.clock = clock
         self.proofFactory = proofFactory
+        self.processScopeNamespace = processScopeNamespace
+        self.processConfigurationFingerprint = processConfigurationFingerprint
+        self.processCoordinator = LatchwayProcessScopeCoordinatorPool.shared.root(
+            identity: LatchwayProcessScopeIdentity.root(
+                configuration: configuration,
+                namespace: processScopeNamespace
+            ),
+            configurationFingerprint: processConfigurationFingerprint
+        )
         self.rootKeychainPreflight = rootKeychainPreflight
         self.controlPlane = LatchwayControlPlane(
             configuration: configuration,
@@ -618,26 +666,66 @@ public actor LatchwayClient {
     /// Revokes one delegated component without revoking its siblings.
     public func revokeComponent(_ component: LatchwayComponentConfiguration) async throws {
         try validateComponentConfiguration(component)
-        let storage = componentStorage(for: component)
-        guard let stored = try await storage.load() else {
-            throw LatchwayComponentError.componentNotProvisioned
-        }
         let active = try await activeSession()
+        let coordinator = componentProcessCoordinator(for: component)
+        let fingerprint = LatchwayProcessScopeIdentity.componentFingerprint(
+            configuration: configuration,
+            component: component
+        )
+        let permit = try await coordinator.acquire(configurationFingerprint: fingerprint)
         do {
+            let storage = componentStorage(for: component)
+            guard let stored = try await storage.load() else {
+                throw LatchwayComponentError.componentNotProvisioned
+            }
             try await controlPlane.revokeComponent(
                 componentID: stored.component.id,
                 accessToken: active.accessToken
             )
         } catch let error as LatchwayError {
+            await coordinator.release(permit)
             throw Self.componentError(from: error)
+        } catch {
+            await coordinator.release(permit)
+            throw error
         }
-        try await retireComponentState(component)
-        try await componentRegistry.unregister(component)
+        do {
+            try await retireComponentStateUncoordinated(component)
+            try await componentRegistry.unregister(component)
+            _ = await coordinator.invalidate(terminal: true, for: permit)
+            await coordinator.release(permit)
+        } catch {
+            _ = await coordinator.invalidate(terminal: true, for: permit)
+            await coordinator.release(permit)
+            throw error
+        }
     }
 
     public func componentDiagnostics(
         _ component: LatchwayComponentConfiguration
     ) async -> LatchwayComponentDiagnostics {
+        let coordinator = componentProcessCoordinator(for: component)
+        let fingerprint = LatchwayProcessScopeIdentity.componentFingerprint(
+            configuration: configuration,
+            component: component
+        )
+        guard let permit = try? await coordinator.acquire(
+            configurationFingerprint: fingerprint
+        ) else {
+            return LatchwayComponentDiagnostics(
+                familyID: nil,
+                componentID: nil,
+                definitionID: component.definitionID,
+                keychainAccessGroup: component.keychainAccessGroup,
+                keyAvailable: false,
+                keyStorage: .unavailable,
+                grantAvailable: false,
+                sessionAvailable: false,
+                trustSource: nil,
+                trustExpiresAt: nil,
+                containingAppActionRequired: true
+            )
+        }
         let key = componentKey(for: component)
         let keyStorage = await key.storage()
         let thumbprint = try? await LatchwayDPoPProofFactory(
@@ -645,7 +733,7 @@ public actor LatchwayClient {
             clock: clock
         ).thumbprint()
         let credential = try? await componentStorage(for: component).load()
-        return Self.componentDiagnostics(
+        let diagnostics = Self.componentDiagnostics(
             component: component,
             keyStorage: keyStorage,
             keyThumbprint: thumbprint,
@@ -653,6 +741,8 @@ public actor LatchwayClient {
             sessionAvailable: false,
             now: await clock.now()
         )
+        await coordinator.release(permit)
+        return diagnostics
     }
 
     public func diagnostics() async -> LatchwayDiagnostics {
@@ -708,8 +798,28 @@ public actor LatchwayClient {
                 lastErrorCode: lastErrorCode
             )
         }
-        let keyStorage = await installationKey.storage()
-        let thumbprint = try? await proofFactory.thumbprint()
+        let processSnapshot = await processCoordinator.snapshot()
+        if sessionRevision != processSnapshot.revision {
+            session = processSnapshot.value
+            sessionRevision = processSnapshot.revision
+            if processSnapshot.terminal {
+                state = .revoked
+            } else if session == nil {
+                state = .absent
+            }
+        }
+        let keyStorage: LatchwayKeyStorage
+        let thumbprint: String?
+        if let permit = try? await processCoordinator.acquire(
+            configurationFingerprint: processConfigurationFingerprint
+        ) {
+            keyStorage = await installationKey.storage()
+            thumbprint = try? await proofFactory.thumbprint()
+            await processCoordinator.release(permit)
+        } else {
+            keyStorage = .unavailable
+            thumbprint = nil
+        }
         let attestation = await attestationProvider.status()
         var installationID = session?.installation.id
         var installationFamilyID = session?.installationFamily?.id
@@ -759,9 +869,35 @@ public actor LatchwayClient {
         try ensureRootKeychainPreflight()
         if state == .revoked { throw terminalError ?? LatchwayError.sessionUnavailable }
         let now = await clock.now()
-        if let session, session.isUsable(at: now) {
+        let processSnapshot = await processCoordinator.snapshot()
+        if processSnapshot.terminal {
+            session = nil
+            if sessionRevision != nil {
+                sessionRevision = processSnapshot.revision
+                state = .revoked
+                throw terminalError ?? LatchwayError.sessionUnavailable
+            }
+            // A newly constructed client represents an explicit application
+            // reauthentication attempt. Let establishment clear the retired
+            // durable tuple while clients that observed the old family remain
+            // terminal and cannot resurrect it.
+            return try await establishSession()
+        }
+        if let shared = processSnapshot.value, shared.isUsable(at: now) {
+            session = shared
+            sessionRevision = processSnapshot.revision
+            state = .active
+            return shared
+        }
+        if let session,
+           sessionRevision == processSnapshot.revision,
+           session.isUsable(at: now) {
             state = .active
             return session
+        }
+        if sessionRevision != processSnapshot.revision {
+            session = nil
+            sessionRevision = processSnapshot.revision
         }
         if refreshTask != nil { return try await refreshSession(force: true) }
         if establishmentTask != nil { return try await establishSession() }
@@ -777,7 +913,7 @@ public actor LatchwayClient {
             if refreshTask != nil { return try await refreshSession(force: true) }
             if establishmentTask != nil { return try await establishSession() }
             if let stored, stored.refreshExpiresAt > resumedAt {
-                return try await refreshStoredSession(stored)
+                return try await refreshStoredSession(force: false)
             }
         } catch let error as LatchwayError {
             await record(error)
@@ -789,15 +925,22 @@ public actor LatchwayClient {
     private func establishSession() async throws -> RuntimeSession {
         if let establishmentTask { return try await resolve(establishmentTask, kind: .establishing) }
         state = .establishing
-        let task = Task { [identityTokenProvider, attestationProvider, controlPlane, proofFactory, sessionStorage, configuration, clock] in
-            try await Self.performEstablishment(
+        let observedRevision = (await processCoordinator.snapshot()).revision
+        let allowTerminalRecovery = sessionRevision == nil
+        let task = Task { [identityTokenProvider, attestationProvider, controlPlane, proofFactory, sessionStorage, configuration, clock, processCoordinator, processConfigurationFingerprint] in
+            try await Self.performCoordinatedSession(
+                forceRefresh: false,
+                observedRevision: observedRevision,
+                allowTerminalRecovery: allowTerminalRecovery,
                 identityTokenProvider: identityTokenProvider,
                 attestationProvider: attestationProvider,
                 controlPlane: controlPlane,
                 proofFactory: proofFactory,
                 sessionStorage: sessionStorage,
                 configuration: configuration,
-                clock: clock
+                clock: clock,
+                processCoordinator: processCoordinator,
+                processConfigurationFingerprint: processConfigurationFingerprint
             )
         }
         establishmentTask = task
@@ -809,117 +952,174 @@ public actor LatchwayClient {
         if state == .revoked { throw terminalError ?? LatchwayError.sessionUnavailable }
         if !force, let session, session.isUsable(at: await clock.now()) { return session }
         if let refreshTask { return try await resolve(refreshTask, kind: .refreshing) }
-        let stored: LatchwayStoredSession
-        if let session {
-            stored = LatchwayStoredSession(
-                refreshToken: session.refreshToken,
-                refreshExpiresAt: session.refreshExpiresAt,
-                installation: session.installation,
-                installationFamily: session.installationFamily,
-                component: session.component
-            )
-        } else if let loaded = try await sessionStorage.load() {
-            stored = loaded
-        } else {
-            return try await establishSession()
-        }
-        return try await refreshStoredSession(stored)
+        return try await refreshStoredSession(force: force)
     }
 
-    private func refreshStoredSession(_ stored: LatchwayStoredSession) async throws -> RuntimeSession {
+    private func refreshStoredSession(force: Bool) async throws -> RuntimeSession {
         if let refreshTask { return try await resolve(refreshTask, kind: .refreshing) }
         state = .refreshing
-        let task = Task { [self, controlPlane, identityTokenProvider, attestationProvider, proofFactory, sessionStorage, configuration, clock] in
-            try Task.checkCancellation()
-            let now = await clock.now()
-            let remainingLifetime = stored.refreshExpiresAt.timeIntervalSince(now)
-            let expectedThumbprint = try await proofFactory.thumbprint()
-            guard (32 ... 2_048).contains(stored.refreshToken.utf8.count),
-                  remainingLifetime.isFinite,
-                  remainingLifetime > 0,
-                  remainingLifetime <= 31_536_300,
-                  stored.installation.id.range(
-                      of: "^ins_[A-Za-z0-9_-]{16,128}$",
-                      options: .regularExpression
-                  ) != nil,
-                  stored.installation.platform == configuration.clientRuntime.platformIdentifier,
-                  stored.installation.status == "active",
-                  stored.installation.dpopJKT == expectedThumbprint,
-                  Self.validRootBinding(
-                      family: stored.installationFamily,
-                      component: stored.component,
-                      expectedThumbprint: expectedThumbprint,
-                      platform: configuration.clientRuntime.platformIdentifier
-                  )
-            else {
-                try await self.retireSessionForAttestedReestablishment()
-                return try await Self.performEstablishment(
-                    identityTokenProvider: identityTokenProvider,
-                    attestationProvider: attestationProvider,
-                    controlPlane: controlPlane,
-                    proofFactory: proofFactory,
-                    sessionStorage: sessionStorage,
-                    configuration: configuration,
-                    clock: clock
-                )
-            }
-            let grant: SessionGrantWire
-            do {
-                grant = try await controlPlane.refresh(refreshToken: stored.refreshToken)
-            } catch let error as LatchwayError where error.requiresAttestedReestablishment {
-                // The v1 refresh contract accepts only refresh_token. Retire
-                // the stored session and run the ordinary challenge + attested
-                // exchange inside this single-flight task so every waiter
-                // observes the same replacement session.
-                try await self.retireSessionForAttestedReestablishment()
-                return try await Self.performEstablishment(
-                    identityTokenProvider: identityTokenProvider,
-                    attestationProvider: attestationProvider,
-                    controlPlane: controlPlane,
-                    proofFactory: proofFactory,
-                    sessionStorage: sessionStorage,
-                    configuration: configuration,
-                    clock: clock
-                )
-            }
-            return try await Self.accept(
-                grant: grant,
-                issuedAt: await clock.now(),
-                expectedThumbprint: expectedThumbprint,
-                storage: sessionStorage,
-                configuration: configuration
+        let observedRevision = (await processCoordinator.snapshot()).revision
+        let allowTerminalRecovery = sessionRevision == nil
+        let task = Task { [controlPlane, identityTokenProvider, attestationProvider, proofFactory, sessionStorage, configuration, clock, processCoordinator, processConfigurationFingerprint] in
+            try await Self.performCoordinatedSession(
+                forceRefresh: force,
+                observedRevision: observedRevision,
+                allowTerminalRecovery: allowTerminalRecovery,
+                identityTokenProvider: identityTokenProvider,
+                attestationProvider: attestationProvider,
+                controlPlane: controlPlane,
+                proofFactory: proofFactory,
+                sessionStorage: sessionStorage,
+                configuration: configuration,
+                clock: clock,
+                processCoordinator: processCoordinator,
+                processConfigurationFingerprint: processConfigurationFingerprint
             )
         }
         refreshTask = task
         defer { refreshTask = nil }
         do { return try await resolve(task, kind: .refreshing) }
         catch let error as LatchwayError {
-            if error == .keyStorageFailure {
-                // Legacy root sessions remain on the wire-1 terminal reuse
-                // profile. The server may have consumed this refresh token, so
-                // discard every local copy rather than replaying it.
-                await clearSession()
-            } else if error.requiresFreshSession {
-                if error.isRevocation {
-                    state = .revoked
-                    terminalError = error
-                } else {
-                    await clearSession()
-                }
+            if error.isRevocation {
+                session = nil
+                state = .revoked
+                terminalError = error
+            } else if error == .keyStorageFailure || error.requiresFreshSession {
+                session = nil
+                sessionRevision = (await processCoordinator.snapshot()).revision
             }
             throw error
         }
     }
 
-    private func retireSessionForAttestedReestablishment() async throws {
-        // Retire the actor-visible session before any fallible identity or
-        // attestation work. If replacement fails, no caller may resume using
-        // the grant for which the server required step-up.
-        session = nil
+    private static func performCoordinatedSession(
+        forceRefresh: Bool,
+        observedRevision: UInt64,
+        allowTerminalRecovery: Bool,
+        identityTokenProvider: any LatchwayIdentityTokenProvider,
+        attestationProvider: any LatchwayAttestationProvider,
+        controlPlane: LatchwayControlPlane,
+        proofFactory: LatchwayDPoPProofFactory,
+        sessionStorage: any LatchwaySessionStorage,
+        configuration: LatchwayConfiguration,
+        clock: any LatchwayClock,
+        processCoordinator: LatchwayProcessScopeCoordinator<RuntimeSession>,
+        processConfigurationFingerprint: String
+    ) async throws -> CoordinatedRootSession {
+        let permit = try await processCoordinator.acquire(
+            configurationFingerprint: processConfigurationFingerprint
+        )
         do {
-            try await sessionStorage.clear()
+            try Task.checkCancellation()
+            var snapshot = await processCoordinator.snapshot(for: permit)
+            if snapshot.terminal {
+                guard allowTerminalRecovery else { throw LatchwayError.sessionUnavailable }
+                do { try await sessionStorage.clear() }
+                catch { throw LatchwayError.keyStorageFailure }
+                _ = await processCoordinator.invalidate(terminal: false, for: permit)
+                snapshot = await processCoordinator.snapshot(for: permit)
+            }
+            let now = await clock.now()
+            if let shared = snapshot.value,
+               shared.isUsable(at: now),
+               !forceRefresh || snapshot.revision != observedRevision {
+                await processCoordinator.release(permit)
+                return CoordinatedRootSession(value: shared, revision: snapshot.revision)
+            }
+
+            let runtime: RuntimeSession
+            if let stored = try await sessionStorage.load() {
+                let remainingLifetime = stored.refreshExpiresAt.timeIntervalSince(now)
+                let expectedThumbprint = try await proofFactory.thumbprint()
+                let validStored = (32 ... 2_048).contains(stored.refreshToken.utf8.count)
+                    && remainingLifetime.isFinite
+                    && remainingLifetime > 0
+                    && remainingLifetime <= 31_536_300
+                    && stored.installation.id.range(
+                        of: "^ins_[A-Za-z0-9_-]{16,128}$",
+                        options: .regularExpression
+                    ) != nil
+                    && stored.installation.platform
+                        == configuration.clientRuntime.platformIdentifier
+                    && stored.installation.status == "active"
+                    && stored.installation.dpopJKT == expectedThumbprint
+                    && validRootBinding(
+                        family: stored.installationFamily,
+                        component: stored.component,
+                        expectedThumbprint: expectedThumbprint,
+                        platform: configuration.clientRuntime.platformIdentifier
+                    )
+                if validStored {
+                    do {
+                        let grant = try await controlPlane.refresh(
+                            refreshToken: stored.refreshToken
+                        )
+                        runtime = try await accept(
+                            grant: grant,
+                            issuedAt: await clock.now(),
+                            expectedThumbprint: expectedThumbprint,
+                            storage: sessionStorage,
+                            configuration: configuration
+                        )
+                    } catch let error as LatchwayError
+                        where error.requiresAttestedReestablishment
+                    {
+                        do { try await sessionStorage.clear() }
+                        catch { throw LatchwayError.keyStorageFailure }
+                        _ = await processCoordinator.invalidate(
+                            terminal: false,
+                            for: permit
+                        )
+                        runtime = try await performEstablishment(
+                            identityTokenProvider: identityTokenProvider,
+                            attestationProvider: attestationProvider,
+                            controlPlane: controlPlane,
+                            proofFactory: proofFactory,
+                            sessionStorage: sessionStorage,
+                            configuration: configuration,
+                            clock: clock
+                        )
+                    }
+                } else {
+                    do { try await sessionStorage.clear() }
+                    catch { throw LatchwayError.keyStorageFailure }
+                    _ = await processCoordinator.invalidate(terminal: false, for: permit)
+                    runtime = try await performEstablishment(
+                        identityTokenProvider: identityTokenProvider,
+                        attestationProvider: attestationProvider,
+                        controlPlane: controlPlane,
+                        proofFactory: proofFactory,
+                        sessionStorage: sessionStorage,
+                        configuration: configuration,
+                        clock: clock
+                    )
+                }
+            } else {
+                runtime = try await performEstablishment(
+                    identityTokenProvider: identityTokenProvider,
+                    attestationProvider: attestationProvider,
+                    controlPlane: controlPlane,
+                    proofFactory: proofFactory,
+                    sessionStorage: sessionStorage,
+                    configuration: configuration,
+                    clock: clock
+                )
+            }
+
+            let revision = await processCoordinator.publish(runtime, for: permit)
+            await processCoordinator.release(permit)
+            return CoordinatedRootSession(value: runtime, revision: revision)
         } catch {
-            throw LatchwayError.keyStorageFailure
+            if let latchwayError = error as? LatchwayError,
+               latchwayError == .keyStorageFailure || latchwayError.requiresFreshSession {
+                try? await sessionStorage.clear()
+                _ = await processCoordinator.invalidate(
+                    terminal: latchwayError.isRevocation,
+                    for: permit
+                )
+            }
+            await processCoordinator.release(permit)
+            throw error
         }
     }
 
@@ -986,14 +1186,18 @@ public actor LatchwayClient {
         return accepted
     }
 
-    private func resolve(_ task: Task<RuntimeSession, Error>, kind: LatchwayDiagnostics.SessionState) async throws -> RuntimeSession {
+    private func resolve(
+        _ task: Task<CoordinatedRootSession, Error>,
+        kind: LatchwayDiagnostics.SessionState
+    ) async throws -> RuntimeSession {
         state = kind
         do {
             let result = try await task.value
-            session = result
+            session = result.value
+            sessionRevision = result.revision
             state = .active
             lastErrorCode = nil
-            return result
+            return result.value
         } catch is CancellationError {
             state = session == nil ? .absent : .expired
             throw LatchwayError.cancelled
@@ -1073,22 +1277,36 @@ public actor LatchwayClient {
         return runtime
     }
 
-    private func clearSession() async {
+    private func clearSession(terminal: Bool = false) async {
         session = nil
+        sessionRevision = nil
         establishmentTask?.cancel()
         establishmentTask = nil
         refreshTask?.cancel()
         refreshTask = nil
+        guard let permit = try? await processCoordinator.acquire(
+            configurationFingerprint: processConfigurationFingerprint
+        ) else {
+            state = terminal ? .revoked : .absent
+            return
+        }
         try? await sessionStorage.clear()
-        state = .absent
+        let revision = await processCoordinator.invalidate(terminal: terminal, for: permit)
+        await processCoordinator.release(permit)
+        sessionRevision = revision
+        state = terminal ? .revoked : .absent
     }
 
     private func retireAfterRevocation() async throws {
         session = nil
+        sessionRevision = nil
         establishmentTask?.cancel()
         establishmentTask = nil
         refreshTask?.cancel()
         refreshTask = nil
+        let permit = try await processCoordinator.acquire(
+            configurationFingerprint: processConfigurationFingerprint
+        )
         var cleanupError: LatchwayError?
         do { try await sessionStorage.clear() }
         catch { cleanupError = .keyStorageFailure }
@@ -1097,6 +1315,9 @@ public actor LatchwayClient {
         catch { cleanupError = cleanupError ?? .attestationUnavailable }
         do { try await installationKey.reset() }
         catch { cleanupError = cleanupError ?? .keyStorageFailure }
+        let revision = await processCoordinator.invalidate(terminal: true, for: permit)
+        await processCoordinator.release(permit)
+        sessionRevision = revision
         state = .revoked
         if let cleanupError {
             lastErrorCode = cleanupError.stableLocalCode
@@ -1115,72 +1336,90 @@ public actor LatchwayClient {
         // harmless stale descriptor is preferable to leaving secret state
         // untracked.
         try await componentRegistry.register(component)
-        let prior = try await componentStorage(for: component).load()
-        let changedFamily = prior.map { stored in
-            active.installationFamily?.id != stored.family.id
-        } ?? false
-        if replacing || changedFamily {
-            try await retireComponentState(component)
-        }
-        let key = componentKey(for: component)
-        let storage = componentStorage(for: component)
-
-        let proofFactory = LatchwayDPoPProofFactory(key: key, clock: clock)
-        let thumbprint: String
+        let coordinator = componentProcessCoordinator(for: component)
+        let fingerprint = LatchwayProcessScopeIdentity.componentFingerprint(
+            configuration: configuration,
+            component: component
+        )
+        let permit = try await coordinator.acquire(configurationFingerprint: fingerprint)
         do {
-            thumbprint = try await proofFactory.thumbprint()
-        } catch let error as LatchwayComponentError {
-            throw error
-        } catch {
-            throw LatchwayComponentError.componentKeyUnavailable
-        }
-        let now = await clock.now()
-        if !replacing,
-           let existing = try await storage.load(),
-           existing.isValid(
-               for: component,
-               keyThumbprint: thumbprint,
-               now: now,
-               rotationLeeway: 60
-           ) {
-            return Self.componentDiagnostics(
+            try Task.checkCancellation()
+            let prior = try await componentStorage(for: component).load()
+            let changedFamily = prior.map { stored in
+                active.installationFamily?.id != stored.family.id
+            } ?? false
+            if replacing || changedFamily {
+                try await retireComponentStateUncoordinated(component)
+                _ = await coordinator.invalidate(terminal: false, for: permit)
+            }
+
+            let key = componentKey(for: component)
+            let storage = componentStorage(for: component)
+            let proofFactory = LatchwayDPoPProofFactory(key: key, clock: clock)
+            let thumbprint: String
+            do {
+                thumbprint = try await proofFactory.thumbprint()
+            } catch let error as LatchwayComponentError {
+                throw error
+            } catch {
+                throw LatchwayComponentError.componentKeyUnavailable
+            }
+            let now = await clock.now()
+            if !replacing,
+               let existing = try await storage.load(),
+               existing.isValid(
+                   for: component,
+                   keyThumbprint: thumbprint,
+                   now: now,
+                   rotationLeeway: 60
+               ) {
+                let diagnostics = Self.componentDiagnostics(
+                    component: component,
+                    keyStorage: await key.storage(),
+                    keyThumbprint: thumbprint,
+                    credential: existing,
+                    sessionAvailable: existing.kind == .sessionRefreshToken,
+                    now: now
+                )
+                await coordinator.release(permit)
+                return diagnostics
+            }
+
+            let grant: ComponentProvisioningWire
+            do {
+                grant = try await controlPlane.provisionComponent(
+                    definitionID: component.definitionID,
+                    publicJWK: try await key.publicJWK(),
+                    requestedFeatures: component.requestedFeatures,
+                    accessToken: active.accessToken
+                )
+            } catch let error as LatchwayError {
+                throw Self.componentError(from: error)
+            }
+            let credential = try Self.validatedComponentProvisioning(
+                grant,
+                component: component,
+                keyThumbprint: thumbprint,
+                expectedFamilyID: active.installationFamily?.id,
+                parentTrust: active.trust,
+                now: await clock.now()
+            )
+            try await storage.save(credential)
+            _ = await coordinator.invalidate(terminal: false, for: permit)
+            let diagnostics = Self.componentDiagnostics(
                 component: component,
                 keyStorage: await key.storage(),
                 keyThumbprint: thumbprint,
-                credential: existing,
-                sessionAvailable: existing.kind == .sessionRefreshToken,
-                now: now
+                credential: credential,
+                sessionAvailable: false,
+                now: await clock.now()
             )
+            await coordinator.release(permit)
+            return diagnostics
+        } catch {
+            await coordinator.release(permit)
+            throw error
         }
-
-        let grant: ComponentProvisioningWire
-        do {
-            grant = try await controlPlane.provisionComponent(
-                definitionID: component.definitionID,
-                publicJWK: try await key.publicJWK(),
-                requestedFeatures: component.requestedFeatures,
-                accessToken: active.accessToken
-            )
-        } catch let error as LatchwayError {
-            throw Self.componentError(from: error)
-        }
-        let credential = try Self.validatedComponentProvisioning(
-            grant,
-            component: component,
-            keyThumbprint: thumbprint,
-            expectedFamilyID: active.installationFamily?.id,
-            parentTrust: active.trust,
-            now: await clock.now()
-        )
-        try await storage.save(credential)
-        return Self.componentDiagnostics(
-            component: component,
-            keyStorage: await key.storage(),
-            keyThumbprint: thumbprint,
-            credential: credential,
-            sessionAvailable: false,
-            now: await clock.now()
-        )
     }
 
     private func componentKey(
@@ -1206,7 +1445,43 @@ public actor LatchwayClient {
         )
     }
 
+    private func componentProcessCoordinator(
+        for component: LatchwayComponentConfiguration
+    ) -> LatchwayProcessScopeCoordinator<LatchwayComponentRuntimeSession> {
+        LatchwayProcessScopeCoordinatorPool.shared.component(
+            identity: LatchwayProcessScopeIdentity.component(
+                configuration: configuration,
+                component: component,
+                namespace: processScopeNamespace
+            ),
+            configurationFingerprint: LatchwayProcessScopeIdentity.componentFingerprint(
+                configuration: configuration,
+                component: component
+            )
+        )
+    }
+
     private func retireComponentState(
+        _ component: LatchwayComponentConfiguration
+    ) async throws {
+        let coordinator = componentProcessCoordinator(for: component)
+        let fingerprint = LatchwayProcessScopeIdentity.componentFingerprint(
+            configuration: configuration,
+            component: component
+        )
+        let permit = try await coordinator.acquire(configurationFingerprint: fingerprint)
+        do {
+            try await retireComponentStateUncoordinated(component)
+            _ = await coordinator.invalidate(terminal: true, for: permit)
+            await coordinator.release(permit)
+        } catch {
+            _ = await coordinator.invalidate(terminal: true, for: permit)
+            await coordinator.release(permit)
+            throw error
+        }
+    }
+
+    private func retireComponentStateUncoordinated(
         _ component: LatchwayComponentConfiguration
     ) async throws {
         try await componentStateRetirer.retire(component)
@@ -1614,8 +1889,7 @@ public actor LatchwayClient {
 
     private func record(_ error: LatchwayError) async {
         if error.isRevocation {
-            session = nil
-            try? await sessionStorage.clear()
+            await clearSession(terminal: true)
             terminalError = error
         }
         if error.isRevocation {
