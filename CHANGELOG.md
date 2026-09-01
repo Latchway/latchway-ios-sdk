@@ -41,7 +41,7 @@ Versioning once package publication begins.
 ### Changed
 
 - Synchronized the source candidate with draft core contract 1.0.0 at commit
-  `a5f6b6b843b40f90f99062430aba268aa3c0f723` and deterministic bundle SHA-256
+  `e3ac1d052198c9d3bbac6c8a0de8f63d6aef4836` and deterministic bundle SHA-256
   `3a88fb69b911724da849229f34f735608e829bcfb0658087313c8d31441e9927`.
   New requests identify current wire protocol 2, while optional root metadata
   keeps compatible legacy wire-1 grant decoding fail-closed. The minimum server
