@@ -99,11 +99,15 @@ revocation test. Neither marker is evidence or contains a pass claim. Neither ob
 pass until the external signature, profile, schema, redaction, and physical-run
 validator accepts both exact files.
 
-The external observer must report `root_app_attest` only for the host,
-`delegated_only` for Widget/Share/Action, a successful Action
-`delegated_execution`, and the no-host/background/termination/no-presence
-lifecycle. An observer that expects direct Action App Attest is incompatible
-with iOS and cannot produce v1 evidence. The external lease issuer must also
-emit the candidate application/environment/identity-provider configuration
-and repeat those coordinates in both grant records; older root-owned issuer
-and observer services must be upgraded before the physical gate can pass.
+The external observer must emit
+`latchway.ios-component-observation.v2`: `root_app_attest` only for the host,
+`delegated_only` for Widget/Share/Action, successful delegated requests from
+all three extensions, the Action's HTTP sibling-session denial, the concrete
+`SecItemCopyMatching`/`errSecMissingEntitlement` sibling Keychain denial, the
+two-request component refresh race, and the
+no-host/background/termination/no-presence lifecycle. A v1 observation or an
+observer that expects direct Action App Attest is incompatible and fails
+closed. The external lease issuer must also emit the candidate
+application/environment/identity-provider configuration and repeat those
+coordinates in both grant records; older root-owned issuer and observer
+services must be upgraded before the physical gate can pass.

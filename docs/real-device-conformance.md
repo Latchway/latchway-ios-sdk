@@ -40,10 +40,16 @@ One run resets the conformance app's isolated SDK state, then records:
   identities, four independent redacted DPoP-key and session identifiers, and
   exact attestation modes (`root_app_attest` for the host and `delegated_only`
   for all three extensions);
-- a successful delegated Action request using only the Action DPoP key,
-  delegated grant/session, and `delegated_from_attested_root` trust source;
+- successful delegated Widget, Share, and Action requests, each using only its
+  own DPoP key and delegated session with the
+  `delegated_from_attested_root` trust source;
 - a concrete HTTP 401 `component_key_invalid` denial when the Action attempts
-  to use a Widget or Share sibling session; and
+  to use a Widget or Share sibling session;
+- a concrete `SecItemCopyMatching` attempt by the Action against a sibling's
+  Keychain access group, rejected as `errSecMissingEntitlement` (`-34018`)
+  without returning key material;
+- two overlapping refresh requests from one delegated component, with distinct
+  request IDs and one exact, rotated access/refresh/session result; and
 - independent observation that the delegated Action request ran with the containing host not
   running, in background execution, after host termination, and without a user
   presence prompt.
@@ -208,10 +214,15 @@ or pass claims from workflow inputs. Its run-bound
 against the protected candidate pins, and byte-compared with the component
 runtime embedded in final evidence. If the observer cannot establish any
 no-host/background/termination/no-presence fact, the release gate stays closed.
-The observer contract must emit `attestation_mode` for all four identities,
-the delegated Action request as `delegated_execution`, and
-`host_process_running_during_action_request=false`. An older observer that
-emits direct-step-up fields is incompatible and fails schema validation.
+The `latchway.ios-component-observation.v2` observer contract must emit
+`attestation_mode` for all four identities; successful
+`widget_delegated_execution`, `share_delegated_execution`, and Action
+`delegated_execution` records; the server-side `sibling_denial`; the
+OS-enforced `keychain_sibling_denial`; the two-request
+`component_refresh_race`; and
+`host_process_running_during_action_request=false`. A v1 observation or an
+older observer that emits direct-step-up fields is incompatible and fails
+closed.
 
 The supervisor also owns an out-of-band lease watchdog. Cancellation, timeout,
 runner crash, network loss, or a missing finalizer receipt must revoke the JIT

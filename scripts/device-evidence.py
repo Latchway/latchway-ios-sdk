@@ -24,7 +24,7 @@ from typing import Any
 SCHEMA_VERSION = "latchway.physical-device-evidence.v2"
 PROFILE_VERSION = "latchway.physical-device-profile.v2"
 OBSERVATION_VERSION = "latchway.physical-device-observation.v1"
-IOS_COMPONENT_OBSERVATION_VERSION = "latchway.ios-component-observation.v1"
+IOS_COMPONENT_OBSERVATION_VERSION = "latchway.ios-component-observation.v2"
 
 IOS_COMPONENT_ROLE_POLICY = {
     "host": ("main_app", "host_bundle_identifier", "host_definition_id", "host_binary_sha256"),
@@ -35,10 +35,14 @@ IOS_COMPONENT_ROLE_POLICY = {
 
 IOS_COMPONENT_TESTS = {
     "component_candidate_identities",
+    "widget_delegated_request",
+    "share_delegated_request",
     "action_delegated_request",
     "component_key_isolation",
     "component_session_isolation",
     "component_sibling_denied",
+    "component_keychain_sibling_denied",
+    "component_refresh_race",
     "component_no_host_process",
     "component_background_execution",
     "component_host_termination",
@@ -537,16 +541,7 @@ def validate_component_observation(
             errors.append("component observation.tests: must contain the exact delegated-component test set")
         elif any(item.get("status") != "passed" for item in by_id.values()):
             errors.append("component observation.tests: every observed component test must pass")
-        denial = by_id.get("component_sibling_denied", {})
-        if (
-            denial.get("http_status") != 401
-            or denial.get("error_code") != "component_key_invalid"
-            or re.fullmatch(
-                r"[A-Za-z0-9][A-Za-z0-9._:-]{7,127}",
-                str(denial.get("request_id", "")),
-            ) is None
-        ):
-            errors.append("component observation.tests: sibling denial is not a concrete canonical rejection")
+        errors.extend(ios_component_test_errors(tests, observation.get("runtime")))
     return errors
 
 
@@ -594,27 +589,43 @@ def ios_component_runtime_errors(runtime: Any, profile: dict[str, Any]) -> list[
         if len(set(values)) != 4:
             errors.append(f"component_runtime.identities: {field} values are not independent")
 
-    action = by_role["action"]
-    delegated = runtime.get("delegated_execution")
-    if not isinstance(delegated, dict):
-        errors.append("component_runtime.delegated_execution: expected object")
-    else:
+    execution_fields = {
+        "role", "definition_id", "component_id_sha256", "dpop_key_id_sha256",
+        "session_id_sha256", "trust_source", "http_status", "request_id",
+    }
+    execution_policy = {
+        "widget": "widget_delegated_execution",
+        "share": "share_delegated_execution",
+        "action": "delegated_execution",
+    }
+    execution_request_ids: list[str] = []
+    for role, field in execution_policy.items():
+        identity = by_role[role]
+        delegated = runtime.get(field)
+        if not isinstance(delegated, dict) or set(delegated) != execution_fields:
+            errors.append(f"component_runtime.{field}: expected exact delegated-execution object")
+            continue
+        request_id = str(delegated.get("request_id", ""))
         if (
-            delegated.get("role") != "action"
-            or delegated.get("definition_id") != action.get("definition_id")
-            or delegated.get("component_id_sha256") != action.get("principal_id_sha256")
-            or delegated.get("dpop_key_id_sha256") != action.get("dpop_key_id_sha256")
-            or delegated.get("session_id_sha256") != action.get("session_id_sha256")
+            delegated.get("role") != role
+            or delegated.get("definition_id") != identity.get("definition_id")
+            or delegated.get("component_id_sha256") != identity.get("principal_id_sha256")
+            or delegated.get("dpop_key_id_sha256") != identity.get("dpop_key_id_sha256")
+            or delegated.get("session_id_sha256") != identity.get("session_id_sha256")
             or delegated.get("trust_source") != "delegated_from_attested_root"
+            or isinstance(delegated.get("http_status"), bool)
             or not isinstance(delegated.get("http_status"), int)
             or not 200 <= delegated["http_status"] <= 299
             or re.fullmatch(
-                r"[A-Za-z0-9][A-Za-z0-9._:-]{7,127}",
-                str(delegated.get("request_id", "")),
+                r"[A-Za-z0-9][A-Za-z0-9._:-]{7,127}", request_id
             ) is None
         ):
-            errors.append("component_runtime.delegated_execution: does not prove the Action delegated request")
+            errors.append(f"component_runtime.{field}: does not prove the {role} delegated request")
+        execution_request_ids.append(request_id)
+    if len(execution_request_ids) != len(set(execution_request_ids)):
+        errors.append("component_runtime: delegated request IDs are not independent observations")
 
+    action = by_role["action"]
     denial = runtime.get("sibling_denial")
     if not isinstance(denial, dict):
         errors.append("component_runtime.sibling_denial: expected object")
@@ -634,6 +645,103 @@ def ios_component_runtime_errors(runtime: Any, profile: dict[str, Any]) -> list[
         ):
             errors.append("component_runtime.sibling_denial: sibling credential misuse was not denied")
 
+    keychain_denial = runtime.get("keychain_sibling_denial")
+    keychain_fields = {
+        "requesting_role", "target_role", "target_key_id_sha256", "operation",
+        "os_status", "os_status_name", "key_material_returned",
+    }
+    if not isinstance(keychain_denial, dict) or set(keychain_denial) != keychain_fields:
+        errors.append("component_runtime.keychain_sibling_denial: expected exact Keychain denial object")
+    else:
+        target_role = keychain_denial.get("target_role")
+        target = by_role.get(str(target_role), {})
+        if (
+            keychain_denial.get("requesting_role") != "action"
+            or not isinstance(target_role, str)
+            or target_role not in {"widget", "share"}
+            or keychain_denial.get("target_key_id_sha256") != target.get("dpop_key_id_sha256")
+            or keychain_denial.get("target_key_id_sha256") == action.get("dpop_key_id_sha256")
+            or keychain_denial.get("operation") != "SecItemCopyMatching"
+            or keychain_denial.get("os_status") != -34018
+            or keychain_denial.get("os_status_name") != "errSecMissingEntitlement"
+            or keychain_denial.get("key_material_returned") is not False
+        ):
+            errors.append(
+                "component_runtime.keychain_sibling_denial: unentitled sibling Keychain retrieval was not concretely denied"
+            )
+
+    race = runtime.get("component_refresh_race")
+    race_fields = {
+        "role", "component_id_sha256", "dpop_key_id_sha256",
+        "session_id_before_sha256", "old_credential_sha256",
+        "requests_started_concurrently", "overlap_observed", "requests",
+        "session_id_after_sha256", "results_identical",
+    }
+    race_request_fields = {
+        "request_id", "http_status", "access_credential_sha256",
+        "refresh_credential_sha256", "session_id_sha256",
+    }
+    if not isinstance(race, dict) or set(race) != race_fields:
+        errors.append("component_runtime.component_refresh_race: expected exact refresh-race object")
+    else:
+        race_role = race.get("role")
+        race_identity = by_role.get(str(race_role), {})
+        requests = race.get("requests")
+        requests_valid = isinstance(requests, list) and len(requests) == 2
+        if requests_valid:
+            requests_valid = all(
+                isinstance(request, dict)
+                and set(request) == race_request_fields
+                and re.fullmatch(
+                    r"[A-Za-z0-9][A-Za-z0-9._:-]{7,127}",
+                    str(request.get("request_id", "")),
+                ) is not None
+                and not isinstance(request.get("http_status"), bool)
+                and isinstance(request.get("http_status"), int)
+                and 200 <= request["http_status"] <= 299
+                and all(
+                    re.fullmatch(r"[0-9a-f]{64}", str(request.get(name, ""))) is not None
+                    for name in (
+                        "access_credential_sha256", "refresh_credential_sha256",
+                        "session_id_sha256",
+                    )
+                )
+                for request in requests
+            )
+        old_credential = str(race.get("old_credential_sha256", ""))
+        before_session = str(race.get("session_id_before_sha256", ""))
+        after_session = str(race.get("session_id_after_sha256", ""))
+        if (
+            not isinstance(race_role, str)
+            or race_role not in {"widget", "share", "action"}
+            or race.get("component_id_sha256") != race_identity.get("principal_id_sha256")
+            or race.get("dpop_key_id_sha256") != race_identity.get("dpop_key_id_sha256")
+            or after_session != race_identity.get("session_id_sha256")
+            or re.fullmatch(r"[0-9a-f]{64}", before_session) is None
+            or before_session == after_session
+            or re.fullmatch(r"[0-9a-f]{64}", old_credential) is None
+            or race.get("requests_started_concurrently") is not True
+            or race.get("overlap_observed") is not True
+            or race.get("results_identical") is not True
+            or not requests_valid
+        ):
+            errors.append(
+                "component_runtime.component_refresh_race: two concurrent refreshes were not concretely observed"
+            )
+        elif (
+            requests[0]["request_id"] == requests[1]["request_id"]
+            or requests[0]["access_credential_sha256"]
+            != requests[1]["access_credential_sha256"]
+            or requests[0]["refresh_credential_sha256"]
+            != requests[1]["refresh_credential_sha256"]
+            or requests[0]["session_id_sha256"] != requests[1]["session_id_sha256"]
+            or requests[0]["session_id_sha256"] != after_session
+            or requests[0]["refresh_credential_sha256"] == old_credential
+        ):
+            errors.append(
+                "component_runtime.component_refresh_race: concurrent refresh results were not exact and independently requested"
+            )
+
     lifecycle = runtime.get("lifecycle")
     if lifecycle != {
         "host_process_running_during_action_request": False,
@@ -642,6 +750,79 @@ def ios_component_runtime_errors(runtime: Any, profile: dict[str, Any]) -> list[
         "user_presence_prompt_observed": False,
     }:
         errors.append("component_runtime.lifecycle: no-host/background/termination/no-presence proof is incomplete")
+    return errors
+
+
+def ios_component_test_errors(tests: Any, runtime: Any) -> list[str]:
+    errors: list[str] = []
+    if not isinstance(tests, list) or not isinstance(runtime, dict):
+        return ["component observation.tests: concrete runtime bindings are unavailable"]
+    component_tests = [
+        item
+        for item in tests
+        if isinstance(item, dict) and item.get("id") in IOS_COMPONENT_TESTS
+    ]
+    by_id = {
+        item.get("id"): item
+        for item in component_tests
+        if isinstance(item, dict) and isinstance(item.get("id"), str)
+    }
+    if len(by_id) != len(component_tests) or set(by_id) != IOS_COMPONENT_TESTS:
+        return ["component observation.tests: must contain the exact delegated-component test set"]
+
+    for role, runtime_field in {
+        "widget": "widget_delegated_execution",
+        "share": "share_delegated_execution",
+        "action": "delegated_execution",
+    }.items():
+        execution = runtime.get(runtime_field, {})
+        test = by_id.get(f"{role}_delegated_request", {})
+        if (
+            not isinstance(execution, dict)
+            or test.get("http_status") != execution.get("http_status")
+            or test.get("request_id") != execution.get("request_id")
+        ):
+            errors.append(
+                f"component observation.tests: {role} delegated request is not bound to its runtime observation"
+            )
+
+    denial = runtime.get("sibling_denial", {})
+    denial_test = by_id.get("component_sibling_denied", {})
+    if (
+        not isinstance(denial, dict)
+        or any(
+            denial_test.get(field) != denial.get(field)
+            for field in ("http_status", "error_code", "request_id")
+        )
+    ):
+        errors.append(
+            "component observation.tests: sibling session denial is not a concrete canonical rejection"
+        )
+
+    keychain = runtime.get("keychain_sibling_denial", {})
+    keychain_test = by_id.get("component_keychain_sibling_denied", {})
+    if (
+        not isinstance(keychain, dict)
+        or keychain_test.get("os_status") != keychain.get("os_status")
+        or keychain_test.get("os_status_name") != keychain.get("os_status_name")
+    ):
+        errors.append(
+            "component observation.tests: sibling Keychain denial is not bound to the concrete OSStatus"
+        )
+
+    race = runtime.get("component_refresh_race", {})
+    race_test = by_id.get("component_refresh_race", {})
+    race_requests = race.get("requests", []) if isinstance(race, dict) else []
+    first_result = race_requests[0] if isinstance(race_requests, list) and race_requests else {}
+    if (
+        race_test.get("concurrent_request_count") != 2
+        or race_test.get("credential_before_sha256") != race.get("old_credential_sha256")
+        or race_test.get("credential_after_sha256")
+        != first_result.get("refresh_credential_sha256")
+    ):
+        errors.append(
+            "component observation.tests: refresh race is not bound to two exact concurrent results"
+        )
     return errors
 
 
@@ -760,7 +941,9 @@ def semantic_errors(evidence: dict[str, Any], profile: dict[str, Any]) -> list[s
                 errors.append(
                     "whole application bundle tree is not bound to the protected profile"
                 )
-            errors.extend(ios_component_runtime_errors(evidence.get("component_runtime"), profile))
+            component_runtime = evidence.get("component_runtime")
+            errors.extend(ios_component_runtime_errors(component_runtime, profile))
+            errors.extend(ios_component_test_errors(evidence.get("tests"), component_runtime))
     else:
         if application.get("installer_package") != "com.android.vending":
             errors.append("Play Integrity release evidence must be Play installed")
@@ -950,9 +1133,19 @@ def build_evidence(
         evidence["artifacts"]["application_bundle_tree_sha256"] = profile.get(
             "application_bundle_tree_sha256", ""
         )
-    evidence["release_eligible"] = not (
-        schema_errors(evidence, schema) + semantic_errors(evidence, profile)
-    )
+    eligibility_errors = schema_errors(evidence, schema) + semantic_errors(evidence, profile)
+    if profile.get("platform") == "ios_app_attest":
+        if component_observation is None:
+            eligibility_errors.append("component observation is required for iOS release evidence")
+        else:
+            eligibility_errors.extend(validate_component_observation(
+                component_observation,
+                platform="ios_app_attest",
+                run_id=str(observation.get("run", {}).get("id", "")),
+                run_started=str(observation.get("run", {}).get("started_at", "")),
+                run_completed=str(evidence.get("run", {}).get("completed_at", "")),
+            ))
+    evidence["release_eligible"] = not eligibility_errors
     return evidence
 
 

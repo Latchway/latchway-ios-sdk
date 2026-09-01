@@ -136,9 +136,13 @@ the host process. Run from clean, reviewable source and retain machine-readable
 evidence for:
 
 - Secure Enclave creation/restoration and explicit software fallback reporting;
-- host-to-intended-extension retrieval plus denial from at least one sibling;
+- successful Widget, Share, and Action requests plus an explicit sibling
+  `SecItemCopyMatching` retrieval attempt rejected as
+  `errSecMissingEntitlement` (`-34018`) with no key material returned;
 - signing and refresh after backgrounding and while the device is locked after
   its first unlock, without an interaction prompt;
+- two overlapping component refresh calls with distinct request IDs and one
+  identical rotated access/refresh/session result;
 - slow streaming, cancellation, redirect rejection, and bounded memory;
 - component replacement, component revocation, and complete family sign-out;
 - reinstall migration behavior and uninstall cleanup; and

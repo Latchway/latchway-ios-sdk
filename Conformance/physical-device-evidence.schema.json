@@ -322,7 +322,16 @@
     "component_runtime": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["identities", "delegated_execution", "sibling_denial", "lifecycle"],
+      "required": [
+        "identities",
+        "widget_delegated_execution",
+        "share_delegated_execution",
+        "delegated_execution",
+        "sibling_denial",
+        "keychain_sibling_denial",
+        "component_refresh_race",
+        "lifecycle"
+      ],
       "properties": {
         "identities": {
           "type": "array",
@@ -372,6 +381,96 @@
                 "type": "string",
                 "pattern": "^[0-9a-f]{64}$"
               }
+            }
+          }
+        },
+        "widget_delegated_execution": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "role",
+            "definition_id",
+            "component_id_sha256",
+            "dpop_key_id_sha256",
+            "session_id_sha256",
+            "trust_source",
+            "http_status",
+            "request_id"
+          ],
+          "properties": {
+            "role": { "const": "widget" },
+            "definition_id": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{0,62}$"
+            },
+            "component_id_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "dpop_key_id_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "session_id_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "trust_source": {
+              "const": "delegated_from_attested_root"
+            },
+            "http_status": {
+              "type": "integer",
+              "minimum": 200,
+              "maximum": 299
+            },
+            "request_id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$"
+            }
+          }
+        },
+        "share_delegated_execution": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "role",
+            "definition_id",
+            "component_id_sha256",
+            "dpop_key_id_sha256",
+            "session_id_sha256",
+            "trust_source",
+            "http_status",
+            "request_id"
+          ],
+          "properties": {
+            "role": { "const": "share" },
+            "definition_id": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{0,62}$"
+            },
+            "component_id_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "dpop_key_id_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "session_id_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "trust_source": {
+              "const": "delegated_from_attested_root"
+            },
+            "http_status": {
+              "type": "integer",
+              "minimum": 200,
+              "maximum": 299
+            },
+            "request_id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$"
             }
           }
         },
@@ -444,6 +543,112 @@
               "type": "string",
               "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$"
             }
+          }
+        },
+        "keychain_sibling_denial": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "requesting_role",
+            "target_role",
+            "target_key_id_sha256",
+            "operation",
+            "os_status",
+            "os_status_name",
+            "key_material_returned"
+          ],
+          "properties": {
+            "requesting_role": { "const": "action" },
+            "target_role": { "enum": ["widget", "share"] },
+            "target_key_id_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "operation": { "const": "SecItemCopyMatching" },
+            "os_status": { "const": -34018 },
+            "os_status_name": { "const": "errSecMissingEntitlement" },
+            "key_material_returned": { "const": false }
+          }
+        },
+        "component_refresh_race": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "role",
+            "component_id_sha256",
+            "dpop_key_id_sha256",
+            "session_id_before_sha256",
+            "old_credential_sha256",
+            "requests_started_concurrently",
+            "overlap_observed",
+            "requests",
+            "session_id_after_sha256",
+            "results_identical"
+          ],
+          "properties": {
+            "role": { "enum": ["widget", "share", "action"] },
+            "component_id_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "dpop_key_id_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "session_id_before_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "old_credential_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "requests_started_concurrently": { "const": true },
+            "overlap_observed": { "const": true },
+            "requests": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "request_id",
+                  "http_status",
+                  "access_credential_sha256",
+                  "refresh_credential_sha256",
+                  "session_id_sha256"
+                ],
+                "properties": {
+                  "request_id": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$"
+                  },
+                  "http_status": {
+                    "type": "integer",
+                    "minimum": 200,
+                    "maximum": 299
+                  },
+                  "access_credential_sha256": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$"
+                  },
+                  "refresh_credential_sha256": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$"
+                  },
+                  "session_id_sha256": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$"
+                  }
+                }
+              }
+            },
+            "session_id_after_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "results_identical": { "const": true }
           }
         },
         "lifecycle": {
@@ -550,6 +755,20 @@
             "type": "integer",
             "minimum": 0,
             "maximum": 2147483647
+          },
+          "os_status": {
+            "type": "integer",
+            "minimum": -2147483648,
+            "maximum": 2147483647
+          },
+          "os_status_name": {
+            "type": "string",
+            "pattern": "^[A-Za-z][A-Za-z0-9]{2,63}$"
+          },
+          "concurrent_request_count": {
+            "type": "integer",
+            "minimum": 2,
+            "maximum": 2
           }
         }
       }

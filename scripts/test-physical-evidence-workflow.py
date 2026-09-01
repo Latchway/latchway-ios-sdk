@@ -197,7 +197,7 @@ class PhysicalEvidenceWorkflowTests(unittest.TestCase):
         ):
             self.assertIn(marker, self.collect)
 
-    def test_action_component_candidate_and_lifecycle_observer_are_mandatory(self) -> None:
+    def test_component_v2_candidate_execution_isolation_race_and_lifecycle_are_mandatory(self) -> None:
         for marker in (
             "LATCHWAY_IOS_WIDGET_BUNDLE_ID",
             "LATCHWAY_IOS_SHARE_BUNDLE_ID",
@@ -214,7 +214,19 @@ class PhysicalEvidenceWorkflowTests(unittest.TestCase):
             "LATCHWAY_IOS_HOST_PROVISIONING_PROFILE_UUID",
             "LATCHWAY_GATEWAY_MINIMUM_TRUST_LEVEL",
             "component-observation.json",
+            'latchway.ios-component-observation.v2',
+            'widget_delegated_execution.trust_source == "delegated_from_attested_root"',
+            'share_delegated_execution.trust_source == "delegated_from_attested_root"',
             'delegated_execution.trust_source == "delegated_from_attested_root"',
+            'keychain_sibling_denial.operation == "SecItemCopyMatching"',
+            'keychain_sibling_denial.os_status == -34018',
+            'keychain_sibling_denial.os_status_name == "errSecMissingEntitlement"',
+            "keychain_sibling_denial.key_material_returned == false",
+            "component_refresh_race.requests_started_concurrently == true",
+            "component_refresh_race.overlap_observed == true",
+            "component_refresh_race.results_identical == true",
+            'component_keychain_sibling_denied',
+            'component_refresh_race',
             '.provider.trust_level == "app_verified"',
             "host_process_running_during_action_request:false",
             "background_execution_observed:true",
@@ -222,6 +234,7 @@ class PhysicalEvidenceWorkflowTests(unittest.TestCase):
             "user_presence_prompt_observed:false",
         ):
             self.assertIn(marker, self.source)
+        self.assertNotIn("latchway.ios-component-observation.v1", self.source)
 
     def test_source_owned_candidate_embeds_exact_component_topology(self) -> None:
         for target in (

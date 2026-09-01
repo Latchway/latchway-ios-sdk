@@ -213,11 +213,34 @@ def component_observation() -> dict:
         {"id": name, "status": "passed", "duration_ms": 1}
         for name in sorted(device_evidence.IOS_COMPONENT_TESTS)
     ]
+    for role in ("widget", "share", "action"):
+        delegated = next(
+            item for item in tests if item["id"] == f"{role}_delegated_request"
+        )
+        delegated.update(
+            http_status=200,
+            request_id=f"request-{role}-1234",
+        )
     denial = next(item for item in tests if item["id"] == "component_sibling_denied")
     denial.update(
         http_status=401,
         error_code="component_key_invalid",
         request_id="request-sibling-1234",
+    )
+    keychain_denial = next(
+        item for item in tests if item["id"] == "component_keychain_sibling_denied"
+    )
+    keychain_denial.update(
+        os_status=-34018,
+        os_status_name="errSecMissingEntitlement",
+    )
+    refresh_race = next(
+        item for item in tests if item["id"] == "component_refresh_race"
+    )
+    refresh_race.update(
+        concurrent_request_count=2,
+        credential_before_sha256="8" * 64,
+        credential_after_sha256="a" * 64,
     )
     return {
         "schema_version": device_evidence.IOS_COMPONENT_OBSERVATION_VERSION,
@@ -227,6 +250,26 @@ def component_observation() -> dict:
         "completed_at": now(-1),
         "runtime": {
             "identities": identities,
+            "widget_delegated_execution": {
+                "role": "widget",
+                "definition_id": expected["widget_definition_id"],
+                "component_id_sha256": "d" * 64,
+                "dpop_key_id_sha256": "1" * 64,
+                "session_id_sha256": "5" * 64,
+                "trust_source": "delegated_from_attested_root",
+                "http_status": 200,
+                "request_id": "request-widget-1234",
+            },
+            "share_delegated_execution": {
+                "role": "share",
+                "definition_id": expected["share_definition_id"],
+                "component_id_sha256": "e" * 64,
+                "dpop_key_id_sha256": "2" * 64,
+                "session_id_sha256": "6" * 64,
+                "trust_source": "delegated_from_attested_root",
+                "http_status": 200,
+                "request_id": "request-share-1234",
+            },
             "delegated_execution": {
                 "role": "action",
                 "definition_id": expected["action_definition_id"],
@@ -244,6 +287,42 @@ def component_observation() -> dict:
                 "http_status": 401,
                 "error_code": "component_key_invalid",
                 "request_id": "request-sibling-1234",
+            },
+            "keychain_sibling_denial": {
+                "requesting_role": "action",
+                "target_role": "share",
+                "target_key_id_sha256": "2" * 64,
+                "operation": "SecItemCopyMatching",
+                "os_status": -34018,
+                "os_status_name": "errSecMissingEntitlement",
+                "key_material_returned": False,
+            },
+            "component_refresh_race": {
+                "role": "action",
+                "component_id_sha256": "f" * 64,
+                "dpop_key_id_sha256": "3" * 64,
+                "session_id_before_sha256": "8" * 64,
+                "old_credential_sha256": "8" * 64,
+                "requests_started_concurrently": True,
+                "overlap_observed": True,
+                "requests": [
+                    {
+                        "request_id": "request-refresh-race-a",
+                        "http_status": 200,
+                        "access_credential_sha256": "9" * 64,
+                        "refresh_credential_sha256": "a" * 64,
+                        "session_id_sha256": "7" * 64,
+                    },
+                    {
+                        "request_id": "request-refresh-race-b",
+                        "http_status": 200,
+                        "access_credential_sha256": "9" * 64,
+                        "refresh_credential_sha256": "a" * 64,
+                        "session_id_sha256": "7" * 64,
+                    },
+                ],
+                "session_id_after_sha256": "7" * 64,
+                "results_identical": True,
             },
             "lifecycle": {
                 "host_process_running_during_action_request": False,
@@ -463,8 +542,27 @@ class DeviceEvidenceTest(unittest.TestCase):
                 )
                 self.assertFalse(result["release_eligible"])
 
-    def test_delegated_execution_and_sibling_denial_fail_closed(self) -> None:
+    def test_v1_component_observation_fails_closed(self) -> None:
+        component = component_observation()
+        component["schema_version"] = "latchway.ios-component-observation.v1"
+        errors = device_evidence.validate_component_observation(
+            component,
+            platform="ios_app_attest",
+            run_id="test-run-12345678",
+            run_started=now(-2),
+            run_completed=now(-1),
+        )
+        self.assertIn("component observation.schema_version: unsupported value", errors)
+        self.assertFalse(device_evidence.build_evidence(
+            observation(), profile(), self.schema, component
+        )["release_eligible"])
+
+    def test_all_delegated_executions_and_sibling_denial_fail_closed(self) -> None:
         mutations = (
+            ("widget_delegated_execution", "http_status", 401),
+            ("widget_delegated_execution", "session_id_sha256", "6" * 64),
+            ("share_delegated_execution", "trust_source", "delegated_identity_only"),
+            ("share_delegated_execution", "component_id_sha256", "f" * 64),
             ("delegated_execution", "trust_source", "delegated_identity_only"),
             ("delegated_execution", "http_status", 401),
             ("delegated_execution", "session_id_sha256", "6" * 64),
@@ -479,6 +577,86 @@ class DeviceEvidenceTest(unittest.TestCase):
                     observation(), profile(), self.schema, component
                 )
                 self.assertFalse(result["release_eligible"])
+
+        component = component_observation()
+        del component["runtime"]["widget_delegated_execution"]
+        self.assertFalse(device_evidence.build_evidence(
+            observation(), profile(), self.schema, component
+        )["release_eligible"])
+
+        component = component_observation()
+        component["runtime"]["share_delegated_execution"]["request_id"] = (
+            component["runtime"]["widget_delegated_execution"]["request_id"]
+        )
+        self.assertFalse(device_evidence.build_evidence(
+            observation(), profile(), self.schema, component
+        )["release_eligible"])
+
+    def test_concrete_keychain_sibling_denial_fails_closed(self) -> None:
+        mutations = (
+            ("os_status", -25300),
+            ("os_status_name", "errSecItemNotFound"),
+            ("target_key_id_sha256", "3" * 64),
+            ("operation", "SecItemDelete"),
+            ("key_material_returned", True),
+        )
+        for field, value in mutations:
+            with self.subTest(field=field):
+                component = component_observation()
+                component["runtime"]["keychain_sibling_denial"][field] = value
+                self.assertFalse(device_evidence.build_evidence(
+                    observation(), profile(), self.schema, component
+                )["release_eligible"])
+
+        component = component_observation()
+        keychain_test = next(
+            item
+            for item in component["tests"]
+            if item["id"] == "component_keychain_sibling_denied"
+        )
+        keychain_test["os_status"] = -25300
+        self.assertFalse(device_evidence.build_evidence(
+            observation(), profile(), self.schema, component
+        )["release_eligible"])
+
+    def test_component_refresh_race_fails_closed(self) -> None:
+        mutations = (
+            lambda value: value["runtime"]["component_refresh_race"].__setitem__(
+                "requests_started_concurrently", False
+            ),
+            lambda value: value["runtime"]["component_refresh_race"].__setitem__(
+                "overlap_observed", False
+            ),
+            lambda value: value["runtime"]["component_refresh_race"]["requests"][1].__setitem__(
+                "request_id", "request-refresh-race-a"
+            ),
+            lambda value: value["runtime"]["component_refresh_race"]["requests"][1].__setitem__(
+                "access_credential_sha256", "b" * 64
+            ),
+            lambda value: value["runtime"]["component_refresh_race"]["requests"][0].__setitem__(
+                "refresh_credential_sha256", "8" * 64
+            ),
+            lambda value: value["runtime"]["component_refresh_race"].__setitem__(
+                "session_id_before_sha256", "7" * 64
+            ),
+            lambda value: value["runtime"]["component_refresh_race"]["requests"].pop(),
+        )
+        for index, mutate in enumerate(mutations):
+            with self.subTest(mutation=index):
+                component = component_observation()
+                mutate(component)
+                self.assertFalse(device_evidence.build_evidence(
+                    observation(), profile(), self.schema, component
+                )["release_eligible"])
+
+        component = component_observation()
+        race_test = next(
+            item for item in component["tests"] if item["id"] == "component_refresh_race"
+        )
+        race_test["concurrent_request_count"] = 1
+        self.assertFalse(device_evidence.build_evidence(
+            observation(), profile(), self.schema, component
+        )["release_eligible"])
 
     def test_no_host_background_termination_and_no_presence_claims_fail_closed(self) -> None:
         invalid = {
