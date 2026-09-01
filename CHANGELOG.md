@@ -42,8 +42,8 @@ Versioning once package publication begins.
 ### Changed
 
 - Synchronized the 1.0.0 release with released core contract 1.0.0 at commit
-  `5063351711ea7a781e398112cbcc34b99b3770b2` and deterministic bundle SHA-256
-  `36641cfb4276b5f0fe645ac3ed102dc803f58f0073967423bd431328b82be8fd`.
+  `b75401e70277c69c97c4ad232dfe9cd6aa323879` and deterministic bundle SHA-256
+  `14cd2d8ddc8c4b85b8ab002359b373772d599a4eaaa8e95b9b0b793c684215c6`.
   New requests identify current wire protocol 2, while optional root metadata
   keeps compatible legacy wire-1 grant decoding fail-closed. The minimum server
   version is 1.0.0 and the maximum tested server series is 1.0.x.
