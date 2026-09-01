@@ -21,6 +21,39 @@ SPEC.loader.exec_module(MODULE)
 
 
 class DocumentationBundleTests(unittest.TestCase):
+    def test_full_source_references_and_catalog_contract_are_complete(self) -> None:
+        config = json.loads((ROOT / "docs-bundle.config.json").read_text(encoding="utf-8"))
+        release_notes = next(item for item in config["documents"] if item["kind"] == "release_notes")["source"]
+        for source in (release_notes, *(item["source"] for item in config["examples"])):
+            line_count = len((ROOT / source["file"]).read_text(encoding="utf-8").splitlines())
+            self.assertEqual(source["start_line"], 1)
+            self.assertEqual(source["end_line"], line_count)
+
+        supported = {item["name"] for item in config["supported_versions"]}
+        self.assertTrue({
+            "SwiftPM product Latchway", "SwiftPM product LatchwayAppAttest",
+            "SwiftPM product LatchwayAppExtensions", "SwiftPM product LatchwayFirebaseAuth",
+            "SwiftPM product LatchwaySwiftOpenAI", "SwiftPM product LatchwayFoundationModels",
+            "SwiftPM product LatchwayTesting", "CocoaPods Latchway/Core",
+            "CocoaPods Latchway/AppAttest", "CocoaPods Latchway/AppExtensions",
+            "CocoaPods Latchway/FirebaseAuth",
+            "iOS", "macOS minimum (Swift Package)", "Swift language", "Swift tools",
+            "SwiftOpenAI exact", "Foundation Models compiler minimum",
+            "Foundation Models iOS availability", "Foundation Models macOS availability",
+            "Foundation Models visionOS availability", "Foundation Models watchOS availability",
+            "Foundation Models tvOS availability",
+        } <= supported)
+        source = (ROOT / "README.md").read_text(encoding="utf-8").splitlines()[25:58]
+        product_text = "\n".join(source)
+        for product in (
+            "Latchway", "LatchwayAppAttest", "LatchwayAppExtensions", "LatchwayFirebaseAuth",
+            "LatchwaySwiftOpenAI", "LatchwayFoundationModels", "LatchwayTesting",
+            "Latchway/Core", "Latchway/AppAttest", "Latchway/AppExtensions",
+            "Latchway/FirebaseAuth",
+        ):
+            self.assertIn(product, product_text)
+        self.assertIn("1.0.0", product_text)
+
     def test_bundle_is_reproducible_self_describing_and_checksum_bound(self) -> None:
         with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second:
             archives = []
@@ -79,8 +112,27 @@ class DocumentationBundleTests(unittest.TestCase):
             self.assertEqual(set(checksums), set(payloads) - {"SHA256SUMS"})
             for name, digest in checksums.items():
                 self.assertEqual(hashlib.sha256(payloads[name]).hexdigest(), digest)
+            catalogs = {}
             for name, key in (("supported-versions.json", "versions"), ("public-symbols.json", "symbols"), ("errors.json", "errors"), ("examples.json", "examples")):
-                self.assertTrue(json.loads(payloads[name])[key])
+                catalogs[name] = json.loads(payloads[name])[key]
+                self.assertTrue(catalogs[name])
+            for name in ("public-symbols.json", "errors.json"):
+                for row in catalogs[name]:
+                    source = row["source"]
+                    line = (ROOT / source["file"]).read_text(encoding="utf-8").splitlines()[
+                        source["region"]["start_line"] - 1
+                    ]
+                    self.assertIn(row["name"], line)
+            symbols = {row["name"] for row in catalogs["public-symbols.json"]}
+            self.assertTrue({
+                "latchwayFirebaseIdentityToken", "saveCount", "clearCount", "signatureCount",
+                "challenges", "acceptedEvidence", "resetCount", "requests",
+            } <= symbols)
+            errors = {row["name"] for row in catalogs["errors.json"]}
+            self.assertTrue({
+                "componentGrantExpired", "keychainAccessGroupUnavailable",
+                "componentKeyUnavailable", "directAttestationRequired",
+            } <= errors)
 
     def test_path_validation_and_archive_verifier_reject_traversal(self) -> None:
         for value in ("/absolute", "../escape", "a/../escape", "a\\b"):

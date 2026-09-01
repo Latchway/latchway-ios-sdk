@@ -13,29 +13,51 @@
   ],
   "supported_versions": [
     {"name": "Latchway", "version": "1.0.0", "source": {"file": "Latchway.podspec", "start_line": 1, "end_line": 20}},
+    {"name": "SwiftPM product Latchway", "version": "1.0.0", "source": {"file": "README.md", "start_line": 26, "end_line": 58}},
+    {"name": "SwiftPM product LatchwayAppAttest", "version": "1.0.0", "source": {"file": "README.md", "start_line": 26, "end_line": 58}},
+    {"name": "SwiftPM product LatchwayAppExtensions", "version": "1.0.0", "source": {"file": "README.md", "start_line": 26, "end_line": 58}},
+    {"name": "SwiftPM product LatchwayFirebaseAuth", "version": "1.0.0", "source": {"file": "README.md", "start_line": 26, "end_line": 58}},
+    {"name": "SwiftPM product LatchwaySwiftOpenAI", "version": "1.0.0", "source": {"file": "README.md", "start_line": 26, "end_line": 58}},
+    {"name": "SwiftPM product LatchwayFoundationModels", "version": "1.0.0", "source": {"file": "README.md", "start_line": 26, "end_line": 58}},
+    {"name": "SwiftPM product LatchwayTesting", "version": "1.0.0", "source": {"file": "README.md", "start_line": 26, "end_line": 58}},
+    {"name": "CocoaPods Latchway/Core", "version": "1.0.0", "source": {"file": "README.md", "start_line": 26, "end_line": 58}},
+    {"name": "CocoaPods Latchway/AppAttest", "version": "1.0.0", "source": {"file": "README.md", "start_line": 26, "end_line": 58}},
+    {"name": "CocoaPods Latchway/AppExtensions", "version": "1.0.0", "source": {"file": "README.md", "start_line": 26, "end_line": 58}},
+    {"name": "CocoaPods Latchway/FirebaseAuth", "version": "1.0.0", "source": {"file": "README.md", "start_line": 26, "end_line": 58}},
     {"name": "iOS", "version": "15.0", "source": {"file": "Latchway.podspec", "start_line": 19, "end_line": 20}},
-    {"name": "Swift", "version": "6.0", "source": {"file": "Latchway.podspec", "start_line": 19, "end_line": 20}},
-    {"name": "SwiftOpenAI minimum", "version": "4.6.0", "source": {"file": "Package.swift", "start_line": 20, "end_line": 24}},
-    {"name": "SwiftOpenAI latest", "version": "4.6.0", "source": {"file": "Package.swift", "start_line": 20, "end_line": 24}},
-    {"name": "Apple Foundation Models OS availability", "version": "27.0", "source": {"file": "Sources/LatchwayFoundationModels/LatchwayFoundationModels.swift", "start_line": 1, "end_line": 8}}
+    {"name": "macOS minimum (Swift Package)", "version": "12", "source": {"file": "Package.swift", "start_line": 5, "end_line": 10}},
+    {"name": "Swift language", "version": "6.0", "source": {"file": "Latchway.podspec", "start_line": 19, "end_line": 20}},
+    {"name": "Swift tools", "version": "6.2", "source": {"file": "Package.swift", "start_line": 1, "end_line": 1}},
+    {"name": "SwiftOpenAI exact", "version": "4.6.0", "source": {"file": "Package.swift", "start_line": 20, "end_line": 24}},
+    {"name": "Foundation Models compiler minimum", "version": "6.4", "source": {"file": "Sources/LatchwayFoundationModels/LatchwayFoundationModels.swift", "start_line": 1, "end_line": 1}},
+    {"name": "Foundation Models iOS availability", "version": "27.0", "source": {"file": "Sources/LatchwayFoundationModels/LatchwayFoundationModels.swift", "start_line": 1, "end_line": 8}},
+    {"name": "Foundation Models macOS availability", "version": "27.0", "source": {"file": "Sources/LatchwayFoundationModels/LatchwayFoundationModels.swift", "start_line": 1, "end_line": 8}},
+    {"name": "Foundation Models visionOS availability", "version": "27.0", "source": {"file": "Sources/LatchwayFoundationModels/LatchwayFoundationModels.swift", "start_line": 1, "end_line": 8}},
+    {"name": "Foundation Models watchOS availability", "version": "27.0", "source": {"file": "Sources/LatchwayFoundationModels/LatchwayFoundationModels.swift", "start_line": 1, "end_line": 8}},
+    {"name": "Foundation Models tvOS availability", "version": "unavailable", "source": {"file": "Sources/LatchwayFoundationModels/LatchwayFoundationModels.swift", "start_line": 6, "end_line": 8}}
   ],
   "public_symbols": [
-    {"glob": "Sources/**/*.swift", "pattern": "(?m)^\\s*public (?:final )?(?:actor|class|struct|enum|protocol|typealias) (?P<name>[A-Za-z][A-Za-z0-9_]*)"},
-    {"glob": "Sources/**/*.swift", "pattern": "(?m)^\\s*public (?:(?:static|class|mutating|nonisolated) )*func (?P<name>[A-Za-z][A-Za-z0-9_]*)"},
-    {"glob": "Sources/**/*.swift", "pattern": "(?m)^\\s*public (?:(?:static|class|nonisolated) )*(?:let|var) (?P<name>[A-Za-z][A-Za-z0-9_]*)"},
-    {"glob": "Sources/**/*.swift", "pattern": "(?m)^\\s*public (?:(?:convenience|nonisolated) )?(?P<name>init)\\s*\\("},
-    {"glob": "Sources/**/*.swift", "pattern": "(?m)^\\s*public (?P<name>subscript)\\s*\\("}
+    {"glob": "Sources/**/*.swift", "pattern": "(?m)^[ \\t]*public (?:final )?(?:actor|class|struct|enum|protocol|typealias) (?P<name>[A-Za-z][A-Za-z0-9_]*)"},
+    {"glob": "Sources/**/*.swift", "pattern": "(?m)^[ \\t]*public (?:(?:static|class|mutating|nonisolated) )*func (?P<name>[A-Za-z][A-Za-z0-9_]*)"},
+    {"glob": "Sources/**/*.swift", "pattern": "(?m)^[ \\t]*public (?:(?:static|class|nonisolated|private\\(set\\)) )*(?:let|var) (?P<name>[A-Za-z][A-Za-z0-9_]*)"},
+    {"glob": "Sources/**/*.swift", "pattern": "(?m)^[ \\t]*public (?:(?:convenience|nonisolated) )?(?P<name>init)\\s*\\("},
+    {"glob": "Sources/**/*.swift", "pattern": "(?m)^[ \\t]*public (?P<name>subscript)\\s*\\("},
+    {"file": "Sources/Latchway/PublicTypes.swift", "start_line": 3, "end_line": 5, "pattern": "(?m)^[ \\t]*func (?P<name>[A-Za-z][A-Za-z0-9_]*)"},
+    {"file": "Sources/Latchway/Protocols.swift", "start_line": 3, "end_line": 75, "pattern": "(?m)^[ \\t]*func (?P<name>[A-Za-z][A-Za-z0-9_]*)"},
+    {"file": "Sources/LatchwayFirebaseAuth/FirebaseLatchwayIdentityTokenProvider.swift", "start_line": 27, "end_line": 34, "pattern": "(?m)^[ \\t]*func (?P<name>[A-Za-z][A-Za-z0-9_]*)"},
+    {"file": "Sources/LatchwayFirebaseAuth/FirebaseLatchwayIdentityTokenProvider.swift", "start_line": 31, "end_line": 34, "pattern": "(?m)^[ \\t]*(?P<name>init)\\s*\\("}
   ],
   "errors": [
-    {"file": "Sources/Latchway/LatchwayError.swift", "start_line": 80, "end_line": 133, "pattern": "(?m)^\\s*\\\"(?P<name>[a-z][a-z0-9_]*)\\\":"},
-    {"file": "Sources/Latchway/LatchwayError.swift", "start_line": 178, "end_line": 190, "pattern": "(?m)^\\s*case (?P<name>[a-z][A-Za-z0-9_]*)"},
-    {"file": "Sources/LatchwayFoundationModels/LatchwayFoundationModels.swift", "start_line": 8, "end_line": 12, "pattern": "(?m)^\\s*case (?P<name>[a-z][A-Za-z0-9_]*)"}
+    {"file": "Sources/Latchway/LatchwayError.swift", "start_line": 80, "end_line": 133, "pattern": "(?m)^[ \\t]*\\\"(?P<name>[a-z][a-z0-9_]*)\\\":"},
+    {"file": "Sources/Latchway/LatchwayError.swift", "start_line": 178, "end_line": 190, "pattern": "(?m)^[ \\t]*case (?P<name>[a-z][A-Za-z0-9_]*)"},
+    {"file": "Sources/Latchway/ComponentTypes.swift", "start_line": 198, "end_line": 211, "pattern": "(?m)^[ \\t]*case (?P<name>[a-z][A-Za-z0-9_]*)"},
+    {"file": "Sources/LatchwayFoundationModels/LatchwayFoundationModels.swift", "start_line": 8, "end_line": 12, "pattern": "(?m)^[ \\t]*case (?P<name>[a-z][A-Za-z0-9_]*)"}
   ],
   "examples": [
     {"name": "Native App Attest golden journey", "kind": "quickstart", "source": {"file": "Examples/BasicURLSession/BasicURLSession.swift", "start_line": 1, "end_line": 247}},
-    {"name": "App Attest physical-device application", "kind": "physical_device", "source": {"file": "Examples/AppAttestConformance/Sources/AppAttestConformanceApp.swift", "start_line": 1, "end_line": 109}},
+    {"name": "App Attest physical-device application", "kind": "physical_device", "source": {"file": "Examples/AppAttestConformance/Sources/AppAttestConformanceApp.swift", "start_line": 1, "end_line": 1115}},
     {"name": "App-extension component host", "kind": "component", "source": {"file": "Examples/AppExtensionComponents/Host/ComponentHostApp.swift", "start_line": 1, "end_line": 121}},
     {"name": "SwiftOpenAI adapter", "kind": "framework", "source": {"file": "Sources/LatchwaySwiftOpenAI/LatchwaySwiftOpenAIHTTPClient.swift", "start_line": 1, "end_line": 153}},
-    {"name": "Apple Foundation Models adapter", "kind": "framework", "source": {"file": "Sources/LatchwayFoundationModels/LatchwayFoundationModels.swift", "start_line": 1, "end_line": 315}}
+    {"name": "Apple Foundation Models adapter", "kind": "framework", "source": {"file": "Sources/LatchwayFoundationModels/LatchwayFoundationModels.swift", "start_line": 1, "end_line": 330}}
   ]
 }
