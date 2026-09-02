@@ -1,13 +1,13 @@
 # MacPaw/OpenAI 0.5.1 transport spike
 
-Date: 2026-08-30; contribution verified 2026-08-31; stock transport
-fallback verified 2026-09-01
+Date: 2026-08-30; stock transport fallback verified 2026-09-01;
+replacement contribution and latest-tag check verified 2026-09-02
 
 Decision: the stock 0.5.1 release remains blocked; no MacPaw adapter product or
-Latchway conformance is shipped or advertised. An upstream-ready patch now
-demonstrates the asynchronous seam against the official 0.5.1 source, but it is
-not part of that release and has not been represented as an external pull
-request or merge.
+Latchway conformance is shipped or advertised. A minimal upstream-ready patch
+now proves that the injected `URLSession` configuration can cover both ordinary
+and streaming dispatch, but it is not part of that release and has not been
+represented as an external pull request or merge.
 
 ## Exact source inspected
 
@@ -65,18 +65,20 @@ bypass, so the product is intentionally absent.
 ## Upstream-ready contribution
 
 [The contribution bundle](../upstream-contributions/macpaw-openai-0.5.1/README.md)
-contains a mail-formatted patch based on the exact official commit above. It
-adds `OpenAIAsyncRequestInterceptor`, ordered asynchronous middleware
-execution, and cancellation bridging across callback, async/await, Combine,
-and streaming clients while preserving the existing synchronous fast path.
+contains a plain `git apply` patch based on the exact official commit above. It
+threads the caller's existing `URLSession.configuration` into MacPaw's three
+internal streaming session kinds. This is the smallest upstream change that
+lets a configured `URLProtocol` own ordinary and streaming dispatch without a
+process-global hook or a fork of the package.
 
-The patch commit is `4fab05ce89ef6c454caa8ec9f1f4cfba0581cc3d` and the
-patch SHA-256 is
-`8035958648cc19a3ce9dae7e86f2d872cd3353c7f16adf06359330c413f53411`.
-Applied to the official 0.5.1 base, `swift test` passes all 217 tests in the
-patched checkout: 187 XCTest cases plus 30 Swift Testing cases. Five Swift
-Testing cases are new coverage for ordering, callback, async/await, streaming,
-and cancellation.
+The patch SHA-256 is
+`0d31b3b7a4afeaa5abc91e2deff42910efdfc9c94c479fcdb270a4e66472a44c`.
+Applied to the official 0.5.1 base, `swift test` passes all 213 tests in the
+patched checkout: 187 XCTest cases plus 26 Swift Testing cases. The executable
+probe then proves Chat Completions and Responses use the injected protocol for
+ordinary and streaming calls and that cancelling an active stream reaches
+`URLProtocol.stopLoading`. Positive mode does not register the protocol
+process-wide, so the injected configuration is the only available seam.
 
 This proves a viable upstream change; it does not retroactively add a public
 seam to the released 0.5.1 package. Latchway can implement and claim a MacPaw
@@ -101,9 +103,10 @@ rg -n 'StreamingSessionFactory|ImplicitURLSessionStreamingSessionFactory' \
 # StreamingSessionFactory is internal and OpenAI constructs the implicit
 # URLSession streaming factory internally
 
-git am /absolute/path/to/0001-Add-asynchronous-request-interception.patch
-swift test
-# 187 XCTest + 30 Swift Testing = 217 passed; 0 failed
+engineering/upstream-contributions/macpaw-openai-0.5.1/verify.sh
+# 187 XCTest + 26 Swift Testing = 213 passed; 0 failed
+# ordinary + streaming Chat/Responses interception: covered
+# active stream cancellation reaches URLProtocol.stopLoading: covered
 ```
 
 ## Rejected alternatives
@@ -119,5 +122,9 @@ swift test
 
 Applications may use Latchway's raw transport with their own Codable models or
 the separately audited SwiftOpenAI adapter. MacPaw support requires a future
-release containing a safe request-time asynchronous hook for every client
-surface, followed by a new version-specific spike and Latchway conformance run.
+release that preserves injected session configuration for every streaming
+surface, followed by a version-pinned `LatchwayOpenAI` URLProtocol bridge and
+full common, hosted, release-image, and physical conformance. The bridge must
+delegate authorization, refresh/safe retry, redirect rejection, and streaming
+cancellation to `LatchwayFeatureTransport`; configuration propagation alone is
+not a support claim.

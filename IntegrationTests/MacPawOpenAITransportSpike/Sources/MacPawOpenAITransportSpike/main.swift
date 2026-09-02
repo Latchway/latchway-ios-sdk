@@ -7,6 +7,7 @@ import Darwin
 private final class ProbeState: @unchecked Sendable {
     private let lock = NSLock()
     private var paths: [String] = []
+    private var cancellationStopPaths: [String] = []
 
     func record(_ request: URLRequest) {
         lock.lock()
@@ -19,6 +20,21 @@ private final class ProbeState: @unchecked Sendable {
         defer { lock.unlock() }
         return paths
     }
+
+    func recordStop(_ request: URLRequest) {
+        guard request.value(forHTTPHeaderField: ProbeURLProtocol.markerHeader)
+            == "patched-cancellation"
+        else { return }
+        lock.lock()
+        cancellationStopPaths.append(request.url?.path ?? "<missing>")
+        lock.unlock()
+    }
+
+    func cancellationStopSnapshot() -> [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return cancellationStopPaths
+    }
 }
 
 private final class ProbeURLProtocol: URLProtocol, @unchecked Sendable {
@@ -26,7 +42,7 @@ private final class ProbeURLProtocol: URLProtocol, @unchecked Sendable {
     static let markerHeader = "X-Latchway-MacPaw-Transport-Probe"
 
     override class func canInit(with request: URLRequest) -> Bool {
-        request.value(forHTTPHeaderField: markerHeader) == "stock-0.5.1"
+        request.value(forHTTPHeaderField: markerHeader) != nil
     }
 
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
@@ -45,11 +61,16 @@ private final class ProbeURLProtocol: URLProtocol, @unchecked Sendable {
             return
         }
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        if request.value(forHTTPHeaderField: Self.markerHeader) == "patched-cancellation" {
+            return
+        }
         client?.urlProtocol(self, didLoad: Data("{}".utf8))
         client?.urlProtocolDidFinishLoading(self)
     }
 
-    override func stopLoading() {}
+    override func stopLoading() {
+        Self.state.recordStop(request)
+    }
 }
 
 private final class LoopbackHTTPServer: @unchecked Sendable {
@@ -175,10 +196,30 @@ private final class LoopbackHTTPServer: @unchecked Sendable {
 @main
 private enum MacPawOpenAITransportSpike {
     static func main() async throws {
-        guard URLProtocol.registerClass(ProbeURLProtocol.self) else {
-            throw SpikeFailure("URLProtocol class registration failed")
+        let arguments = Array(CommandLine.arguments.dropFirst())
+        let expectsInjectedStreaming: Bool
+        switch arguments {
+        case []:
+            expectsInjectedStreaming = false
+        case ["--expect-injected-streaming"]:
+            expectsInjectedStreaming = true
+        default:
+            throw SpikeFailure("unsupported arguments: \(arguments)")
         }
-        defer { URLProtocol.unregisterClass(ProbeURLProtocol.self) }
+        let registeredGlobally: Bool
+        if expectsInjectedStreaming {
+            registeredGlobally = false
+        } else {
+            guard URLProtocol.registerClass(ProbeURLProtocol.self) else {
+                throw SpikeFailure("URLProtocol class registration failed")
+            }
+            registeredGlobally = true
+        }
+        defer {
+            if registeredGlobally {
+                URLProtocol.unregisterClass(ProbeURLProtocol.self)
+            }
+        }
 
         let injectedConfiguration = URLSessionConfiguration.ephemeral
         injectedConfiguration.protocolClasses = [ProbeURLProtocol.self]
@@ -193,7 +234,11 @@ private enum MacPawOpenAITransportSpike {
             scheme: "http",
             basePath: "/v1",
             timeoutInterval: 1,
-            customHeaders: [ProbeURLProtocol.markerHeader: "stock-0.5.1"]
+            customHeaders: [
+                ProbeURLProtocol.markerHeader: expectsInjectedStreaming
+                    ? "patched-configuration"
+                    : "stock-0.5.1",
+            ]
         )
         let openAI = OpenAI(configuration: configuration, session: injectedSession)
         let chatQuery = ChatQuery(
@@ -243,23 +288,83 @@ private enum MacPawOpenAITransportSpike {
             // Responses streaming is routed through the same inaccessible
             // streaming factory and therefore has the same bypass.
         }
-        guard let streamingPaths = loopback.waitForPaths(timeout: 5),
-              streamingPaths == ["/v1/chat/completions", "/v1/responses"]
-        else {
-            throw SpikeFailure(
-                "both stock streams must bypass URLProtocol and reach the isolated loopback listener"
-            )
-        }
         let afterStreaming = ProbeURLProtocol.state.snapshot()
-        guard afterStreaming == afterOrdinary else {
-            throw SpikeFailure(
-                "stock streaming unexpectedly reached the injected/global URLProtocol: \(afterStreaming)"
-            )
-        }
+        if expectsInjectedStreaming {
+            let expected = [
+                "/v1/chat/completions", "/v1/responses",
+                "/v1/chat/completions", "/v1/responses",
+            ]
+            guard afterStreaming == expected else {
+                throw SpikeFailure(
+                    "patched streaming did not reuse the injected URLSession configuration: \(afterStreaming)"
+                )
+            }
 
-        print("ordinary Chat Completions + Responses interception: covered")
-        print("streaming Chat Completions + Responses interception: unavailable")
-        print("MacPaw/OpenAI 0.5.1 full Latchway transport: BLOCKED")
+            let cancellationConfiguration = OpenAI.Configuration(
+                token: nil,
+                host: "127.0.0.1",
+                port: loopback.port,
+                scheme: "http",
+                basePath: "/v1",
+                timeoutInterval: 30,
+                customHeaders: [ProbeURLProtocol.markerHeader: "patched-cancellation"]
+            )
+            let cancellationClient = OpenAI(
+                configuration: cancellationConfiguration,
+                session: injectedSession
+            )
+            let cancellationTask = Task {
+                for try await _ in cancellationClient.chatsStream(query: chatQuery) {}
+            }
+            try await waitUntil {
+                ProbeURLProtocol.state.snapshot().count == expected.count + 1
+            }
+            cancellationTask.cancel()
+            try await waitUntil {
+                ProbeURLProtocol.state.cancellationStopSnapshot()
+                    == ["/v1/chat/completions"]
+            }
+            _ = await cancellationTask.result
+
+            print("ordinary Chat Completions + Responses interception: covered")
+            print("streaming Chat Completions + Responses interception: covered")
+            print("stream cancellation reaches injected URLProtocol: covered")
+            print("MacPaw/OpenAI patched transport injection seam: READY FOR ADAPTER CONFORMANCE")
+        } else {
+            guard let streamingPaths = loopback.waitForPaths(timeout: 5),
+                  streamingPaths == ["/v1/chat/completions", "/v1/responses"]
+            else {
+                throw SpikeFailure(
+                    "both stock streams must bypass URLProtocol and reach the isolated loopback listener"
+                )
+            }
+            guard afterStreaming == afterOrdinary else {
+                throw SpikeFailure(
+                    "stock streaming unexpectedly reached the injected/global URLProtocol: \(afterStreaming)"
+                )
+            }
+
+            print("ordinary Chat Completions + Responses interception: covered")
+            print("streaming Chat Completions + Responses interception: unavailable")
+            print("MacPaw/OpenAI 0.5.1 full Latchway transport: BLOCKED")
+        }
+    }
+
+    private static func waitUntil(
+        timeout: TimeInterval = 2,
+        condition: @escaping @Sendable () -> Bool
+    ) async throws {
+        let deadline = Date(timeIntervalSinceNow: timeout)
+        while !condition() {
+            guard Date() < deadline else {
+                throw SpikeFailure(
+                    "timed out waiting for the injected transport; requests="
+                        + "\(ProbeURLProtocol.state.snapshot()), stops="
+                        + "\(ProbeURLProtocol.state.cancellationStopSnapshot())"
+                )
+            }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
     }
 }
 

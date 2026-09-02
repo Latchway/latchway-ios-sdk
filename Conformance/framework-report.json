@@ -88,7 +88,7 @@
       "not_applicable": [
         {
           "case_ids": ["FW-AUTH-001", "FW-REQ-001", "FW-REQ-002", "FW-REQ-003", "FW-REQ-004", "FW-REQ-005", "FW-REQ-006", "FW-REQ-007", "FW-BEH-001", "FW-BEH-002", "FW-BEH-003", "FW-BEH-004", "FW-BEH-005", "FW-BEH-006", "FW-SEC-001", "FW-SEC-002", "FW-SEC-003", "FW-SEC-004", "FW-OAI-001", "FW-OAI-002", "FW-VAI-001", "FW-VAI-002", "FW-VAI-003", "FW-VAI-004", "FW-LC-001", "FW-LC-002", "FW-LC-003"],
-          "reason": "MacPaw/OpenAI 0.5.1 is explicitly unsupported: its ordinary URLSession injection works, but its streaming API bypasses both injected and global URLProtocol seams as proven by IntegrationTests/MacPawOpenAITransportSpike."
+          "reason": "MacPaw/OpenAI 0.5.1 remains unsupported: on tested Darwin, Chat/Responses streams discard the injected session configuration and bypass injected/process-registered URLProtocol. The replacement patch/probe are unreleased contribution evidence, not support evidence for stock 0.5.1."
         }
       ]
     }

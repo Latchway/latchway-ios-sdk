@@ -1,0 +1,133 @@
+diff --git a/Sources/OpenAI/OpenAI.swift b/Sources/OpenAI/OpenAI.swift
+index 4712fddadc828dbc1c82d72b01f4b8252f186dbf..b2835d33a1bb12e8c6d62270ae8b5e983ffc240f 100644
+--- a/Sources/OpenAI/OpenAI.swift
++++ b/Sources/OpenAI/OpenAI.swift
+@@ -93,6 +93,7 @@ final public class OpenAI: OpenAIProtocol, @unchecked Sendable {
+         sslStreamingDelegate: SSLDelegateProtocol? = nil
+     ) {
+         let streamingSessionFactory = ImplicitURLSessionStreamingSessionFactory(
++            urlSessionConfiguration: session.configuration,
+             middlewares: middlewares,
+             parsingOptions: configuration.parsingOptions,
+             sslDelegate: sslStreamingDelegate
+diff --git a/Sources/OpenAI/Private/Streaming/ServerSentEventsStreamingSessionFactory.swift b/Sources/OpenAI/Private/Streaming/ServerSentEventsStreamingSessionFactory.swift
+index 21fb2b14743d9bc574880fd1e3981af82fb2649a..0c3674f0ba5547588e34e22f58442b2b41e225fb 100644
+--- a/Sources/OpenAI/Private/Streaming/ServerSentEventsStreamingSessionFactory.swift
++++ b/Sources/OpenAI/Private/Streaming/ServerSentEventsStreamingSessionFactory.swift
+@@ -35,6 +35,7 @@ protocol StreamingSessionFactory: Sendable {
+ }
+ 
+ struct ImplicitURLSessionStreamingSessionFactory: StreamingSessionFactory {
++    let urlSessionConfiguration: URLSessionConfiguration
+     let middlewares: [OpenAIMiddleware]
+     let parsingOptions: ParsingOptions
+     let sslDelegate: SSLDelegateProtocol?
+@@ -46,6 +47,7 @@ struct ImplicitURLSessionStreamingSessionFactory: StreamingSessionFactory {
+         onComplete: @Sendable @escaping (StreamingSession<ServerSentEventsStreamInterpreter<ResultType>>, (any Error)?) -> Void
+     ) -> StreamingSession<ServerSentEventsStreamInterpreter<ResultType>> where ResultType : Decodable, ResultType : Encodable, ResultType : Sendable {
+         .init(
++            urlSessionFactory: FoundationURLSessionFactory(configuration: urlSessionConfiguration),
+             urlRequest: urlRequest,
+             interpreter: .init(parsingOptions: parsingOptions),
+             sslDelegate: sslDelegate,
+@@ -63,6 +65,7 @@ struct ImplicitURLSessionStreamingSessionFactory: StreamingSessionFactory {
+         onComplete: @Sendable @escaping (StreamingSession<AudioSpeechStreamInterpreter>, (any Error)?) -> Void
+     ) -> StreamingSession<AudioSpeechStreamInterpreter> {
+         .init(
++            urlSessionFactory: FoundationURLSessionFactory(configuration: urlSessionConfiguration),
+             urlRequest: urlRequest,
+             interpreter: .init(),
+             sslDelegate: sslDelegate,
+@@ -80,6 +83,7 @@ struct ImplicitURLSessionStreamingSessionFactory: StreamingSessionFactory {
+         onComplete: @Sendable @escaping (StreamingSession<ModelResponseEventsStreamInterpreter>, (any Error)?) -> Void
+     ) -> StreamingSession<ModelResponseEventsStreamInterpreter> {
+         .init(
++            urlSessionFactory: FoundationURLSessionFactory(configuration: urlSessionConfiguration),
+             urlRequest: urlRequest,
+             interpreter: .init(),
+             sslDelegate: sslDelegate,
+diff --git a/Sources/OpenAI/Private/URLSessionFactory.swift b/Sources/OpenAI/Private/URLSessionFactory.swift
+index 7b99769b470cb34b06f31ce22e2baa70c6827da1..822f07ccc2a6882d70a1f121a7f6dfdf0fce6099 100644
+--- a/Sources/OpenAI/Private/URLSessionFactory.swift
++++ b/Sources/OpenAI/Private/URLSessionFactory.swift
+@@ -15,8 +15,14 @@ protocol URLSessionFactory: Sendable {
+ }
+ 
+ struct FoundationURLSessionFactory: URLSessionFactory {
++    let configuration: URLSessionConfiguration
++
++    init(configuration: URLSessionConfiguration = .default) {
++        self.configuration = configuration
++    }
++
+     func makeUrlSession(delegate: URLSessionDataDelegateProtocol) -> any URLSessionProtocol {
+         let forwarder = URLSessionDataDelegateForwarder(target: delegate)
+-        return URLSession(configuration: .default, delegate: forwarder, delegateQueue: nil)
++        return URLSession(configuration: configuration, delegate: forwarder, delegateQueue: nil)
+     }
+ }
+diff --git a/Tests/OpenAITests/URLSessionFactoryTests.swift b/Tests/OpenAITests/URLSessionFactoryTests.swift
+new file mode 100644
+index 0000000000000000000000000000000000000000..527be3176432f1532fafefab02cc46e29228b50d
+--- /dev/null
++++ b/Tests/OpenAITests/URLSessionFactoryTests.swift
+@@ -0,0 +1,59 @@
++import Foundation
++#if canImport(FoundationNetworking)
++import FoundationNetworking
++#endif
++import Testing
++@testable import OpenAI
++
++struct URLSessionFactoryTests {
++    @Test func preservesInjectedConfigurationWhenCreatingStreamingSession() throws {
++        let configuration = URLSessionConfiguration.ephemeral
++        configuration.timeoutIntervalForRequest = 17
++        configuration.httpAdditionalHeaders = ["X-Transport-Probe": "injected"]
++
++        let session = FoundationURLSessionFactory(configuration: configuration)
++            .makeUrlSession(delegate: NoOpURLSessionDataDelegate())
++        defer { session.invalidateAndCancel() }
++
++        let urlSession = try #require(session as? URLSession)
++        #expect(urlSession.configuration.timeoutIntervalForRequest == 17)
++        #expect(
++            urlSession.configuration.httpAdditionalHeaders?["X-Transport-Probe"] as? String
++                == "injected"
++        )
++    }
++}
++
++private final class NoOpURLSessionDataDelegate: URLSessionDataDelegateProtocol, @unchecked Sendable {
++    func urlSession(
++        _ session: URLSessionProtocol,
++        task: URLSessionTaskProtocol,
++        didCompleteWithError error: Error?
++    ) {}
++
++    func urlSession(
++        _ session: URLSessionProtocol,
++        dataTask: URLSessionDataTaskProtocol,
++        didReceive data: Data
++    ) {}
++
++    func urlSession(
++        _ session: URLSessionProtocol,
++        dataTask: URLSessionDataTaskProtocol,
++        didReceive response: URLResponse,
++        completionHandler: @escaping @Sendable (URLSession.ResponseDisposition) -> Void
++    ) {
++        completionHandler(.allow)
++    }
++
++    func urlSession(
++        _ session: URLSession,
++        didReceive challenge: URLAuthenticationChallenge,
++        completionHandler: @escaping @Sendable (
++            URLSession.AuthChallengeDisposition,
++            URLCredential?
++        ) -> Void
++    ) {
++        completionHandler(.performDefaultHandling, nil)
++    }
++}

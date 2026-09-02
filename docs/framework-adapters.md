@@ -121,13 +121,15 @@ seam.
 ### Verified upstream contribution
 
 Latchway carries an [upstream-ready patch](../engineering/upstream-contributions/macpaw-openai-0.5.1/README.md)
-against the official 0.5.1 source. It adds ordered asynchronous request
-interception to callback, async/await, Combine, and streaming clients,
-preserves the existing synchronous fast path, and bridges cancellation before
-and after dispatch. Applied to base commit
-`a532be89be9a30ec003e4ba0974a52a88d26fc6d`, the complete patched checkout passes
-217 tests: 187 XCTest cases and 30 Swift Testing cases, including five new
-ordering, callback, async/await, streaming, and cancellation cases.
+against the official 0.5.1 source. It reuses the caller's injected
+`URLSession.configuration` for Chat Completions, Responses, and audio streaming
+sessions. This 12-addition production change makes a configured `URLProtocol`
+available to ordinary and streaming paths without adding a new public API.
+Applied to base commit `a532be89be9a30ec003e4ba0974a52a88d26fc6d`,
+the complete patched checkout passes 213 tests: 187 XCTest cases and 26 Swift
+Testing cases. The executable contribution probe additionally covers ordinary
+and streaming Chat/Responses interception plus active-stream cancellation into
+`URLProtocol.stopLoading`.
 
 That patch is contribution evidence, not part of the published 0.5.1 release.
 No external pull request or merge is claimed, and Latchway still ships no
@@ -139,7 +141,7 @@ The capability decision was reproduced against:
 | Framework | Exact source | Result |
 | --- | --- | --- |
 | SwiftOpenAI | tag `4.6.0`, commit `b61ac3cce8018595412e5aa84275d1253645aab1`; public [`HTTPClient`](https://github.com/jamesrochabrun/SwiftOpenAI/blob/4.6.0/Sources/OpenAI/Private/Networking/HTTPClient.swift) | Buffered and line-stream hooks are injectable; compiled adapter and order/backpressure tests exist. |
-| MacPaw/OpenAI | tag `0.5.1`, commit `a532be89be9a30ec003e4ba0974a52a88d26fc6d`; public [`OpenAIMiddleware`](https://github.com/MacPaw/OpenAI/blob/0.5.1/Sources/OpenAI/Public/Protocols/OpenAIMiddleware.swift) and [`OpenAI` initializer](https://github.com/MacPaw/OpenAI/blob/0.5.1/Sources/OpenAI/OpenAI.swift) | Stock release lacks the safe asynchronous seam. The pinned executable proves injected URLSession coverage for ordinary Chat Completions and Responses, and proves that both streaming paths bypass it; the patched official-source checkout passes all 217 tests, but the contribution is not merged or shipped. |
+| MacPaw/OpenAI | tag `0.5.1`, commit `a532be89be9a30ec003e4ba0974a52a88d26fc6d`; public [`OpenAIMiddleware`](https://github.com/MacPaw/OpenAI/blob/0.5.1/Sources/OpenAI/Public/Protocols/OpenAIMiddleware.swift) and [`OpenAI` initializer](https://github.com/MacPaw/OpenAI/blob/0.5.1/Sources/OpenAI/OpenAI.swift) | Stock release lacks a safe whole-transport seam. The pinned executable proves injected URLSession coverage for ordinary Chat Completions and Responses, and proves that both streaming paths bypass it. The minimal configuration-propagation patch passes 213 upstream tests and the positive transport/cancellation probe, but is not merged or shipped. |
 | FoundationModels | Xcode 27.0 SDK custom `LanguageModelExecutor` interfaces on an iOS 27.0 simulator | All nine narrow public-API cases pass; hosted, exact-image, and physical conformance remain pending. |
 
 Adding a target or compiling a sample is not sufficient to change a framework's

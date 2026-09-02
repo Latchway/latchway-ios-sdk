@@ -19,12 +19,15 @@ final class InstallationFamilyContractTests: XCTestCase {
         XCTAssertTrue(rootComponent.isRoot)
 
         let rootClaims = try object(root, "root_session_claims")
+        let rootTrust = try object(rootClaims, "trust")
         XCTAssertEqual(rootClaims["installation_family_id"] as? String, family.id)
-        XCTAssertEqual(rootClaims["client_component_id"] as? String, rootComponent.id)
+        XCTAssertEqual(rootClaims["component_id"] as? String, rootComponent.id)
         XCTAssertEqual(rootClaims["component_definition_id"] as? String, rootComponent.definitionID)
         XCTAssertEqual(rootClaims["component_kind"] as? String, rootComponent.kind)
         XCTAssertEqual(rootClaims["component_is_root"] as? Bool, true)
-        XCTAssertEqual(rootClaims["trust_source"] as? String, "direct_attested")
+        XCTAssertEqual(rootClaims["features"] as? [String], rootComponent.grantedFeatures)
+        XCTAssertEqual(rootTrust["source"] as? String, "direct_attested")
+        XCTAssertNil(rootClaims["installation_id"])
 
         let provisioned = try XCTUnwrap(root["provisioned_components"] as? [[String: Any]])
         XCTAssertEqual(provisioned.count, 2)
@@ -36,6 +39,7 @@ final class InstallationFamilyContractTests: XCTestCase {
             let exchangeRequest = try object(exchange, "request")
             let exchangeResponse = try object(exchange, "response")
             let claims = try object(vector, "expected_session_claims")
+            let claimsTrust = try object(claims, "trust")
 
             let publicJWK = try decode(LatchwayPublicJWK.self, from: object(request, "public_jwk"))
             let requestedFeatures = try XCTUnwrap(request["requested_features"] as? [String])
@@ -75,11 +79,13 @@ final class InstallationFamilyContractTests: XCTestCase {
             XCTAssertTrue((60 ... 3_600).contains(session.expiresIn))
             XCTAssertNotNil(session.refreshExpiresAt)
             XCTAssertEqual(claims["installation_family_id"] as? String, family.id)
-            XCTAssertEqual(claims["client_component_id"] as? String, provision.componentID)
+            XCTAssertEqual(claims["component_id"] as? String, provision.componentID)
             XCTAssertEqual(claims["component_definition_id"] as? String, request["component_definition_id"] as? String)
             XCTAssertEqual(claims["component_is_root"] as? Bool, false)
-            XCTAssertEqual(claims["parent_component_id"] as? String, rootComponent.id)
-            XCTAssertEqual(claims["trust_source"] as? String, "delegated_from_attested_root")
+            XCTAssertEqual(Set(claims["features"] as? [String] ?? []), Set(provision.grantedFeatures))
+            XCTAssertEqual(claimsTrust["parent_component_id"] as? String, rootComponent.id)
+            XCTAssertEqual(claimsTrust["source"] as? String, "delegated_from_attested_root")
+            XCTAssertNil(claims["installation_id"])
         }
 
         let revocations = try XCTUnwrap(root["revocations"] as? [[String: Any]])

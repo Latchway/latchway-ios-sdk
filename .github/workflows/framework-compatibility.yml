@@ -90,11 +90,15 @@ jobs:
         id: macpaw-tests
         continue-on-error: true
         run: swift run --package-path IntegrationTests/MacPawOpenAITransportSpike MacPawOpenAITransportSpike
+      - name: Verify the unreleased MacPaw transport contribution
+        id: macpaw-contribution-tests
+        continue-on-error: true
+        run: engineering/upstream-contributions/macpaw-openai-0.5.1/verify.sh
       - name: Emit machine-readable compatibility evidence
         if: always()
         env:
           PROFILE: ${{ matrix.profile }}
-          OUTCOME: ${{ (steps.swift-openai-tests.outcome == 'success' && steps.foundation-models-tests.outcome == 'success' && steps.macpaw-tests.outcome == 'success') && 'success' || 'failure' }}
+          OUTCOME: ${{ (steps.swift-openai-tests.outcome == 'success' && steps.foundation-models-tests.outcome == 'success' && steps.macpaw-tests.outcome == 'success' && steps.macpaw-contribution-tests.outcome == 'success') && 'success' || 'failure' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -129,7 +133,8 @@ jobs:
         if: >-
           steps.swift-openai-tests.outcome != 'success' ||
           steps.foundation-models-tests.outcome != 'success' ||
-          steps.macpaw-tests.outcome != 'success'
+          steps.macpaw-tests.outcome != 'success' ||
+          steps.macpaw-contribution-tests.outcome != 'success'
         run: exit 1
 
   issue-on-failure:
