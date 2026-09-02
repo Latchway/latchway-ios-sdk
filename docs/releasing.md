@@ -21,15 +21,18 @@ github-release        = latchway-release-controls-v1:latchway-ios-sdk:github-rel
 
 Never define that reserved variable at repository or organization scope. A
 missing referenced GitHub environment is otherwise auto-created without
-protections; the first step in every privileged job checks the environment-only
+protections; the first step in every job that names one of these protected
+environments checks the environment-only
 value and fails closed before any action or step uses a credential, requests an
 OIDC token, or performs a mutation. `release-administration` supplies only a fine-grained
 `LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN` with read-only repository Administration
 permission. Its fresh no-checkout job proves GitHub immutable releases are
 enabled and owner-enforced before either registry publication or release
 mutation. `cocoapods-trunk` supplies only `COCOAPODS_TRUNK_TOKEN`, and
-`github-release` protects the final GitHub-token/OIDC publication job. After the
-registry result is sealed, a second no-OIDC administration job rechecks the
+`github-release` protects both the evidence-gated promotion job that creates or
+verifies the annotated tag and the final GitHub-token/OIDC publication job.
+After the registry result is sealed, a second no-OIDC administration job
+rechecks the
 immutable-release policy before the final job validates the exact local asset
 closure and requests an attestation. Both administration checks emit a
 SHA-256-bound policy lease that names the repository, phase, workflow run, and

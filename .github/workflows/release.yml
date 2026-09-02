@@ -161,6 +161,7 @@ jobs:
     needs: verify-promotion
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    environment: github-release
     permissions:
       contents: write
     outputs:
@@ -170,6 +171,13 @@ jobs:
       core_tag: ${{ needs.verify-promotion.outputs.core_tag }}
       report_sha256: ${{ needs.verify-promotion.outputs.report_sha256 }}
     steps:
+      - name: Verify the exact protected github-release environment
+        shell: bash
+        env:
+          OBSERVED_POLICY_ID: ${{ vars.LATCHWAY_RELEASE_CONTROL_POLICY_ID }}
+        run: |
+          set -Eeuo pipefail
+          test "$OBSERVED_POLICY_ID" = "latchway-release-controls-v1:latchway-ios-sdk:github-release"
       - name: Create or verify evidence-gated annotated SDK tag using fixed API calls
         shell: bash
         env:

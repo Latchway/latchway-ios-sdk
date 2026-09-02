@@ -784,18 +784,21 @@ class ReleaseWorkflowTests(unittest.TestCase):
             value = workflow.split(f"\n  {name}:\n", 1)[1]
             return value if following is None else value.split(f"\n  {following}:\n", 1)[0]
 
+        promotion = job("promote", "package")
         administration = job("authorize-release", "package")
         publisher = job("publish-cocoapods", "github-release-policy")
         final_policy = job("github-release-policy", "github-release")
         final_release = job("github-release")
         self.assertIn("timeout-minutes: 45", final_release)
         expected_ids = {
+            "promote": "latchway-release-controls-v1:latchway-ios-sdk:github-release",
             "authorize-release": "latchway-release-controls-v1:latchway-ios-sdk:release-administration",
             "publish-cocoapods": "latchway-release-controls-v1:latchway-ios-sdk:cocoapods-trunk",
             "github-release-policy": "latchway-release-controls-v1:latchway-ios-sdk:release-administration",
             "github-release": "latchway-release-controls-v1:latchway-ios-sdk:github-release",
         }
         blocks = {
+            "promote": promotion,
             "authorize-release": administration,
             "publish-cocoapods": publisher,
             "github-release-policy": final_policy,

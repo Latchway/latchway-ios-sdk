@@ -253,6 +253,12 @@ coordinates using fixed inline shell and `jq`, and only then requests OIDC and
 creates the attestation. Protect this environment with independent reviewers
 and restrict deployments to `main`.
 
+The GitHub-hosted `authorize-source` job and the final `attest` job both reuse
+`physical-evidence-signing`; only the physical collector uses
+`app-attest-production`. Every job that names either protected environment has
+the exact environment policy sentinel as its first step, before checkout,
+artifact access, device work, credentials, job-token use, OIDC, or attestation.
+
 The signer also verifies the GitHub-hosted source authorization, trust-root
 signature on the lease and teardown, exact two-grant/artifact/run coordinates,
 device-wipe receipt, evidence-manifest hash, independent supervisor verdict,
