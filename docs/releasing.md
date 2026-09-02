@@ -7,6 +7,35 @@ podspec version, changelog section, and checked-out commit must agree.
 `contract.lock` must identify a published core contract with an exact commit
 and deterministic bundle digest.
 
+## Single-maintainer v1 publication profile
+
+`single-maintainer-release.yml` is the explicit lower-assurance launch path for
+`1.0.0`. It accepts only the exact `main` commit, the released core lock, the
+`single_maintainer_v1` profile, and the confirmation phrase
+`publish-v1.0.0-with-deferred-assurance`. The complete Swift package, consumer,
+offline security, dependency, and all-four-subspec CocoaPods gates run before
+the public annotated tag is created. The workflow then builds the deterministic
+tag archive, publishes or byte-for-byte adopts the CocoaPods specification, and
+creates an exact GitHub release labeled as deferred assurance. It never claims
+independent review, full evidence gating, or release-qualified status.
+
+Create a `single-maintainer-v1` GitHub environment restricted to `main`. If
+`Latchway 1.0.0` is absent from CocoaPods, that environment must contain only
+the `COCOAPODS_TRUNK_TOKEN` secret needed by the protected publication job. A
+working local `pod trunk me` session is not available inside GitHub Actions and
+does not satisfy this requirement. If an authorized maintainer publishes the
+already-gated exact pod locally instead, a later workflow run needs no token
+only when the CDN specification is byte-identical; it adopts rather than
+overwrites that immutable coordinate.
+
+```bash
+gh workflow run single-maintainer-release.yml --ref main \
+  -f release_profile=single_maintainer_v1 \
+  -f release_commit="$(git rev-parse HEAD)" \
+  -f release_version=1.0.0 \
+  -f confirmation=publish-v1.0.0-with-deferred-assurance
+```
+
 Three protected GitHub environments keep release authority disjoint. Each must
 require an authorized reviewer, enable **Prevent self-review**, disable
 administrator bypass where GitHub offers it, and allow deployments only from
