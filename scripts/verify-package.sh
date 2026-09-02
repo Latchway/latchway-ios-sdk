@@ -15,6 +15,8 @@ cd "$repository_root"
 python3 scripts/run-offline-release-tests.py
 python3 scripts/test-dependency-vulnerability-scan.py
 python3 scripts/test-keychain-source-invariants.py
+python3 scripts/test_maintainer_release.py
+python3 scripts/test_public_core_release.py
 swift package --disable-sandbox dump-package >/dev/null
 swift build --disable-sandbox --configuration release
 swift test --disable-sandbox --parallel

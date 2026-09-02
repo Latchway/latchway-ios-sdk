@@ -213,7 +213,15 @@ def verify(arguments: argparse.Namespace) -> dict[str, str]:
         raise Rejected("maintainer_release_core_lock_mismatch")
     intent = {"schema_version": 1, "kind": "latchway_single_maintainer_release_intent", "profile": PROFILE, "status": "maintainer_requested", "status_claim": "v1_publication_in_progress_with_deferred_assurance", "publication_ready": False, "release_qualified": False, "requires_independent_human_review": False, "source": {"repository": arguments.repository_name, "commit": arguments.release_commit, "version": VERSION, "tag": TAG, "ref": arguments.workflow_ref}, "contract": {"core_commit": contract["core_commit"], "core_tag": contract["core_release"], "bundle_sha256": contract["bundle_sha256"], "wire_protocol": 2}, "workflow": {"file": ".github/workflows/single-maintainer-release.yml", "event": "workflow_dispatch", "run_id": positive_run_number(arguments.run_id), "run_attempt": positive_run_number(arguments.run_attempt)}, "maintainer_confirmation": "accepted_exact_phrase", "deferred_evidence": DEFERRED_EVIDENCE, "forbidden_claims": FORBIDDEN_CLAIMS, "downstream_required_gates": ["annotated_tag_exact_commit", "complete_local_release_tests", "deterministic_package_archives", "registry_byte_verification", "trusted_publication_provenance", "exact_github_release"]}
     digest = write_intent(arguments.intent_output, intent)
-    return {"commit": arguments.release_commit, "core_tag": contract["core_release"], "intent_sha256": digest, "tag": TAG, "version": VERSION, **coordinates}
+    return {
+        "commit": arguments.release_commit,
+        "core_commit": contract["core_commit"],
+        "core_tag": contract["core_release"],
+        "intent_sha256": digest,
+        "tag": TAG,
+        "version": VERSION,
+        **coordinates,
+    }
 
 
 def parser() -> argparse.ArgumentParser:

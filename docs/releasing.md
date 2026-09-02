@@ -15,18 +15,37 @@ and deterministic bundle digest.
 `publish-v1.0.0-with-deferred-assurance`. The complete Swift package, consumer,
 offline security, dependency, and all-four-subspec CocoaPods gates run before
 the public annotated tag is created. The workflow then builds the deterministic
-tag archive, publishes or byte-for-byte adopts the CocoaPods specification, and
+tag archive, publishes the CocoaPods specification or adopts an existing
+canonical JSON-identical specification, and
 creates an exact GitHub release labeled as deferred assurance. It never claims
 independent review, full evidence gating, or release-qualified status.
 
-Create a `single-maintainer-v1` GitHub environment restricted to `main`. If
-`Latchway 1.0.0` is absent from CocoaPods, that environment must contain only
-the `COCOAPODS_TRUNK_TOKEN` secret needed by the protected publication job. A
+Create a `single-maintainer-v1` GitHub environment restricted to `main`, and
+define its environment-only `LATCHWAY_RELEASE_CONTROL_POLICY_ID` variable as
+exactly
+`latchway-release-controls-v1:latchway-ios-sdk:single-maintainer-v1`. The first
+step of every job that names this environment checks that sentinel before any
+checkout, credential access, OIDC request, or mutation, so a missing environment
+cannot be silently auto-created without the intended controls. If `Latchway
+1.0.0` is absent from CocoaPods, that environment must contain only the
+`COCOAPODS_TRUNK_TOKEN` secret needed by the protected publication job. A
 working local `pod trunk me` session is not available inside GitHub Actions and
 does not satisfy this requirement. If an authorized maintainer publishes the
 already-gated exact pod locally instead, a later workflow run needs no token
-only when the CDN specification is byte-identical; it adopts rather than
-overwrites that immutable coordinate.
+only when the CDN specification is canonical JSON-identical to the reviewed
+specification; it adopts rather than overwrites that immutable coordinate. Raw
+registry formatting bytes may differ and are recorded separately.
+
+The CocoaPods publisher is a fresh Linux job with no source checkout. The
+macOS package job converts the Ruby podspec to inert reviewed JSON and seals an
+exact seven-file manifest. Before the Trunk credential is referenced, the
+publisher verifies the fixed file closure, sizes, hashes, commit/tag/version
+binding, source coordinate, four subspecs, and absence of CocoaPods execution
+hooks. If upload is needed, it writes the token to a temporary curl
+configuration, unsets the environment variable, and posts only the reviewed
+JSON bytes. Candidate scripts and Ruby podspec code never run while the token
+exists. The final publisher validates an exact ten-file release closure before
+requesting OIDC or attaching any asset.
 
 ```bash
 gh workflow run single-maintainer-release.yml --ref main \
@@ -35,6 +54,31 @@ gh workflow run single-maintainer-release.yml --ref main \
   -f release_version=1.0.0 \
   -f confirmation=publish-v1.0.0-with-deferred-assurance
 ```
+
+The additive workflow treats one workflow run as the transaction owner. Its
+intent hash binds the run ID and run attempt into the annotated tag. Before the
+tag exists, the intent job rejects any pre-existing `v1.0.0` tag unless that
+tag belongs to this exact transaction. Once the tag, CocoaPods coordinate, or
+GitHub draft has been created, resume only with **Re-run failed jobs** on that
+same workflow run. Never use **Re-run all jobs** and never start a new workflow
+dispatch after a mutation: either action creates a different intent and the
+early tag-owner guard fails closed. The prerequisite intent and package
+artifacts are retained for 90 days so a same-run failed-job retry can adopt
+only exact bytes. The GitHub publisher creates an empty draft, adopts any exact
+partial draft asset-by-asset, downloads and byte-compares every asset, and
+publishes the draft only after the remote closure is exact; it never overwrites
+an existing asset.
+
+Before any SDK tag or registry mutation, the workflow downloads the public core
+`v1.0.0` release and requires the `single_maintainer_v1` core-publication record
+to be exact. It verifies the candidate, vulnerability/license scans, SBOMs,
+Sigstore attestations, annotated core tag, image digest, and the exact Docker
+Compose and Google Cloud Run deployment captures. The core commit locked by
+`contract.lock` must be an ancestor of that public core release. AWS, Fly.io,
+Cloudflare Containers, devices, providers, and independent review remain
+explicitly deferred; they are not silently treated as passed.
+
+## Strict full publication profile
 
 Three protected GitHub environments keep release authority disjoint. Each must
 require an authorized reviewer, enable **Prevent self-review**, disable

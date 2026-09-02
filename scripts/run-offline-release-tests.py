@@ -12,8 +12,10 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 TEST_PATHS = (
     "scripts/test_build_docs_bundle.py",
+    "scripts/test_maintainer_release.py",
     "scripts/test_offline_release_inventory.py",
     "scripts/test_publish_or_verify_cocoapods.py",
+    "scripts/test_public_core_release.py",
     "scripts/test_reconcile_github_release.py",
     "scripts/test_release_promotion.py",
     "scripts/test_require_gh_version.py",
