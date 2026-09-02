@@ -57,7 +57,7 @@
     {"name": "Native App Attest golden journey", "kind": "quickstart", "source": {"file": "Examples/BasicURLSession/BasicURLSession.swift", "start_line": 1, "end_line": 247}},
     {"name": "App Attest physical-device application", "kind": "physical_device", "source": {"file": "Examples/AppAttestConformance/Sources/AppAttestConformanceApp.swift", "start_line": 1, "end_line": 1115}},
     {"name": "App-extension component host", "kind": "component", "source": {"file": "Examples/AppExtensionComponents/Host/ComponentHostApp.swift", "start_line": 1, "end_line": 121}},
-    {"name": "SwiftOpenAI adapter", "kind": "framework", "source": {"file": "Sources/LatchwaySwiftOpenAI/LatchwaySwiftOpenAIHTTPClient.swift", "start_line": 1, "end_line": 153}},
+    {"name": "SwiftOpenAI adapter", "kind": "framework", "source": {"file": "Sources/LatchwaySwiftOpenAI/LatchwaySwiftOpenAIHTTPClient.swift", "start_line": 1, "end_line": 209}},
     {"name": "Apple Foundation Models adapter", "kind": "framework", "source": {"file": "Sources/LatchwayFoundationModels/LatchwayFoundationModels.swift", "start_line": 1, "end_line": 330}}
   ]
 }
