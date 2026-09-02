@@ -1,0 +1,119 @@
+{
+  "schema_version": 1,
+  "cases": {
+    "FW-AUTH-101": [
+      "Tests/LatchwaySwiftOpenAITests/LatchwaySwiftOpenAIHTTPClientTests.swift#bufferedRequestUsesInjectedSwiftOpenAITransportWithoutCredentialExport",
+      "Tests/LatchwayFoundationModelsTests/FoundationModelsPublicAPITests.swift#singleTurnGenerationUsesResponsesStreamingTransport",
+      "Tests/LatchwayTests/ClientSessionTests.swift#testConcurrentAuthorizationEstablishesOneSession"
+    ],
+    "FW-AUTH-102": [
+      "Tests/LatchwaySwiftOpenAITests/LatchwaySwiftOpenAIHTTPClientTests.swift#bufferedRequestUsesInjectedSwiftOpenAITransportWithoutCredentialExport",
+      "Tests/LatchwayFoundationModelsTests/FoundationModelsPublicAPITests.swift#singleTurnGenerationUsesResponsesStreamingTransport",
+      "Tests/LatchwayTests/DPoPTests.swift#testGeneratedProofCarriesOnlyPublicJWKAndRequiredClaims"
+    ],
+    "FW-AUTH-103": [
+      "Tests/LatchwaySwiftOpenAITests/LatchwaySwiftOpenAIHTTPClientTests.swift#bufferedRequestUsesInjectedSwiftOpenAITransportWithoutCredentialExport",
+      "Tests/LatchwayFoundationModelsTests/FoundationModelsPublicAPITests.swift#adapterPreservesTransportAttestationRefreshRetry",
+      "Tests/LatchwayTests/ClientSessionTests.swift#testExpiredAccessTokenRefreshesOnceAcrossConcurrentCallers"
+    ],
+    "FW-AUTH-104": [
+      "Tests/LatchwaySwiftOpenAITests/LatchwaySwiftOpenAIHTTPClientTests.swift#bufferedRequestUsesInjectedSwiftOpenAITransportWithoutCredentialExport",
+      "Tests/LatchwayFoundationModelsTests/FoundationModelsPublicAPITests.swift#singleTurnGenerationUsesResponsesStreamingTransport",
+      "Tests/LatchwayTests/ClientSessionTests.swift#testRefreshIdentityReauthenticationStartsFreshAttestedExchange"
+    ],
+    "FW-AUTH-105": [
+      "Tests/LatchwaySwiftOpenAITests/LatchwaySwiftOpenAIHTTPClientTests.swift#bufferedRequestUsesInjectedSwiftOpenAITransportWithoutCredentialExport",
+      "Tests/LatchwayFoundationModelsTests/FoundationModelsPublicAPITests.swift#singleTurnGenerationUsesResponsesStreamingTransport",
+      "Tests/LatchwayTests/ClientSessionTests.swift#testNoArgumentFamilyRevocationCleansRegisteredComponentsAndRetainsFailures"
+    ],
+    "FW-AUTH-106": [
+      "Tests/LatchwaySwiftOpenAITests/LatchwaySwiftOpenAIHTTPClientTests.swift#bufferedRequestUsesInjectedSwiftOpenAITransportWithoutCredentialExport",
+      "Tests/LatchwayFoundationModelsTests/FoundationModelsPublicAPITests.swift#singleTurnGenerationUsesResponsesStreamingTransport",
+      "Tests/LatchwayTests/ClientSessionTests.swift#testFWAUTH106ExplicitComponentRevocationLeavesRootAndSiblingStateActive"
+    ],
+    "FW-REQ-101": [
+      "Tests/LatchwaySwiftOpenAITests/LatchwaySwiftOpenAIHTTPClientTests.swift#officialServicePreservesChatToolsStructuredOutputAndEmbeddings",
+      "Tests/LatchwayFoundationModelsTests/FoundationModelsPublicAPITests.swift#multiTurnTranscriptPreservesUserAndAssistantHistory"
+    ],
+    "FW-REQ-102": [
+      "Tests/LatchwayTests/ComponentSessionTests.swift#testExtensionConsumesOnlyItsProvisioningGrantAndAddsFrameworkMetadata",
+      "Tests/LatchwayTests/ComponentRequestSecurityTests.swift#testFoundationModelsFrameworkMetadataUsesCanonicalHeaderPair"
+    ],
+    "FW-REQ-103": [
+      "Tests/LatchwaySwiftOpenAITests/LatchwaySwiftOpenAIHTTPClientTests.swift#bufferedRequestUsesInjectedSwiftOpenAITransportWithoutCredentialExport",
+      "Tests/LatchwayFoundationModelsTests/FoundationModelsPublicAPITests.swift#fwREQ103AndSEC104FoundationModelsNeverExportsProviderPlaceholder"
+    ],
+    "FW-REQ-105": [
+      "Tests/LatchwaySwiftOpenAITests/LatchwaySwiftOpenAIHTTPClientTests.swift#cancellingOfficialStreamConsumerStopsUnderlyingNativeLoad",
+      "Tests/LatchwayFoundationModelsTests/FoundationModelsPublicAPITests.swift#cancellationStopsTheNativeStream"
+    ],
+    "FW-REQ-107": [
+      "Tests/LatchwaySwiftOpenAITests/LatchwaySwiftOpenAIHTTPClientTests.swift#officialServicePreservesChatToolsStructuredOutputAndEmbeddings",
+      "Tests/LatchwayFoundationModelsTests/FoundationModelsPublicAPITests.swift#singleTurnGenerationUsesResponsesStreamingTransport"
+    ],
+    "FW-REQ-108": [
+      "Tests/LatchwaySwiftOpenAITests/LatchwaySwiftOpenAIHTTPClientTests.swift#officialServiceDecodesStreamingChatThroughInjectedByteTransport",
+      "Tests/LatchwayFoundationModelsTests/FoundationModelsPublicAPITests.swift#streamingProducesIncrementalTextAndUsage"
+    ],
+    "FW-REQ-109": [
+      "Tests/LatchwaySwiftOpenAITests/LatchwaySwiftOpenAIHTTPClientTests.swift#officialServiceDecodesStreamingChatThroughInjectedByteTransport",
+      "Tests/LatchwayFoundationModelsTests/FoundationModelsPublicAPITests.swift#streamingProducesIncrementalTextAndUsage"
+    ],
+    "FW-BEH-101": [
+      "Tests/LatchwaySwiftOpenAITests/LatchwaySwiftOpenAIHTTPClientTests.swift#officialServicePreservesChatToolsStructuredOutputAndEmbeddings"
+    ],
+    "FW-BEH-102": [
+      "Tests/LatchwaySwiftOpenAITests/LatchwaySwiftOpenAIHTTPClientTests.swift#officialServicePreservesChatToolsStructuredOutputAndEmbeddings"
+    ],
+    "FW-BEH-103": [
+      "Tests/LatchwayTests/ComponentSessionTests.swift#testExtensionConsumesOnlyItsProvisioningGrantAndAddsFrameworkMetadata",
+      "Tests/LatchwayTests/ComponentRequestSecurityTests.swift#testFoundationModelsFrameworkMetadataUsesCanonicalHeaderPair"
+    ],
+    "FW-BEH-106": [
+      "Tests/LatchwaySwiftOpenAITests/LatchwaySwiftOpenAIHTTPClientTests.swift#fwBEH105And106OfficialServiceMapsQuotaWithRequestIDAndRemediation",
+      "Tests/LatchwayFoundationModelsTests/FoundationModelsPublicAPITests.swift#quotaAndUnavailableFeatureFailuresMapTruthfully"
+    ],
+    "FW-SEC-101": [
+      "Tests/LatchwaySwiftOpenAITests/LatchwaySwiftOpenAIHTTPClientTests.swift#bufferedRequestUsesInjectedSwiftOpenAITransportWithoutCredentialExport",
+      "Tests/LatchwayFoundationModelsTests/FoundationModelsPublicAPITests.swift#singleTurnGenerationUsesResponsesStreamingTransport",
+      "Tests/LatchwayTests/ClientSessionTests.swift#testRejectsCredentialLeakAndForeignOrigin"
+    ],
+    "FW-SEC-104": [
+      "Tests/LatchwaySwiftOpenAITests/LatchwaySwiftOpenAIHTTPClientTests.swift#bufferedRequestUsesInjectedSwiftOpenAITransportWithoutCredentialExport",
+      "Tests/LatchwayFoundationModelsTests/FoundationModelsPublicAPITests.swift#fwREQ103AndSEC104FoundationModelsNeverExportsProviderPlaceholder"
+    ],
+    "FW-REQ-104": [
+      "Tests/LatchwaySwiftOpenAITests/LatchwaySwiftOpenAIHTTPClientTests.swift#bufferedRequestUsesInjectedSwiftOpenAITransportWithoutCredentialExport",
+      "Tests/LatchwayFoundationModelsTests/FoundationModelsPublicAPITests.swift#fwREQ104AndSEC102FoundationModelsExposeNoCallerHeaderSurface",
+      "Tests/LatchwayTests/ComponentRequestSecurityTests.swift#testFWREQ104AllowedCustomHeadersSurviveNativePreparation"
+    ],
+    "FW-BEH-104": [
+      "Tests/LatchwaySwiftOpenAITests/LatchwaySwiftOpenAIHTTPClientTests.swift#bufferedRequestUsesInjectedSwiftOpenAITransportWithoutCredentialExport",
+      "Tests/LatchwayFoundationModelsTests/FoundationModelsPublicAPITests.swift#adapterPreservesTransportAttestationRefreshRetry",
+      "Tests/LatchwayTests/ClientSessionTests.swift#testBufferedSendRetriesDPoPNonceOnceWithoutRefreshing",
+      "Tests/LatchwayTests/ClientSessionTests.swift#testFeatureTransportStreamingRetriesSessionExpiryOnceWithoutBufferingSuccess",
+      "Tests/LatchwayTests/ClientSessionTests.swift#testFeatureTransportStreamingRetriesDPoPNonceOnceWithoutRefresh"
+    ],
+    "FW-BEH-105": [
+      "Tests/LatchwaySwiftOpenAITests/LatchwaySwiftOpenAIHTTPClientTests.swift#fwBEH105And106OfficialServiceMapsQuotaWithRequestIDAndRemediation",
+      "Tests/LatchwayFoundationModelsTests/FoundationModelsPublicAPITests.swift#quotaAndUnavailableFeatureFailuresMapTruthfully"
+    ],
+    "FW-BEH-107": [
+      "Tests/LatchwaySwiftOpenAITests/LatchwaySwiftOpenAIHTTPClientTests.swift#fwBEH107FrameworkDebugBoundaryCannotObserveNativeTokens",
+      "Tests/LatchwayFoundationModelsTests/FoundationModelsPublicAPITests.swift#fwREQ103AndSEC104FoundationModelsNeverExportsProviderPlaceholder",
+      "Tests/LatchwayFoundationModelsTests/FoundationModelsPublicAPITests.swift#fwBEH107FoundationModelsExposesNoLoggerSurface",
+      "Tests/LatchwayTests/ComponentRequestSecurityTests.swift#testFWBEH107SharedNativeTransportHasNoLoggingCallSurface"
+    ],
+    "FW-SEC-102": [
+      "Tests/LatchwaySwiftOpenAITests/LatchwaySwiftOpenAIHTTPClientTests.swift#bufferedRequestUsesInjectedSwiftOpenAITransportWithoutCredentialExport",
+      "Tests/LatchwayFoundationModelsTests/FoundationModelsPublicAPITests.swift#fwREQ104AndSEC102FoundationModelsExposeNoCallerHeaderSurface",
+      "Tests/LatchwayTests/ComponentRequestSecurityTests.swift#testFWSEC102SinglePlaceholderIsRemovedAndDuplicateAuthorizationIsRejected",
+      "Tests/LatchwayTests/ComponentRequestSecurityTests.swift#testFWSEC102FoundationModelsDuplicateAuthorizationIsRejectedBeforeNativeDispatch"
+    ],
+    "FW-SEC-103": [
+      "Tests/LatchwaySwiftOpenAITests/LatchwaySwiftOpenAIHTTPClientTests.swift#bufferedRequestUsesInjectedSwiftOpenAITransportWithoutCredentialExport",
+      "Tests/LatchwayFoundationModelsTests/FoundationModelsPublicAPITests.swift#singleTurnGenerationUsesResponsesStreamingTransport",
+      "Tests/LatchwayTests/URLSessionTransportTests.swift#testFWSEC103RedirectDestinationIsRejectedBeforeCredentialRedispatch"
+    ]
+  }
+}

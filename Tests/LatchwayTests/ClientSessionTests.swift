@@ -748,6 +748,75 @@ final class ClientSessionTests: XCTestCase {
         XCTAssertEqual(resetCount, 1)
     }
 
+    // FW-AUTH-106
+    func testFWAUTH106ExplicitComponentRevocationLeavesRootAndSiblingStateActive() async throws {
+        let target = LatchwayComponentConfiguration.widget(
+            definitionID: "home_widget",
+            keychainAccessGroup: "TEAM123456.com.example.widget",
+            requestedFeatures: ["habit_assistant"]
+        )
+        let sibling = LatchwayComponentConfiguration.shareExtension(
+            definitionID: "share_extension",
+            keychainAccessGroup: "TEAM123456.com.example.share",
+            requestedFeatures: ["habit_summary"]
+        )
+        let thumbprint = String(repeating: "A", count: 43)
+        let componentStorage = ClientComponentMemoryStorage(credential: .init(
+            family: .init(id: "fam_01J00000000000000000000000", status: "active"),
+            component: .init(
+                id: "cmp_01J00000000000000000000000",
+                definitionID: target.definitionID,
+                kind: target.kind,
+                platform: "ios",
+                isRoot: false,
+                dpopJKT: thumbprint,
+                status: "active",
+                grantedFeatures: target.requestedFeatures
+            ),
+            requestedFeatures: target.requestedFeatures,
+            trustSource: .delegatedFromAttestedRoot,
+            trustExpiresAt: Date(timeIntervalSince1970: 1_700_007_200),
+            keyThumbprint: thumbprint,
+            rotationToken: String(repeating: "r", count: 64),
+            rotationExpiresAt: Date(timeIntervalSince1970: 1_700_007_200),
+            kind: .sessionRefreshToken
+        ))
+        let registry = ClientComponentRegistry(components: [target, sibling])
+        let retirer = ClientComponentStorageRetirer(storage: componentStorage)
+        let fixture = try await makeFixture(
+            componentRegistry: registry,
+            componentStateRetirer: retirer,
+            componentStorageOverride: { _ in componentStorage }
+        )
+
+        try await fixture.client.revokeComponent(target)
+
+        let counts = await fixture.server.counts()
+        let revokedComponentIDs = await fixture.server.revokedComponentIDs()
+        let retiredComponents = await retirer.attempts()
+        let remainingComponents = await registry.components()
+        let storedComponent = await componentStorage.load()
+        let storedRoot = try await fixture.storage.load()
+        XCTAssertEqual(counts.componentRevoke, 1)
+        XCTAssertEqual(revokedComponentIDs, ["cmp_01J00000000000000000000000"])
+        XCTAssertNil(storedComponent)
+        XCTAssertEqual(retiredComponents, [target.definitionID])
+        XCTAssertEqual(remainingComponents, [sibling])
+        XCTAssertNotNil(storedRoot, "Root session must remain active")
+
+        var rootRequest = URLRequest(
+            url: URL(string: "https://gateway.example.test/v1/responses")!
+        )
+        rootRequest.httpMethod = "POST"
+        let rootResponse = try await fixture.client.send(
+            rootRequest,
+            feature: "habit-assistant"
+        )
+        XCTAssertEqual(rootResponse.statusCode, 200)
+        let countsAfterRootRequest = await fixture.server.counts()
+        XCTAssertEqual(countsAfterRootRequest.dataPlane, 1)
+    }
+
     func testBufferedSendRetriesSessionExpiryOnceBeforeDispatch() async throws {
         let fixture = try await makeFixture(dataPlaneRejection: "session_expired")
         var request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
@@ -803,6 +872,7 @@ final class ClientSessionTests: XCTestCase {
         XCTAssertEqual(counts.refresh, 0)
     }
 
+    // FW-BEH-104
     func testBufferedSendRetriesDPoPNonceOnceWithoutRefreshing() async throws {
         let fixture = try await makeFixture(dataPlaneRejection: "dpop_nonce_required")
         var request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
@@ -815,6 +885,7 @@ final class ClientSessionTests: XCTestCase {
         XCTAssertEqual(counts.dataPlane, 2)
         XCTAssertEqual(counts.refresh, 0)
         XCTAssertEqual(requestIDs[0], requestIDs[1])
+        XCTAssertNotEqual(proofs[0], proofs[1], "Every retry must carry a fresh DPoP proof")
         XCTAssertEqual(try proofPayload(proofs[1])["nonce"] as? String, "nonce-fixture-0123456789abcdef")
     }
 
@@ -978,6 +1049,7 @@ final class ClientSessionTests: XCTestCase {
         XCTAssertNotNil(request.value(forHTTPHeaderField: "Authorization"))
     }
 
+    // FW-BEH-104
     func testFeatureTransportStreamingRetriesSessionExpiryOnceWithoutBufferingSuccess() async throws {
         StreamingRetryURLProtocol.reset(mode: .sessionExpiredThenSuccess)
         let fixture = try await makeFixture()
@@ -1002,9 +1074,15 @@ final class ClientSessionTests: XCTestCase {
         XCTAssertEqual(captured.requests.count, 2)
         XCTAssertEqual(captured.requests[0].requestID, captured.requests[1].requestID)
         XCTAssertNotEqual(captured.requests[0].authorization, captured.requests[1].authorization)
+        XCTAssertNotEqual(
+            captured.requests[0].proof,
+            captured.requests[1].proof,
+            "The refreshed-session retry must create a new proof"
+        )
         XCTAssertEqual(counts.refresh, 1)
     }
 
+    // FW-BEH-104
     func testFeatureTransportStreamingRetriesDPoPNonceOnceWithoutRefresh() async throws {
         StreamingRetryURLProtocol.reset(mode: .nonceRequiredThenSuccess)
         let fixture = try await makeFixture()
@@ -1026,6 +1104,11 @@ final class ClientSessionTests: XCTestCase {
         let counts = await fixture.server.counts()
         XCTAssertEqual(captured.requests.count, 2)
         XCTAssertEqual(captured.requests[0].requestID, captured.requests[1].requestID)
+        XCTAssertNotEqual(
+            captured.requests[0].proof,
+            captured.requests[1].proof,
+            "The nonce retry must create a new proof"
+        )
         XCTAssertEqual(counts.refresh, 0)
         XCTAssertEqual(
             try proofPayload(XCTUnwrap(captured.requests[1].proof))["nonce"] as? String,
@@ -1415,7 +1498,10 @@ final class ClientSessionTests: XCTestCase {
         baseURL: URL = URL(string: "https://gateway.example.test")!,
         rootKeychainPreflight: @escaping @Sendable () throws -> Void = {},
         componentRegistry: (any LatchwayComponentRegistry)? = nil,
-        componentStateRetirer: (any LatchwayComponentStateRetiring)? = nil
+        componentStateRetirer: (any LatchwayComponentStateRetiring)? = nil,
+        componentStorageOverride: (@Sendable (
+            LatchwayComponentConfiguration
+        ) -> any LatchwayComponentCredentialStorage)? = nil
     ) async throws -> Fixture {
         let raw = try decodeBase64URL("2ZFd1bc5bCB8zu8OEf5l7O9x_SxbsQNQMNn0si4NxxI")
         let key = try LatchwayDeterministicInstallationKey(rawPrivateKey: raw)
@@ -1482,7 +1568,8 @@ final class ClientSessionTests: XCTestCase {
             clock: clock,
             rootKeychainPreflight: rootKeychainPreflight,
             componentRegistry: componentRegistry,
-            componentStateRetirer: componentStateRetirer
+            componentStateRetirer: componentStateRetirer,
+            componentStorageOverride: componentStorageOverride
         )
         return Fixture(client: client, server: server, identity: identity, attestation: attestation, storage: storage, clock: clock)
     }
@@ -1557,6 +1644,7 @@ private actor SessionServerTransport: LatchwayHTTPTransport {
     private var quotaCount = 0
     private var revokeCount = 0
     private var familyRevokeCount = 0
+    private var componentRevokeCount = 0
     private var dataPlaneCount = 0
     private var proofs: [String] = []
     private var protectedProofs: [String] = []
@@ -1568,6 +1656,7 @@ private actor SessionServerTransport: LatchwayHTTPTransport {
     private var protectedRequestIDs: [String] = []
     private var protectedFrameworkIDs: [String] = []
     private var protectedFrameworkVersions: [String] = []
+    private var revokedComponents: [String] = []
     private let dataPlaneRejection: String?
     private let dataPlaneRetryable: Bool
     private let dataPlaneOperationID: String?
@@ -1611,6 +1700,12 @@ private actor SessionServerTransport: LatchwayHTTPTransport {
     func send(_ request: URLRequest) async throws -> LatchwayHTTPResponse {
         if delayNanoseconds > 0 { try await Task.sleep(nanoseconds: delayNanoseconds) }
         let path = request.url?.path ?? ""
+        let componentRevokePrefix = "/client/v1/installation-families/current/components/"
+        if request.httpMethod == "DELETE", path.hasPrefix(componentRevokePrefix) {
+            componentRevokeCount += 1
+            revokedComponents.append(String(path.dropFirst(componentRevokePrefix.count)))
+            return LatchwayHTTPResponse(statusCode: 204, headers: [:], body: Data())
+        }
         switch path {
         case "/client/v1/session-challenges":
             challengeCount += 1
@@ -1742,6 +1837,7 @@ private actor SessionServerTransport: LatchwayHTTPTransport {
         quota: Int,
         revoke: Int,
         familyRevoke: Int,
+        componentRevoke: Int,
         dataPlane: Int
     ) {
         (
@@ -1751,6 +1847,7 @@ private actor SessionServerTransport: LatchwayHTTPTransport {
             quotaCount,
             revokeCount,
             familyRevokeCount,
+            componentRevokeCount,
             dataPlaneCount
         )
     }
@@ -1765,6 +1862,7 @@ private actor SessionServerTransport: LatchwayHTTPTransport {
     func dataPlaneRequestIDs() -> [String] { protectedRequestIDs }
     func dataPlaneFrameworkIDs() -> [String] { protectedFrameworkIDs }
     func dataPlaneFrameworkVersions() -> [String] { protectedFrameworkVersions }
+    func revokedComponentIDs() -> [String] { revokedComponents }
 
     private func grant(status: Int, sequence: Int) -> LatchwayHTTPResponse {
         json(status: status, object: [
@@ -2149,6 +2247,40 @@ private actor ClientComponentRegistry: LatchwayComponentRegistry {
                 && $0.keychainAccessGroup == component.keychainAccessGroup
         }
     }
+}
+
+private actor ClientComponentMemoryStorage: LatchwayComponentCredentialStorage {
+    private var credential: LatchwayStoredComponentCredential?
+
+    init(credential: LatchwayStoredComponentCredential?) {
+        self.credential = credential
+    }
+
+    func load() -> LatchwayStoredComponentCredential? { credential }
+
+    func save(_ credential: LatchwayStoredComponentCredential) {
+        self.credential = credential
+    }
+
+    func clear() {
+        credential = nil
+    }
+}
+
+private actor ClientComponentStorageRetirer: LatchwayComponentStateRetiring {
+    private let storage: ClientComponentMemoryStorage
+    private var retired: [String] = []
+
+    init(storage: ClientComponentMemoryStorage) {
+        self.storage = storage
+    }
+
+    func retire(_ component: LatchwayComponentConfiguration) async throws {
+        retired.append(component.definitionID)
+        await storage.clear()
+    }
+
+    func attempts() -> [String] { retired }
 }
 
 private actor ClientComponentRetirer: LatchwayComponentStateRetiring {

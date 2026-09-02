@@ -148,6 +148,173 @@ final class ComponentRequestSecurityTests: XCTestCase {
         XCTAssertEqual(request.value(forHTTPHeaderField: "X-Latchway-Framework-Version"), "27.0.0")
     }
 
+    // FW-REQ-104
+    func testFWREQ104AllowedCustomHeadersSurviveNativePreparation() throws {
+        let frameworks: [(metadata: LatchwayFrameworkMetadata, expectedID: String)] = [
+            (.swiftOpenAI(version: "4.6.0"), "swift-openai"),
+            (.foundationModels(version: "27.0.0"), "foundation-models"),
+        ]
+
+        for testCase in frameworks {
+            var request = URLRequest(
+                url: URL(string: "https://gateway.example.test/base/v1/responses")!
+            )
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue("correlation-123", forHTTPHeaderField: "X-Application-Correlation-ID")
+            request.setValue("request-custom-12345678", forHTTPHeaderField: "X-Latchway-Request-ID")
+
+            try LatchwayComponentRequestSecurity.prepare(
+                &request,
+                configuration: configuration,
+                feature: "habit-assistant",
+                framework: testCase.metadata,
+                allowManagedPlaceholder: true
+            )
+            LatchwayComponentRequestSecurity.addMetadata(
+                to: &request,
+                configuration: configuration,
+                framework: testCase.metadata
+            )
+
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "application/json")
+            XCTAssertEqual(
+                request.value(forHTTPHeaderField: "X-Application-Correlation-ID"),
+                "correlation-123"
+            )
+            XCTAssertEqual(
+                request.value(forHTTPHeaderField: "X-Latchway-Request-ID"),
+                "request-custom-12345678"
+            )
+            XCTAssertEqual(
+                request.value(forHTTPHeaderField: "X-Latchway-Framework"),
+                testCase.expectedID
+            )
+        }
+    }
+
+    // FW-REQ-106
+    func testFWREQ106NativeURLRequestTimeoutSurvivesPreparationWhenExpressible() throws {
+        var request = URLRequest(
+            url: URL(string: "https://gateway.example.test/base/v1/responses")!
+        )
+        request.httpMethod = "POST"
+        request.timeoutInterval = 7.25
+
+        try LatchwayComponentRequestSecurity.prepare(
+            &request,
+            configuration: configuration,
+            feature: "habit-assistant",
+            framework: nil,
+            allowManagedPlaceholder: false
+        )
+
+        XCTAssertEqual(request.timeoutInterval, 7.25)
+    }
+
+    // FW-SEC-102
+    func testFWSEC102SinglePlaceholderIsRemovedAndDuplicateAuthorizationIsRejected() throws {
+        var single = URLRequest(
+            url: URL(string: "https://gateway.example.test/base/v1/responses")!
+        )
+        single.httpMethod = "POST"
+        single.setValue(
+            "Bearer \(LatchwayFeatureTransport.placeholderAPIKey)",
+            forHTTPHeaderField: "Authorization"
+        )
+
+        try LatchwayComponentRequestSecurity.prepare(
+            &single,
+            configuration: configuration,
+            feature: "habit-assistant",
+            framework: .swiftOpenAI(version: "4.6.0"),
+            allowManagedPlaceholder: true
+        )
+        XCTAssertNil(single.value(forHTTPHeaderField: "Authorization"))
+
+        var duplicate = URLRequest(
+            url: URL(string: "https://gateway.example.test/base/v1/responses")!
+        )
+        duplicate.httpMethod = "POST"
+        duplicate.setValue(
+            "Bearer \(LatchwayFeatureTransport.placeholderAPIKey)",
+            forHTTPHeaderField: "Authorization"
+        )
+        duplicate.addValue("Bearer attacker-supplied", forHTTPHeaderField: "Authorization")
+
+        XCTAssertThrowsError(
+            try LatchwayComponentRequestSecurity.prepare(
+                &duplicate,
+                configuration: configuration,
+                feature: "habit-assistant",
+                framework: .swiftOpenAI(version: "4.6.0"),
+                allowManagedPlaceholder: true
+            )
+        ) { error in
+            guard case LatchwayError.invalidRequest = error else {
+                XCTFail("Expected invalidRequest, got \(error)")
+                return
+            }
+        }
+    }
+
+    func testFWSEC102FoundationModelsDuplicateAuthorizationIsRejectedBeforeNativeDispatch() throws {
+        var request = URLRequest(
+            url: URL(string: "https://gateway.example.test/base/v1/responses")!
+        )
+        request.httpMethod = "POST"
+        request.setValue("Bearer caller-one", forHTTPHeaderField: "Authorization")
+        request.addValue("Bearer caller-two", forHTTPHeaderField: "Authorization")
+
+        XCTAssertThrowsError(
+            try LatchwayComponentRequestSecurity.prepare(
+                &request,
+                configuration: configuration,
+                feature: "habit-assistant",
+                framework: .foundationModels(version: "27.0.0"),
+                allowManagedPlaceholder: false
+            )
+        ) { error in
+            guard case LatchwayError.invalidRequest = error else {
+                XCTFail("Expected invalidRequest, got \(error)")
+                return
+            }
+        }
+    }
+
+    func testFWBEH107SharedNativeTransportHasNoLoggingCallSurface() throws {
+        let packageRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let sourceRoot = packageRoot.appendingPathComponent("Sources/Latchway")
+        let enumerator = try XCTUnwrap(FileManager.default.enumerator(
+            at: sourceRoot,
+            includingPropertiesForKeys: nil
+        ))
+        let loggingCallPatterns = [
+            #"(?<![A-Za-z0-9_])print\s*\("#,
+            #"(?<![A-Za-z0-9_])debugPrint\s*\("#,
+            #"(?<![A-Za-z0-9_])dump\s*\("#,
+            #"(?<![A-Za-z0-9_])Logger\s*[\.(]"#,
+            #"(?<![A-Za-z0-9_])os_log\s*\("#,
+            #"(?<![A-Za-z0-9_])NSLog\s*\("#,
+        ]
+        var scanned = 0
+
+        for case let fileURL as URL in enumerator where fileURL.pathExtension == "swift" {
+            let source = try String(contentsOf: fileURL, encoding: .utf8)
+            scanned += 1
+            for pattern in loggingCallPatterns {
+                XCTAssertNil(
+                    source.range(of: pattern, options: .regularExpression),
+                    "\(fileURL.path): \(pattern)"
+                )
+            }
+        }
+        XCTAssertGreaterThan(scanned, 0)
+    }
+
     private func prepare(_ request: inout URLRequest) throws {
         try LatchwayComponentRequestSecurity.prepare(
             &request,

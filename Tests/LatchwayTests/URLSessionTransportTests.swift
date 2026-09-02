@@ -22,6 +22,40 @@ final class URLSessionTransportTests: XCTestCase {
             XCTFail("Expected a stable LatchwayError, got \(type(of: error))")
         }
     }
+
+    // FW-SEC-103
+    func testFWSEC103RedirectDestinationIsRejectedBeforeCredentialRedispatch() async throws {
+        let originalURL = try XCTUnwrap(
+            URL(string: "https://gateway.example.test/v1/responses")
+        )
+        let session = URLSession(configuration: .ephemeral)
+        defer { session.invalidateAndCancel() }
+        let task = session.dataTask(with: originalURL)
+        let response = try XCTUnwrap(HTTPURLResponse(
+            url: originalURL,
+            statusCode: 307,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Location": "/v1/responses/redirected"]
+        ))
+        let delegate = LatchwayRedirectRejectingDelegate()
+
+        for destination in [
+            "https://gateway.example.test/v1/responses/redirected",
+            "https://attacker.example/v1/responses",
+        ] {
+            let redirected = URLRequest(url: try XCTUnwrap(URL(string: destination)))
+            let followed = await withCheckedContinuation { continuation in
+                delegate.urlSession(
+                    session,
+                    task: task,
+                    willPerformHTTPRedirection: response,
+                    newRequest: redirected,
+                    completionHandler: { continuation.resume(returning: $0) }
+                )
+            }
+            XCTAssertNil(followed, "Latchway must never redispatch a URL-bound DPoP proof")
+        }
+    }
 }
 
 private final class OversizedResponseURLProtocol: URLProtocol, @unchecked Sendable {

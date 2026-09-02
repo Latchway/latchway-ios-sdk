@@ -43,6 +43,96 @@ struct FoundationModelsPublicAPITests {
         #expect(input.map { $0["content"] as? String } == ["Say hello"])
     }
 
+    // FW-REQ-103, FW-SEC-104
+    @Test func fwREQ103AndSEC104FoundationModelsNeverExportsProviderPlaceholder() async throws {
+        guard #available(iOS 27.0, macOS 27.0, visionOS 27.0, watchOS 27.0, *) else { return }
+        FoundationModelsURLProtocol.reset(stubs: [.response(
+            statusCode: 200,
+            headers: ["Content-Type": "text/event-stream"],
+            body: responsesStream(deltas: ["credential safe"])
+        )])
+        let frameworkRecorder = FoundationModelsRequestRecorder()
+        let accessToken = "foundation-models-native-access-token"
+        let refreshToken = "foundation-models-native-refresh-token"
+        let proof = "foundation-models-native-dpop-proof"
+        let fixture = makeTransport(authorize: { request in
+            await frameworkRecorder.record(request)
+            var authorized = request
+            authorized.setValue("DPoP \(accessToken)", forHTTPHeaderField: "Authorization")
+            authorized.setValue(proof, forHTTPHeaderField: "DPoP")
+            return authorized
+        })
+        let model = LatchwayLanguageModel(configuration: .init(transport: fixture.transport))
+
+        let response = try await LanguageModelSession(model: model).respond(to: "Stay native")
+
+        #expect(response.content == "credential safe")
+        let frameworkRequest = try #require(await frameworkRecorder.requests.first)
+        let frameworkVisible = [
+            frameworkRequest.allHTTPHeaderFields?.description ?? "",
+            frameworkRequest.httpBody.flatMap { String(data: $0, encoding: .utf8) } ?? "",
+        ].joined(separator: "\n")
+        #expect(!frameworkVisible.contains(LatchwayFeatureTransport.placeholderAPIKey))
+        #expect(!frameworkVisible.contains(accessToken))
+        #expect(!frameworkVisible.contains(refreshToken))
+        #expect(!frameworkVisible.contains(proof))
+        #expect(frameworkRequest.value(forHTTPHeaderField: "Authorization") == nil)
+        #expect(frameworkRequest.value(forHTTPHeaderField: "api-key") == nil)
+        #expect(frameworkRequest.value(forHTTPHeaderField: "x-api-key") == nil)
+
+        let dispatched = try #require(FoundationModelsURLProtocol.snapshot().requests.first)
+        #expect(dispatched.value(forHTTPHeaderField: "Authorization") == "DPoP \(accessToken)")
+        #expect(dispatched.value(forHTTPHeaderField: "DPoP") == proof)
+        let dispatchedHeaders = dispatched.allHTTPHeaderFields?.description ?? ""
+        #expect(!dispatchedHeaders.contains(LatchwayFeatureTransport.placeholderAPIKey))
+        #expect(!dispatchedHeaders.contains(refreshToken))
+    }
+
+    // FW-REQ-104 and FW-SEC-102 public-path half: Apple's session API reaches
+    // this custom model with no caller header or Authorization surface. The
+    // shared native transport tests cover allowed-header preservation and
+    // duplicate rejection before dispatch.
+    @Test func fwREQ104AndSEC102FoundationModelsExposeNoCallerHeaderSurface() async throws {
+        guard #available(iOS 27.0, macOS 27.0, visionOS 27.0, watchOS 27.0, *) else { return }
+        FoundationModelsURLProtocol.reset(stubs: [.response(
+            statusCode: 200,
+            headers: ["Content-Type": "text/event-stream"],
+            body: responsesStream(deltas: ["header safe"])
+        )])
+        let fixture = makeTransport()
+        let configuration = LatchwayLanguageModel.Configuration(transport: fixture.transport)
+        let model = LatchwayLanguageModel(configuration: configuration)
+
+        _ = try await LanguageModelSession(model: model).respond(to: "No header API")
+
+        let request = try #require(await fixture.recorder.requests.first)
+        let names = Set((request.allHTTPHeaderFields ?? [:]).keys.map { $0.lowercased() })
+        #expect(names == ["accept", "content-type"])
+        #expect(request.value(forHTTPHeaderField: "Authorization") == nil)
+        #expect(request.value(forHTTPHeaderField: "api-key") == nil)
+        #expect(request.value(forHTTPHeaderField: "x-api-key") == nil)
+        let configurationFields = Set(
+            Mirror(reflecting: configuration).children.compactMap(\.label)
+        )
+        #expect(configurationFields == ["identity", "transport"])
+    }
+
+    // FW-BEH-107 adapter half: there is no logger or debug hook; the shared
+    // native transport test separately locks the no-logging boundary.
+    @Test func fwBEH107FoundationModelsExposesNoLoggerSurface() throws {
+        let packageRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let sourceURL = packageRoot
+            .appendingPathComponent("Sources/LatchwayFoundationModels/LatchwayFoundationModels.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        for loggingCall in ["print(", "debugPrint(", "dump(", "Logger(", "Logger.", "os_log(", "NSLog("] {
+            #expect(!source.contains(loggingCall))
+        }
+    }
+
     @Test func multiTurnTranscriptPreservesUserAndAssistantHistory() async throws {
         guard #available(iOS 27.0, macOS 27.0, visionOS 27.0, watchOS 27.0, *) else { return }
         FoundationModelsURLProtocol.reset(stubs: [
@@ -139,6 +229,7 @@ struct FoundationModelsPublicAPITests {
         #expect(FoundationModelsURLProtocol.snapshot().requests.isEmpty)
     }
 
+    // FW-BEH-105, FW-BEH-106
     @Test func quotaAndUnavailableFeatureFailuresMapTruthfully() async throws {
         guard #available(iOS 27.0, macOS 27.0, visionOS 27.0, watchOS 27.0, *) else { return }
         FoundationModelsURLProtocol.reset(stubs: [
@@ -163,10 +254,14 @@ struct FoundationModelsPublicAPITests {
             _ = try await LanguageModelSession(model: model).respond(to: "quota")
             Issue.record("HTTP 429 must map to Foundation Models rateLimited")
         } catch let error as LanguageModelError {
-            guard case .rateLimited = error else {
+            guard case let .rateLimited(context) = error else {
                 Issue.record("Unexpected quota error: \(error)")
                 return
             }
+            #expect(
+                context.metadata["request_id"] as? String
+                    == "request-quota-12345678"
+            )
         }
 
         do {

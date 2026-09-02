@@ -61,7 +61,7 @@ public struct LatchwaySwiftOpenAIHTTPClient: HTTPClient, Sendable {
     public func data(for request: HTTPRequest) async throws -> (Data, HTTPResponse) {
         let response = try await transport.send(Self.urlRequest(from: request))
         return (
-            response.body,
+            Self.swiftOpenAIResponseBody(response),
             HTTPResponse(statusCode: response.statusCode, headers: response.headers)
         )
     }
@@ -106,6 +106,62 @@ public struct LatchwaySwiftOpenAIHTTPClient: HTTPClient, Sendable {
             result.setValue(value, forHTTPHeaderField: name)
         }
         return result
+    }
+
+    /// SwiftOpenAI only retains `error.message` for unsuccessful buffered
+    /// responses. Translate a strictly bounded canonical Latchway problem into
+    /// that framework envelope so callers keep the safe code, request ID, and
+    /// remediation URL instead of receiving only `status code 429`.
+    private static func swiftOpenAIResponseBody(_ response: LatchwayHTTPResponse) -> Data {
+        guard (400 ... 599).contains(response.statusCode),
+              response.body.count <= 65_536,
+              mediaType(response.header("Content-Type")) == "application/problem+json",
+              let object = try? JSONSerialization.jsonObject(with: response.body) as? [String: Any],
+              let type = object["type"] as? String,
+              let documentationURL = object["documentation_url"] as? String,
+              let title = object["title"] as? String,
+              (1 ... 256).contains(title.utf8.count),
+              let status = object["status"] as? Int,
+              status == response.statusCode,
+              let detail = object["detail"] as? String,
+              (1 ... 2_048).contains(detail.utf8.count),
+              let code = object["code"] as? String,
+              code.range(of: "^[a-z][a-z0-9_]{0,62}$", options: .regularExpression) != nil,
+              let requestID = object["request_id"] as? String,
+              (8 ... 128).contains(requestID.utf8.count),
+              requestID.range(
+                  of: "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+                  options: .regularExpression
+              ) != nil,
+              response.header("X-Latchway-Request-ID") == nil
+                  || response.header("X-Latchway-Request-ID") == requestID,
+              object["retryable"] is Bool
+        else { return response.body }
+
+        let errorCode = LatchwayErrorCode(rawValue: code)
+        let canonicalDocumentationURL = errorCode.documentationURL.absoluteString
+        guard type == canonicalDocumentationURL,
+              documentationURL == canonicalDocumentationURL
+        else { return response.body }
+
+        let message = "Latchway \(code) (request \(requestID)). See \(canonicalDocumentationURL)."
+        let envelope: [String: Any] = [
+            "error": [
+                "message": message,
+                "type": "latchway_error",
+                "code": code,
+            ],
+        ]
+        return (try? JSONSerialization.data(withJSONObject: envelope, options: [.sortedKeys]))
+            ?? response.body
+    }
+
+    private static func mediaType(_ value: String?) -> String? {
+        value?
+            .split(separator: ";", maxSplits: 1, omittingEmptySubsequences: true)
+            .first?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
     }
 
     /// `AsyncThrowingStream` does not have an awaiting yield. A one-element,

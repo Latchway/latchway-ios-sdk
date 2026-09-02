@@ -1,43 +1,199 @@
 {
-  "schema_version": 1,
-  "manifest_sha256": "32cd1df9365e04cc684fa63ac0798feec37f44ef1a95898f91935108bb58ef9a",
+  "schema_version": 2,
+  "manifest_sha256": "24d09b398d0ae1afd265ff77683847874110636174a4a313ebe62648cb33bbed",
   "repository": "latchway-ios-sdk",
   "integrations": [
     {
       "id": "swift-openai",
       "support": "experimental",
       "pass": {
-        "FW-AUTH-001": ["Tests/LatchwayTests/ComponentSessionTests.swift#testExtensionConsumesOnlyItsProvisioningGrantAndAddsFrameworkMetadata"],
-        "FW-REQ-001": ["Tests/LatchwaySwiftOpenAITests/LatchwaySwiftOpenAIHTTPClientTests.swift#serviceFactoryPreservesGatewayBasePath", "Tests/LatchwaySwiftOpenAITests/LatchwaySwiftOpenAIHTTPClientTests.swift#bufferedRequestUsesInjectedSwiftOpenAITransportWithoutCredentialExport"],
-        "FW-REQ-002": ["Tests/LatchwaySwiftOpenAITests/LatchwaySwiftOpenAIHTTPClientTests.swift#officialServicePreservesChatToolsStructuredOutputAndEmbeddings"],
-        "FW-REQ-003": ["Tests/LatchwaySwiftOpenAITests/LatchwaySwiftOpenAIHTTPClientTests.swift#officialServicePreservesChatToolsStructuredOutputAndEmbeddings"],
-        "FW-REQ-004": ["Tests/LatchwaySwiftOpenAITests/LatchwaySwiftOpenAIHTTPClientTests.swift#bufferedRequestUsesInjectedSwiftOpenAITransportWithoutCredentialExport"],
-        "FW-REQ-005": ["Tests/LatchwaySwiftOpenAITests/LatchwaySwiftOpenAIHTTPClientTests.swift#officialServiceDecodesStreamingChatThroughInjectedByteTransport", "Tests/LatchwaySwiftOpenAITests/LatchwaySwiftOpenAIHTTPClientTests.swift#streamingAdapterPreservesEveryLineWithBoundedBuffering"],
-        "FW-BEH-001": ["Tests/LatchwaySwiftOpenAITests/LatchwaySwiftOpenAIHTTPClientTests.swift#officialServicePreservesChatToolsStructuredOutputAndEmbeddings"],
-        "FW-BEH-002": ["Tests/LatchwaySwiftOpenAITests/LatchwaySwiftOpenAIHTTPClientTests.swift#officialServicePreservesChatToolsStructuredOutputAndEmbeddings"],
-        "FW-SEC-001": ["Tests/LatchwaySwiftOpenAITests/LatchwaySwiftOpenAIHTTPClientTests.swift#bufferedRequestUsesInjectedSwiftOpenAITransportWithoutCredentialExport"]
+        "FW-AUTH-001": [
+          "Tests/LatchwayTests/ComponentSessionTests.swift#testExtensionConsumesOnlyItsProvisioningGrantAndAddsFrameworkMetadata"
+        ],
+        "FW-REQ-001": [
+          "Tests/LatchwaySwiftOpenAITests/LatchwaySwiftOpenAIHTTPClientTests.swift#serviceFactoryPreservesGatewayBasePath",
+          "Tests/LatchwaySwiftOpenAITests/LatchwaySwiftOpenAIHTTPClientTests.swift#bufferedRequestUsesInjectedSwiftOpenAITransportWithoutCredentialExport"
+        ],
+        "FW-REQ-002": [
+          "Tests/LatchwaySwiftOpenAITests/LatchwaySwiftOpenAIHTTPClientTests.swift#officialServicePreservesChatToolsStructuredOutputAndEmbeddings"
+        ],
+        "FW-REQ-003": [
+          "Tests/LatchwaySwiftOpenAITests/LatchwaySwiftOpenAIHTTPClientTests.swift#officialServicePreservesChatToolsStructuredOutputAndEmbeddings"
+        ],
+        "FW-REQ-004": [
+          "Tests/LatchwaySwiftOpenAITests/LatchwaySwiftOpenAIHTTPClientTests.swift#bufferedRequestUsesInjectedSwiftOpenAITransportWithoutCredentialExport"
+        ],
+        "FW-REQ-005": [
+          "Tests/LatchwaySwiftOpenAITests/LatchwaySwiftOpenAIHTTPClientTests.swift#officialServiceDecodesStreamingChatThroughInjectedByteTransport",
+          "Tests/LatchwaySwiftOpenAITests/LatchwaySwiftOpenAIHTTPClientTests.swift#streamingAdapterPreservesEveryLineWithBoundedBuffering"
+        ],
+        "FW-BEH-001": [
+          "Tests/LatchwaySwiftOpenAITests/LatchwaySwiftOpenAIHTTPClientTests.swift#officialServicePreservesChatToolsStructuredOutputAndEmbeddings"
+        ],
+        "FW-BEH-002": [
+          "Tests/LatchwaySwiftOpenAITests/LatchwaySwiftOpenAIHTTPClientTests.swift#officialServicePreservesChatToolsStructuredOutputAndEmbeddings"
+        ],
+        "FW-SEC-001": [
+          "Tests/LatchwaySwiftOpenAITests/LatchwaySwiftOpenAIHTTPClientTests.swift#bufferedRequestUsesInjectedSwiftOpenAITransportWithoutCredentialExport"
+        ],
+        "FW-AUTH-101": [
+          "Conformance/common-framework-evidence.json#FW-AUTH-101"
+        ],
+        "FW-AUTH-102": [
+          "Conformance/common-framework-evidence.json#FW-AUTH-102"
+        ],
+        "FW-AUTH-103": [
+          "Conformance/common-framework-evidence.json#FW-AUTH-103"
+        ],
+        "FW-AUTH-104": [
+          "Conformance/common-framework-evidence.json#FW-AUTH-104"
+        ],
+        "FW-AUTH-105": [
+          "Conformance/common-framework-evidence.json#FW-AUTH-105"
+        ],
+        "FW-AUTH-106": [
+          "Conformance/common-framework-evidence.json#FW-AUTH-106"
+        ],
+        "FW-REQ-101": [
+          "Conformance/common-framework-evidence.json#FW-REQ-101"
+        ],
+        "FW-REQ-102": [
+          "Conformance/common-framework-evidence.json#FW-REQ-102"
+        ],
+        "FW-REQ-103": [
+          "Conformance/common-framework-evidence.json#FW-REQ-103"
+        ],
+        "FW-REQ-107": [
+          "Conformance/common-framework-evidence.json#FW-REQ-107"
+        ],
+        "FW-REQ-108": [
+          "Conformance/common-framework-evidence.json#FW-REQ-108"
+        ],
+        "FW-BEH-101": [
+          "Conformance/common-framework-evidence.json#FW-BEH-101"
+        ],
+        "FW-BEH-102": [
+          "Conformance/common-framework-evidence.json#FW-BEH-102"
+        ],
+        "FW-BEH-103": [
+          "Conformance/common-framework-evidence.json#FW-BEH-103"
+        ],
+        "FW-SEC-101": [
+          "Conformance/common-framework-evidence.json#FW-SEC-101"
+        ],
+        "FW-SEC-104": [
+          "Conformance/common-framework-evidence.json#FW-SEC-104"
+        ],
+        "FW-REQ-104": [
+          "Conformance/common-framework-evidence.json#FW-REQ-104"
+        ],
+        "FW-BEH-104": [
+          "Conformance/common-framework-evidence.json#FW-BEH-104"
+        ],
+        "FW-BEH-107": [
+          "Conformance/common-framework-evidence.json#FW-BEH-107"
+        ],
+        "FW-SEC-102": [
+          "Conformance/common-framework-evidence.json#FW-SEC-102"
+        ],
+        "FW-SEC-103": [
+          "Conformance/common-framework-evidence.json#FW-SEC-103"
+        ],
+        "FW-REQ-105": [
+          "Conformance/common-framework-evidence.json#FW-REQ-105"
+        ],
+        "FW-REQ-109": [
+          "Conformance/common-framework-evidence.json#FW-REQ-109"
+        ],
+        "FW-REQ-006": [
+          "Tests/LatchwaySwiftOpenAITests/LatchwaySwiftOpenAIHTTPClientTests.swift#cancellingOfficialStreamConsumerStopsUnderlyingNativeLoad"
+        ],
+        "FW-BEH-105": [
+          "Conformance/common-framework-evidence.json#FW-BEH-105"
+        ],
+        "FW-BEH-106": [
+          "Conformance/common-framework-evidence.json#FW-BEH-106"
+        ]
       },
       "not_applicable": [
         {
-          "case_ids": ["FW-REQ-006"],
-          "reason": "Cancellation is conditional in the registry: the injected byte transport is cancellation-aware, but no exact SwiftOpenAI API-level cancellation case is claimed yet.",
-          "evidence": ["Tests/LatchwaySwiftOpenAITests/LatchwaySwiftOpenAIHTTPClientTests.swift#streamingAdapterPreservesEveryLineWithBoundedBuffering"]
-        },
-        {
-          "case_ids": ["FW-REQ-007"],
+          "case_ids": [
+            "FW-REQ-007"
+          ],
           "reason": "SwiftOpenAI 4.6.0 does not expose a framework timeout through its HTTPClient protocol; caller task cancellation remains the supported control."
         },
         {
-          "case_ids": ["FW-BEH-003", "FW-BEH-004", "FW-BEH-005", "FW-BEH-006", "FW-SEC-002", "FW-SEC-003"],
+          "case_ids": [
+            "FW-BEH-003",
+            "FW-BEH-004",
+            "FW-BEH-005",
+            "FW-BEH-006",
+            "FW-SEC-002",
+            "FW-SEC-003"
+          ],
           "reason": "The current experimental adapter suite has no exact SwiftOpenAI API-level assertion for these semantics; underlying Latchway transport tests are deliberately not promoted as framework evidence."
         },
         {
-          "case_ids": ["FW-SEC-004"],
+          "case_ids": [
+            "FW-SEC-004"
+          ],
           "reason": "Global fetch is a JavaScript runtime concept; the Swift adapter uses only its injected native HTTPClient."
         },
         {
-          "case_ids": ["FW-OAI-001", "FW-OAI-002", "FW-VAI-001", "FW-VAI-002", "FW-VAI-003", "FW-VAI-004", "FW-LC-001", "FW-LC-002", "FW-LC-003"],
+          "case_ids": [
+            "FW-OAI-001",
+            "FW-OAI-002",
+            "FW-VAI-001",
+            "FW-VAI-002",
+            "FW-VAI-003",
+            "FW-VAI-004",
+            "FW-LC-001",
+            "FW-LC-002",
+            "FW-LC-003"
+          ],
           "reason": "These cases describe JavaScript OpenAI, Vercel AI, and LangChain adapter APIs rather than SwiftOpenAI."
+        },
+        {
+          "case_ids": [
+            "FW-REQ-106"
+          ],
+          "reason": "SwiftOpenAI 4.6.0 exposes no framework timeout through its injected HTTPClient protocol; caller task cancellation is the supported control.",
+          "evidence": [
+            "docs/framework-adapters.md"
+          ]
+        },
+        {
+          "case_ids": [
+            "FW-SEC-106"
+          ],
+          "reason": "SwiftOpenAI is a native Swift integration and has no React Native JavaScript bridge.",
+          "evidence": [
+            "AGENTS.md"
+          ]
+        }
+      ],
+      "pending": [
+        {
+          "case_ids": [
+            "FW-AUTH-107",
+            "FW-AUTH-108",
+            "FW-AUTH-109"
+          ],
+          "reason": "DPoP replay, wrong-URI, and wrong-method rejection require a real gateway enforcement boundary; local vector validation is not framework rejection evidence.",
+          "blocker": "hosted",
+          "evidence": [
+            "Tests/ConformanceTests/DPoPContractVectorTests.swift"
+          ]
+        },
+        {
+          "case_ids": [
+            "FW-SEC-105"
+          ],
+          "reason": "Secure Enclave private-key residency is proven only by protected physical-device evidence, not by the local source suite.",
+          "blocker": "protected_device",
+          "evidence": [
+            "Examples/AppAttestConformance/Sources/AppAttestConformanceApp.swift"
+          ]
         }
       ]
     },
@@ -45,50 +201,289 @@
       "id": "foundation-models",
       "support": "experimental",
       "pass": {
-        "FW-AUTH-001": ["Tests/LatchwayTests/ComponentRequestSecurityTests.swift#testFoundationModelsFrameworkMetadataUsesCanonicalHeaderPair", "Tests/LatchwayFoundationModelsTests/FoundationModelsPublicAPITests.swift#singleTurnGenerationUsesResponsesStreamingTransport", "IntegrationTests/FoundationModelsConformance/Project.swift#FoundationModelsConformanceTests"],
-        "FW-REQ-001": ["Tests/LatchwayFoundationModelsTests/FoundationModelsPublicAPITests.swift#singleTurnGenerationUsesResponsesStreamingTransport"],
-        "FW-REQ-004": ["Tests/LatchwayFoundationModelsTests/FoundationModelsPublicAPITests.swift#multiTurnTranscriptPreservesUserAndAssistantHistory"],
-        "FW-REQ-005": ["Tests/LatchwayFoundationModelsTests/FoundationModelsPublicAPITests.swift#streamingProducesIncrementalTextAndUsage"],
-        "FW-REQ-006": ["Tests/LatchwayFoundationModelsTests/FoundationModelsPublicAPITests.swift#cancellationStopsTheNativeStream"],
-        "FW-BEH-003": ["Tests/LatchwayFoundationModelsTests/FoundationModelsPublicAPITests.swift#quotaAndUnavailableFeatureFailuresMapTruthfully"],
-        "FW-BEH-004": ["Tests/LatchwayFoundationModelsTests/FoundationModelsPublicAPITests.swift#quotaAndUnavailableFeatureFailuresMapTruthfully"],
-        "FW-BEH-005": ["Tests/LatchwayFoundationModelsTests/FoundationModelsPublicAPITests.swift#adapterPreservesTransportAttestationRefreshRetry"],
-        "FW-BEH-006": ["Tests/LatchwayFoundationModelsTests/FoundationModelsPublicAPITests.swift#adapterPreservesTransportAttestationRefreshRetry"],
-        "FW-SEC-002": ["Tests/LatchwayTests/ComponentRequestSecurityTests.swift#testStructuredRoutesAreExactPostOnlyAndAllowOrdinaryQuery", "Tests/LatchwayTests/ComponentRequestSecurityTests.swift#testOpaqueRouteRejectsFeatureConfusionAndDestinationAliases"],
-        "FW-SEC-003": ["Tests/LatchwayFoundationModelsTests/FoundationModelsPublicAPITests.swift#errorDescriptionsAreSafe"]
+        "FW-AUTH-001": [
+          "Tests/LatchwayTests/ComponentRequestSecurityTests.swift#testFoundationModelsFrameworkMetadataUsesCanonicalHeaderPair",
+          "Tests/LatchwayFoundationModelsTests/FoundationModelsPublicAPITests.swift#singleTurnGenerationUsesResponsesStreamingTransport",
+          "IntegrationTests/FoundationModelsConformance/Project.swift#FoundationModelsConformanceTests"
+        ],
+        "FW-REQ-001": [
+          "Tests/LatchwayFoundationModelsTests/FoundationModelsPublicAPITests.swift#singleTurnGenerationUsesResponsesStreamingTransport"
+        ],
+        "FW-REQ-004": [
+          "Tests/LatchwayFoundationModelsTests/FoundationModelsPublicAPITests.swift#multiTurnTranscriptPreservesUserAndAssistantHistory"
+        ],
+        "FW-REQ-005": [
+          "Tests/LatchwayFoundationModelsTests/FoundationModelsPublicAPITests.swift#streamingProducesIncrementalTextAndUsage"
+        ],
+        "FW-REQ-006": [
+          "Tests/LatchwayFoundationModelsTests/FoundationModelsPublicAPITests.swift#cancellationStopsTheNativeStream"
+        ],
+        "FW-BEH-003": [
+          "Tests/LatchwayFoundationModelsTests/FoundationModelsPublicAPITests.swift#quotaAndUnavailableFeatureFailuresMapTruthfully"
+        ],
+        "FW-BEH-004": [
+          "Tests/LatchwayFoundationModelsTests/FoundationModelsPublicAPITests.swift#quotaAndUnavailableFeatureFailuresMapTruthfully"
+        ],
+        "FW-BEH-005": [
+          "Tests/LatchwayFoundationModelsTests/FoundationModelsPublicAPITests.swift#adapterPreservesTransportAttestationRefreshRetry"
+        ],
+        "FW-BEH-006": [
+          "Tests/LatchwayFoundationModelsTests/FoundationModelsPublicAPITests.swift#adapterPreservesTransportAttestationRefreshRetry"
+        ],
+        "FW-SEC-002": [
+          "Tests/LatchwayTests/ComponentRequestSecurityTests.swift#testStructuredRoutesAreExactPostOnlyAndAllowOrdinaryQuery",
+          "Tests/LatchwayTests/ComponentRequestSecurityTests.swift#testOpaqueRouteRejectsFeatureConfusionAndDestinationAliases"
+        ],
+        "FW-SEC-003": [
+          "Tests/LatchwayFoundationModelsTests/FoundationModelsPublicAPITests.swift#errorDescriptionsAreSafe"
+        ],
+        "FW-AUTH-101": [
+          "Conformance/common-framework-evidence.json#FW-AUTH-101"
+        ],
+        "FW-AUTH-102": [
+          "Conformance/common-framework-evidence.json#FW-AUTH-102"
+        ],
+        "FW-AUTH-103": [
+          "Conformance/common-framework-evidence.json#FW-AUTH-103"
+        ],
+        "FW-AUTH-104": [
+          "Conformance/common-framework-evidence.json#FW-AUTH-104"
+        ],
+        "FW-AUTH-105": [
+          "Conformance/common-framework-evidence.json#FW-AUTH-105"
+        ],
+        "FW-AUTH-106": [
+          "Conformance/common-framework-evidence.json#FW-AUTH-106"
+        ],
+        "FW-REQ-101": [
+          "Conformance/common-framework-evidence.json#FW-REQ-101"
+        ],
+        "FW-REQ-102": [
+          "Conformance/common-framework-evidence.json#FW-REQ-102"
+        ],
+        "FW-REQ-105": [
+          "Conformance/common-framework-evidence.json#FW-REQ-105"
+        ],
+        "FW-REQ-107": [
+          "Conformance/common-framework-evidence.json#FW-REQ-107"
+        ],
+        "FW-REQ-108": [
+          "Conformance/common-framework-evidence.json#FW-REQ-108"
+        ],
+        "FW-REQ-109": [
+          "Conformance/common-framework-evidence.json#FW-REQ-109"
+        ],
+        "FW-BEH-103": [
+          "Conformance/common-framework-evidence.json#FW-BEH-103"
+        ],
+        "FW-BEH-106": [
+          "Conformance/common-framework-evidence.json#FW-BEH-106"
+        ],
+        "FW-SEC-101": [
+          "Conformance/common-framework-evidence.json#FW-SEC-101"
+        ],
+        "FW-BEH-104": [
+          "Conformance/common-framework-evidence.json#FW-BEH-104"
+        ],
+        "FW-BEH-105": [
+          "Conformance/common-framework-evidence.json#FW-BEH-105"
+        ],
+        "FW-SEC-103": [
+          "Conformance/common-framework-evidence.json#FW-SEC-103"
+        ],
+        "FW-REQ-103": [
+          "Conformance/common-framework-evidence.json#FW-REQ-103"
+        ],
+        "FW-SEC-104": [
+          "Conformance/common-framework-evidence.json#FW-SEC-104"
+        ],
+        "FW-REQ-104": [
+          "Conformance/common-framework-evidence.json#FW-REQ-104"
+        ],
+        "FW-SEC-102": [
+          "Conformance/common-framework-evidence.json#FW-SEC-102"
+        ],
+        "FW-BEH-107": [
+          "Conformance/common-framework-evidence.json#FW-BEH-107"
+        ]
       },
       "not_applicable": [
         {
-          "case_ids": ["FW-REQ-002", "FW-REQ-003"],
+          "case_ids": [
+            "FW-REQ-002",
+            "FW-REQ-003"
+          ],
           "reason": "The Foundation Models registry row supports Responses text generation, not Chat Completions or embeddings."
         },
         {
-          "case_ids": ["FW-REQ-007"],
+          "case_ids": [
+            "FW-REQ-007"
+          ],
           "reason": "The Foundation Models session API has no per-request timeout surface; task cancellation is covered instead."
         },
         {
-          "case_ids": ["FW-BEH-001", "FW-BEH-002"],
+          "case_ids": [
+            "FW-BEH-001",
+            "FW-BEH-002"
+          ],
           "reason": "Tools and guided structured generation are explicitly unsupported and fail before dispatch in the experimental v1 adapter."
         },
         {
-          "case_ids": ["FW-SEC-001", "FW-SEC-004"],
+          "case_ids": [
+            "FW-SEC-001",
+            "FW-SEC-004"
+          ],
           "reason": "Foundation Models accepts neither a provider API key nor a JavaScript global fetch implementation."
         },
         {
-          "case_ids": ["FW-OAI-001", "FW-OAI-002", "FW-VAI-001", "FW-VAI-002", "FW-VAI-003", "FW-VAI-004", "FW-LC-001", "FW-LC-002", "FW-LC-003"],
+          "case_ids": [
+            "FW-OAI-001",
+            "FW-OAI-002",
+            "FW-VAI-001",
+            "FW-VAI-002",
+            "FW-VAI-003",
+            "FW-VAI-004",
+            "FW-LC-001",
+            "FW-LC-002",
+            "FW-LC-003"
+          ],
           "reason": "These cases describe JavaScript framework adapter APIs rather than Apple Foundation Models."
+        },
+        {
+          "case_ids": [
+            "FW-REQ-106"
+          ],
+          "reason": "The Foundation Models session API has no per-request timeout surface; caller task cancellation is the supported control.",
+          "evidence": [
+            "docs/framework-adapters.md"
+          ]
+        },
+        {
+          "case_ids": [
+            "FW-BEH-101",
+            "FW-BEH-102"
+          ],
+          "reason": "Foundation Models tool calling and guided structured generation are explicitly unsupported in the v1 adapter and fail before dispatch.",
+          "evidence": [
+            "Tests/LatchwayFoundationModelsTests/FoundationModelsPublicAPITests.swift#guidedGenerationAndToolsFailExplicitlyWithoutDispatch"
+          ]
+        },
+        {
+          "case_ids": [
+            "FW-SEC-106"
+          ],
+          "reason": "Foundation Models is a native Swift integration and has no React Native JavaScript bridge.",
+          "evidence": [
+            "AGENTS.md"
+          ]
+        }
+      ],
+      "pending": [
+        {
+          "case_ids": [
+            "FW-AUTH-107",
+            "FW-AUTH-108",
+            "FW-AUTH-109"
+          ],
+          "reason": "DPoP replay, wrong-URI, and wrong-method rejection require a real gateway enforcement boundary; local vector validation is not framework rejection evidence.",
+          "blocker": "hosted",
+          "evidence": [
+            "Tests/ConformanceTests/DPoPContractVectorTests.swift"
+          ]
+        },
+        {
+          "case_ids": [
+            "FW-SEC-105"
+          ],
+          "reason": "Secure Enclave private-key residency is proven only by protected physical-device evidence, not by the local source suite.",
+          "blocker": "protected_device",
+          "evidence": [
+            "Examples/AppAttestConformance/Sources/AppAttestConformanceApp.swift"
+          ]
         }
       ]
     },
     {
       "id": "macpaw-openai",
       "support": "unsupported",
-      "unsupported_evidence": ["IntegrationTests/MacPawOpenAITransportSpike/Sources/MacPawOpenAITransportSpike/main.swift"],
+      "unsupported_evidence": [
+        "IntegrationTests/MacPawOpenAITransportSpike/Sources/MacPawOpenAITransportSpike/main.swift"
+      ],
       "pass": {},
       "not_applicable": [
         {
-          "case_ids": ["FW-AUTH-001", "FW-REQ-001", "FW-REQ-002", "FW-REQ-003", "FW-REQ-004", "FW-REQ-005", "FW-REQ-006", "FW-REQ-007", "FW-BEH-001", "FW-BEH-002", "FW-BEH-003", "FW-BEH-004", "FW-BEH-005", "FW-BEH-006", "FW-SEC-001", "FW-SEC-002", "FW-SEC-003", "FW-SEC-004", "FW-OAI-001", "FW-OAI-002", "FW-VAI-001", "FW-VAI-002", "FW-VAI-003", "FW-VAI-004", "FW-LC-001", "FW-LC-002", "FW-LC-003"],
+          "case_ids": [
+            "FW-AUTH-001",
+            "FW-REQ-001",
+            "FW-REQ-002",
+            "FW-REQ-003",
+            "FW-REQ-004",
+            "FW-REQ-005",
+            "FW-REQ-006",
+            "FW-REQ-007",
+            "FW-BEH-001",
+            "FW-BEH-002",
+            "FW-BEH-003",
+            "FW-BEH-004",
+            "FW-BEH-005",
+            "FW-BEH-006",
+            "FW-SEC-001",
+            "FW-SEC-002",
+            "FW-SEC-003",
+            "FW-SEC-004",
+            "FW-OAI-001",
+            "FW-OAI-002",
+            "FW-VAI-001",
+            "FW-VAI-002",
+            "FW-VAI-003",
+            "FW-VAI-004",
+            "FW-LC-001",
+            "FW-LC-002",
+            "FW-LC-003"
+          ],
           "reason": "MacPaw/OpenAI 0.5.1 remains unsupported: on tested Darwin, Chat/Responses streams discard the injected session configuration and bypass injected/process-registered URLProtocol. The replacement patch/probe are unreleased contribution evidence, not support evidence for stock 0.5.1."
+        }
+      ],
+      "pending": [
+        {
+          "case_ids": [
+            "FW-AUTH-101",
+            "FW-AUTH-102",
+            "FW-AUTH-103",
+            "FW-AUTH-104",
+            "FW-AUTH-105",
+            "FW-AUTH-106",
+            "FW-AUTH-107",
+            "FW-AUTH-108",
+            "FW-AUTH-109",
+            "FW-REQ-101",
+            "FW-REQ-102",
+            "FW-REQ-103",
+            "FW-REQ-104",
+            "FW-REQ-105",
+            "FW-REQ-106",
+            "FW-REQ-107",
+            "FW-REQ-108",
+            "FW-REQ-109",
+            "FW-BEH-101",
+            "FW-BEH-102",
+            "FW-BEH-103",
+            "FW-BEH-104",
+            "FW-BEH-105",
+            "FW-BEH-106",
+            "FW-BEH-107",
+            "FW-SEC-101",
+            "FW-SEC-102",
+            "FW-SEC-103",
+            "FW-SEC-104",
+            "FW-SEC-105",
+            "FW-SEC-106"
+          ],
+          "reason": "Stock MacPaw/OpenAI 0.5.1 bypasses the audited transport seam on streaming paths, so no common integration case is claimed until an upstream release exposes a safe injectable transport.",
+          "blocker": "upstream",
+          "evidence": [
+            "IntegrationTests/MacPawOpenAITransportSpike/Sources/MacPawOpenAITransportSpike/main.swift"
+          ]
         }
       ]
     }

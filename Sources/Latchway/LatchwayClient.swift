@@ -13,6 +13,9 @@ public actor LatchwayClient {
     private let sessionStorage: any LatchwaySessionStorage
     private let componentRegistry: any LatchwayComponentRegistry
     private let componentStateRetirer: any LatchwayComponentStateRetiring
+    private let componentStorageOverride: (@Sendable (
+        LatchwayComponentConfiguration
+    ) -> any LatchwayComponentCredentialStorage)?
     private let transport: any LatchwayHTTPTransport
     private let clock: any LatchwayClock
     private let proofFactory: LatchwayDPoPProofFactory
@@ -75,6 +78,7 @@ public actor LatchwayClient {
         self.sessionStorage = storage
         self.componentRegistry = componentRegistry
         self.componentStateRetirer = LatchwayKeychainComponentStateRetirer(configuration: configuration)
+        self.componentStorageOverride = nil
         self.transport = transport
         self.clock = clock
         self.proofFactory = proofFactory
@@ -130,6 +134,7 @@ public actor LatchwayClient {
         self.sessionStorage = sessionStorage
         self.componentRegistry = componentRegistry
         self.componentStateRetirer = LatchwayKeychainComponentStateRetirer(configuration: configuration)
+        self.componentStorageOverride = nil
         self.transport = transport
         self.clock = clock
         self.proofFactory = proofFactory
@@ -168,6 +173,9 @@ public actor LatchwayClient {
         rootKeychainPreflight: @escaping @Sendable () throws -> Void,
         componentRegistry: (any LatchwayComponentRegistry)? = nil,
         componentStateRetirer: (any LatchwayComponentStateRetiring)? = nil,
+        componentStorageOverride: (@Sendable (
+            LatchwayComponentConfiguration
+        ) -> any LatchwayComponentCredentialStorage)? = nil,
         processScopeNamespace: String = UUID().uuidString
     ) {
         let proofFactory = LatchwayDPoPProofFactory(key: installationKey, clock: clock)
@@ -188,6 +196,7 @@ public actor LatchwayClient {
         )
         self.componentStateRetirer = componentStateRetirer
             ?? LatchwayKeychainComponentStateRetirer(configuration: configuration)
+        self.componentStorageOverride = componentStorageOverride
         self.transport = transport
         self.clock = clock
         self.proofFactory = proofFactory
@@ -1436,8 +1445,11 @@ public actor LatchwayClient {
 
     private func componentStorage(
         for component: LatchwayComponentConfiguration
-    ) -> LatchwayKeychainComponentStorage {
-        LatchwayKeychainComponentStorage(
+    ) -> any LatchwayComponentCredentialStorage {
+        if let componentStorageOverride {
+            return componentStorageOverride(component)
+        }
+        return LatchwayKeychainComponentStorage(
             applicationID: configuration.applicationID,
             environment: configuration.environment,
             definitionID: component.definitionID,
