@@ -77,7 +77,10 @@ class MaintainerReleaseTests(unittest.TestCase):
         self.assertIn("--rawfile body", workflow)
         documentation = (SOURCE / "docs/releasing.md").read_text(encoding="utf-8")
         self.assertIn("workflow_dispatch:", workflow)
-        self.assertIn("needs: [intent, verify-source, core-release-gate]", workflow)
+        self.assertIn(
+            "needs: [intent, verify-source, core-release-gate, immutable-release-settings]",
+            workflow,
+        )
         source_gate = workflow.split("\n  verify-source:\n", 1)[1].split("\n  tag:\n", 1)[0]
         self.assertIn("scripts/verify-package.sh", source_gate)
         package = workflow.split("\n  package:\n", 1)[1].split("\n  publish-cocoapods:\n", 1)[0]
@@ -107,6 +110,39 @@ class MaintainerReleaseTests(unittest.TestCase):
         self.assertIn("ios-expected-release-files.txt", github_release)
         self.assertIn("local `pod trunk me` session is not available", documentation)
         self.assertIn("single-maintainer-v1", documentation)
+
+    def test_selected_release_requires_and_proves_github_immutability(self) -> None:
+        workflow = (SOURCE / ".github/workflows/single-maintainer-release.yml").read_text(encoding="utf-8")
+        administration = workflow.split("\n  immutable-release-settings:\n", 1)[1].split("\n  tag:\n", 1)[0]
+        release = workflow.split("\n  github-release:\n", 1)[1]
+        self.assertIn("environment: single-maintainer-v1-administration", administration)
+        self.assertIn(
+            "latchway-release-profile-v1:latchway-ios-sdk:single_maintainer_v1:administration",
+            administration,
+        )
+        self.assertEqual(
+            administration.count("LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN"), 1
+        )
+        self.assertIn("repos/$GITHUB_REPOSITORY/immutable-releases", administration)
+        self.assertIn('.enabled == true', administration)
+        self.assertIn("gh --version", administration)
+        self.assertIn("major == 2 && minor >= 97", administration)
+        self.assertIn(".immutable==true", release)
+        self.assertIn("If-None-Match:", release)
+        self.assertIn("304( |$)", release)
+        self.assertIn("gh release verify-asset", release)
+        self.assertIn("gh release verify \"$RELEASE_TAG\"", release)
+        self.assertIn("pre-publish-tag-ref.json", release)
+        self.assertNotIn("--clobber", release)
+        self.assertNotIn("gh release delete", release)
+
+    def test_every_github_release_command_names_the_repository(self) -> None:
+        workflow = (SOURCE / ".github/workflows/single-maintainer-release.yml").read_text(encoding="utf-8")
+        commands = [line.strip() for line in workflow.splitlines() if "gh release " in line]
+        self.assertGreater(len(commands), 0)
+        for command in commands:
+            with self.subTest(command=command):
+                self.assertIn('--repo "$GITHUB_REPOSITORY"', command)
 
     def test_workflow_authenticates_public_core_and_owns_one_resumable_transaction(self) -> None:
         workflow = (SOURCE / ".github/workflows/single-maintainer-release.yml").read_text(encoding="utf-8")

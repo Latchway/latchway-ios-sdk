@@ -168,9 +168,42 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: scripts/verify-public-core-release.sh "${{ needs.intent.outputs.core_commit }}" "$RUNNER_TEMP/public-core-v1"
 
+  immutable-release-settings:
+    name: Require immutable GitHub releases before any publication mutation
+    needs: intent
+    if: github.repository == 'Latchway/latchway-ios-sdk' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    environment: single-maintainer-v1-administration
+    permissions:
+      contents: read
+    steps:
+      - name: Verify exact single-maintainer administration policy
+        env:
+          OBSERVED_POLICY_ID: ${{ vars.LATCHWAY_RELEASE_PROFILE_POLICY_ID }}
+        run: |
+          set -euo pipefail
+          test "$OBSERVED_POLICY_ID" = "latchway-release-profile-v1:latchway-ios-sdk:single_maintainer_v1:administration"
+      - name: Verify immutable releases are enabled with the isolated administration credential
+        env:
+          GH_TOKEN: ${{ secrets.LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$GH_TOKEN"
+          version=$(gh --version | sed -nE '1s/^gh version ([0-9]+)\.([0-9]+)\.([0-9]+).*$/\1 \2 \3/p')
+          read -r major minor patch <<< "$version"
+          [[ "$major" =~ ^[0-9]+$ && "$minor" =~ ^[0-9]+$ && "$patch" =~ ^[0-9]+$ ]]
+          (( major > 2 || (major == 2 && minor >= 97) ))
+          gh api -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/$GITHUB_REPOSITORY/immutable-releases" > "$RUNNER_TEMP/immutable-releases.json"
+          jq --exit-status '
+            type == "object" and (keys | sort) == ["enabled","enforced_by_owner"] and
+            .enabled == true and (.enforced_by_owner | type) == "boolean"
+          ' "$RUNNER_TEMP/immutable-releases.json" >/dev/null
+
   tag:
     name: Create or verify exact annotated deferred-assurance tag
-    needs: [intent, verify-source, core-release-gate]
+    needs: [intent, verify-source, core-release-gate, immutable-release-settings]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     environment: single-maintainer-v1
@@ -649,6 +682,10 @@ jobs:
           RELEASE_COMMIT: ${{ needs.intent.outputs.commit }}
         run: |
           set -euo pipefail
+          version=$(gh --version | sed -nE '1s/^gh version ([0-9]+)\.([0-9]+)\.([0-9]+).*$/\1 \2 \3/p')
+          read -r major minor patch <<< "$version"
+          [[ "$major" =~ ^[0-9]+$ && "$minor" =~ ^[0-9]+$ && "$patch" =~ ^[0-9]+$ ]]
+          (( major > 2 || (major == 2 && minor >= 97) ))
           title='Latchway iOS SDK 1.0.0 — single-maintainer v1'
           printf '%s\n' 'Published with the `single_maintainer_v1` profile. External platform/device/provider evidence and independent human review are deferred. This release is not `release_qualified`, fully evidence-gated, or independently reviewed.' > "$RUNNER_TEMP/notes.md"
           message="Latchway iOS SDK v1.0.0
@@ -673,12 +710,13 @@ jobs:
           verify_tag
           if ! gh api -H 'X-GitHub-Api-Version: 2026-03-10' "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" > "$RUNNER_TEMP/release.json" 2> "$RUNNER_TEMP/release-error"; then
             grep --fixed-strings --quiet 'HTTP 404' "$RUNNER_TEMP/release-error"
-            gh release create "$RELEASE_TAG" --draft --verify-tag --title "$title" --notes-file "$RUNNER_TEMP/notes.md"
+            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft --verify-tag --title "$title" --notes-file "$RUNNER_TEMP/notes.md"
           fi
           gh api -H 'X-GitHub-Api-Version: 2026-03-10' "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" > "$RUNNER_TEMP/release.json"
           jq -e --arg title "$title" --rawfile body "$RUNNER_TEMP/notes.md" '
             .tag_name=="v1.0.0" and .name==$title and .body==$body and
-            .prerelease==false and (.draft==true or .draft==false)
+            .prerelease==false and
+            ((.draft==true and .immutable==false) or (.draft==false and .immutable==true))
           ' "$RUNNER_TEMP/release.json" >/dev/null
           jq -r '.assets[].name' "$RUNNER_TEMP/release.json" | while IFS= read -r name; do
             grep --fixed-strings --line-regexp --quiet "$name" "$RUNNER_TEMP/local-assets"
@@ -688,11 +726,11 @@ jobs:
             count=$(jq --arg name "$name" '[.assets[] | select(.name==$name)] | length' "$RUNNER_TEMP/release.json")
             if [[ "$count" = 0 ]]; then
               test "$(jq -r .draft "$RUNNER_TEMP/release.json")" = true
-              gh release upload "$RELEASE_TAG" "$root/$name"
+              gh release upload "$RELEASE_TAG" "$root/$name" --repo "$GITHUB_REPOSITORY"
             else
               test "$count" = 1
               existing=$(mktemp -d "$RUNNER_TEMP/existing-asset.XXXXXX")
-              gh release download "$RELEASE_TAG" --pattern "$name" --dir "$existing"
+              gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "$name" --dir "$existing"
               cmp --silent "$root/$name" "$existing/$name"
             fi
           done < "$RUNNER_TEMP/local-assets"
@@ -700,20 +738,54 @@ jobs:
           jq -r '.assets[].name' "$RUNNER_TEMP/release.json" | LC_ALL=C sort > "$RUNNER_TEMP/remote-assets"
           diff --unified=0 "$RUNNER_TEMP/local-assets" "$RUNNER_TEMP/remote-assets"
           verified=$(mktemp -d "$RUNNER_TEMP/verified-assets.XXXXXX")
-          gh release download "$RELEASE_TAG" --dir "$verified"
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir "$verified"
           diff -qr "$root" "$verified"
           verify_tag
+          cp "$RUNNER_TEMP/release-tag-ref.json" "$RUNNER_TEMP/pre-publish-tag-ref.json"
+          gh api --include -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" > "$RUNNER_TEMP/pre-publish-release.http"
+          head -n 1 "$RUNNER_TEMP/pre-publish-release.http" | tr -d '\r' \
+            | grep --extended-regexp --quiet '^HTTP/[0-9.]+ 200( |$)'
+          awk '
+            { line=$0; sub(/\r$/, "", line); if (body) print $0; else if (line == "") body=1 }
+          ' "$RUNNER_TEMP/pre-publish-release.http" > "$RUNNER_TEMP/release.json"
+          awk '
+            { line=$0; sub(/\r$/, "", line); if (tolower(line) ~ /^etag:[[:space:]]*/) { sub(/^[^:]+:[[:space:]]*/, "", line); print line } }
+          ' "$RUNNER_TEMP/pre-publish-release.http" > "$RUNNER_TEMP/pre-publish-release.etag"
+          test "$(wc -l < "$RUNNER_TEMP/pre-publish-release.etag" | tr -d ' ')" = 1
+          grep --extended-regexp --quiet '^(W/)?"[^"]+"$' "$RUNNER_TEMP/pre-publish-release.etag"
+          jq -e --arg title "$title" --rawfile body "$RUNNER_TEMP/notes.md" '
+            .tag_name=="v1.0.0" and .name==$title and .body==$body and .prerelease==false and
+            ((.draft==true and .immutable==false) or (.draft==false and .immutable==true))
+          ' "$RUNNER_TEMP/release.json" >/dev/null
           if [[ "$(jq -r .draft "$RUNNER_TEMP/release.json")" == true ]]; then
             release_id=$(jq -er '.id | select(type=="number" and .>0)' "$RUNNER_TEMP/release.json")
             printf '{"draft":false}\n' > "$RUNNER_TEMP/finalize-release.json"
+            gh api --include -H 'X-GitHub-Api-Version: 2026-03-10' \
+              -H "If-None-Match: $(cat "$RUNNER_TEMP/pre-publish-release.etag")" \
+              "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" \
+              > "$RUNNER_TEMP/pre-publish-release-unchanged.http"
+            head -n 1 "$RUNNER_TEMP/pre-publish-release-unchanged.http" | tr -d '\r' \
+              | grep --extended-regexp --quiet '^HTTP/[0-9.]+ 304( |$)'
             gh api --method PATCH -H 'X-GitHub-Api-Version: 2026-03-10' \
               "repos/$GITHUB_REPOSITORY/releases/$release_id" --input "$RUNNER_TEMP/finalize-release.json" >/dev/null
           fi
           gh api -H 'X-GitHub-Api-Version: 2026-03-10' "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" > "$RUNNER_TEMP/final-release.json"
           jq -e --arg title "$title" --rawfile body "$RUNNER_TEMP/notes.md" '
-            .tag_name=="v1.0.0" and .name==$title and .body==$body and .draft==false and .prerelease==false
+            .tag_name=="v1.0.0" and .name==$title and .body==$body and
+            .draft==false and .prerelease==false and .immutable==true
           ' "$RUNNER_TEMP/final-release.json" >/dev/null
+          jq -r '.assets[].name' "$RUNNER_TEMP/final-release.json" | LC_ALL=C sort > "$RUNNER_TEMP/final-remote-assets"
+          diff --unified=0 "$RUNNER_TEMP/local-assets" "$RUNNER_TEMP/final-remote-assets"
+          while IFS= read -r name; do
+            gh release verify-asset "$RELEASE_TAG" "$root/$name" --repo "$GITHUB_REPOSITORY" --format json \
+              > "$RUNNER_TEMP/release-asset-${name}.json"
+          done < "$RUNNER_TEMP/local-assets"
+          gh release verify "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --format json > "$RUNNER_TEMP/release-attestation.json"
+          test -s "$RUNNER_TEMP/release-attestation.json"
+          verify_tag
+          cmp --silent "$RUNNER_TEMP/pre-publish-tag-ref.json" "$RUNNER_TEMP/release-tag-ref.json"
           final=$(mktemp -d "$RUNNER_TEMP/final-assets.XXXXXX")
-          gh release download "$RELEASE_TAG" --dir "$final"
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir "$final"
           diff -qr "$root" "$final"
           verify_tag
