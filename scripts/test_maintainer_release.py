@@ -61,6 +61,8 @@ class MaintainerReleaseTests(unittest.TestCase):
         self.assertFalse(intent["publication_ready"])
         self.assertFalse(intent["release_qualified"])
         self.assertEqual(intent["workflow"]["file"], ".github/workflows/single-maintainer-release.yml")
+        self.assertIn("cloud_deployments", intent["deferred_evidence"])
+        self.assertFalse(any(item.startswith("cloud_deployments.") for item in intent["deferred_evidence"]))
 
     def test_rejects_wrong_confirmation_or_non_main_ref(self) -> None:
         for change in ({"confirmation": "yes"}, {"workflow_ref": "refs/heads/feature"}):
@@ -78,7 +80,7 @@ class MaintainerReleaseTests(unittest.TestCase):
         documentation = (SOURCE / "docs/releasing.md").read_text(encoding="utf-8")
         self.assertIn("workflow_dispatch:", workflow)
         self.assertIn(
-            "needs: [intent, verify-source, core-release-gate, immutable-release-settings]",
+            "needs: [intent, verify-source, core-release-gate]",
             workflow,
         )
         source_gate = workflow.split("\n  verify-source:\n", 1)[1].split("\n  tag:\n", 1)[0]
@@ -111,22 +113,14 @@ class MaintainerReleaseTests(unittest.TestCase):
         self.assertIn("local `pod trunk me` session is not available", documentation)
         self.assertIn("single-maintainer-v1", documentation)
 
-    def test_selected_release_requires_and_proves_github_immutability(self) -> None:
+    def test_selected_release_proves_github_immutability_after_publication(self) -> None:
         workflow = (SOURCE / ".github/workflows/single-maintainer-release.yml").read_text(encoding="utf-8")
-        administration = workflow.split("\n  immutable-release-settings:\n", 1)[1].split("\n  tag:\n", 1)[0]
         release = workflow.split("\n  github-release:\n", 1)[1]
-        self.assertIn("environment: single-maintainer-v1-administration", administration)
-        self.assertIn(
-            "latchway-release-profile-v1:latchway-ios-sdk:single_maintainer_v1:administration",
-            administration,
-        )
-        self.assertEqual(
-            administration.count("LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN"), 1
-        )
-        self.assertIn("repos/$GITHUB_REPOSITORY/immutable-releases", administration)
-        self.assertIn('.enabled == true', administration)
-        self.assertIn("gh --version", administration)
-        self.assertIn("major == 2 && minor >= 97", administration)
+        self.assertNotIn("\n  immutable-release-settings:\n", workflow)
+        self.assertNotIn("single-maintainer-v1-administration", workflow)
+        self.assertNotIn("LATCHWAY_RELEASE_PROFILE_POLICY_ID", workflow)
+        self.assertNotIn("LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN", workflow)
+        self.assertNotIn("repos/$GITHUB_REPOSITORY/immutable-releases", workflow)
         self.assertIn(".immutable==true", release)
         self.assertIn("If-None-Match:", release)
         self.assertIn("304( |$)", release)
@@ -165,19 +159,25 @@ class MaintainerReleaseTests(unittest.TestCase):
             "gh attestation verify",
             "single-maintainer-release.yml",
             "release.yml",
-            "deployment-evidence.yml",
             "compare/$locked_core_commit...$core_commit",
+            "registry-only; cloud deployment evidence is explicitly deferred",
+            ".immutable == true",
+            "(.assets | length) == 11",
         ):
             self.assertIn(value, verifier)
         for value in (
             "core_publication_gate",
             "vulnerability_scan_verified",
             "sbom_verified",
-            "compose",
-            "cloud_run",
-            "core_deployment_archive_closure_invalid",
+            'record.get("deployment_evidence") != {}',
+            '"cloud_deployments"',
+            '"publication_scope": "registry_only"',
         ):
             self.assertIn(value, semantic)
+        self.assertNotIn("deployment-evidence.yml", verifier)
+        self.assertNotIn("compose.tar.gz", semantic)
+        self.assertNotIn("cloud_run.tar.gz", semantic)
+        self.assertIn("registry-only", documentation)
         self.assertIn("Re-run failed jobs", documentation)
         self.assertIn("Never use **Re-run all jobs**", documentation)
         self.assertIn("never start a new workflow", documentation)

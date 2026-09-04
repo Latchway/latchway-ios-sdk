@@ -72,11 +72,22 @@ an existing asset.
 Before any SDK tag or registry mutation, the workflow downloads the public core
 `v1.0.0` release and requires the `single_maintainer_v1` core-publication record
 to be exact. It verifies the candidate, vulnerability/license scans, SBOMs,
-Sigstore attestations, annotated core tag, image digest, and the exact Docker
-Compose and Google Cloud Run deployment captures. The core commit locked by
-`contract.lock` must be an ancestor of that public core release. AWS, Fly.io,
-Cloudflare Containers, devices, providers, and independent review remain
-explicitly deferred; they are not silently treated as passed.
+Sigstore attestations, annotated core tag, and image digest in the exact
+registry-only 11-asset closure. The signed record must have
+`deployment_evidence: {}` and the exact `cloud_deployments` deferred entry;
+deployment archives and claims that Compose, Cloud Run, or another target
+passed are rejected. The core commit locked by `contract.lock` must be an
+ancestor of that public core release. Cloud deployments, devices, providers,
+and independent review remain explicitly deferred; they are not silently
+treated as passed.
+
+This selected profile has no prepublication Administration-token job or
+`single-maintainer-v1-administration` environment. The tag may therefore be
+created before GitHub proves the repository's immutable-release setting; that
+is an explicit assurance reduction, not evidence that the setting passed. The
+final publisher still requires an unchanged release ETag, exact asset and tag
+closure, `immutable: true`, and successful release and per-asset attestation
+verification before it reports success.
 
 ## Strict full publication profile
 

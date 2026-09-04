@@ -163,47 +163,14 @@ jobs:
         with:
           ref: ${{ needs.intent.outputs.commit }}
           persist-credentials: false
-      - name: Verify the public single-maintainer core record, supply chain, Compose, and Cloud Run
+      - name: Verify registry-only public core record and supply chain with cloud deployments deferred
         env:
           GH_TOKEN: ${{ github.token }}
         run: scripts/verify-public-core-release.sh "${{ needs.intent.outputs.core_commit }}" "$RUNNER_TEMP/public-core-v1"
 
-  immutable-release-settings:
-    name: Require immutable GitHub releases before any publication mutation
-    needs: intent
-    if: github.repository == 'Latchway/latchway-ios-sdk' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    environment: single-maintainer-v1-administration
-    permissions:
-      contents: read
-    steps:
-      - name: Verify exact single-maintainer administration policy
-        env:
-          OBSERVED_POLICY_ID: ${{ vars.LATCHWAY_RELEASE_PROFILE_POLICY_ID }}
-        run: |
-          set -euo pipefail
-          test "$OBSERVED_POLICY_ID" = "latchway-release-profile-v1:latchway-ios-sdk:single_maintainer_v1:administration"
-      - name: Verify immutable releases are enabled with the isolated administration credential
-        env:
-          GH_TOKEN: ${{ secrets.LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN }}
-        run: |
-          set -euo pipefail
-          test -n "$GH_TOKEN"
-          version=$(gh --version | sed -nE '1s/^gh version ([0-9]+)\.([0-9]+)\.([0-9]+).*$/\1 \2 \3/p')
-          read -r major minor patch <<< "$version"
-          [[ "$major" =~ ^[0-9]+$ && "$minor" =~ ^[0-9]+$ && "$patch" =~ ^[0-9]+$ ]]
-          (( major > 2 || (major == 2 && minor >= 97) ))
-          gh api -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2026-03-10' \
-            "repos/$GITHUB_REPOSITORY/immutable-releases" > "$RUNNER_TEMP/immutable-releases.json"
-          jq --exit-status '
-            type == "object" and (keys | sort) == ["enabled","enforced_by_owner"] and
-            .enabled == true and (.enforced_by_owner | type) == "boolean"
-          ' "$RUNNER_TEMP/immutable-releases.json" >/dev/null
-
   tag:
     name: Create or verify exact annotated deferred-assurance tag
-    needs: [intent, verify-source, core-release-gate, immutable-release-settings]
+    needs: [intent, verify-source, core-release-gate]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     environment: single-maintainer-v1
