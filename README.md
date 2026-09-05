@@ -5,13 +5,10 @@ self-hosted gateway without embedding an upstream provider key. This package
 provides the Swift transport and platform-security integration for that client
 boundary.
 
-> **Project status:** intended `1.0.0` source candidate for draft contract 1.0.0
-> and current wire protocol 2, with server 1.0.0 as the minimum and 1.0.x as the
-> maximum tested series. The server continues to accept compatible wire-1
-> installation/session clients, and this SDK decodes their legacy root grants,
-> but new requests identify wire 2. The package is not a supported release until
-> the core contract is released and protected server, registry, provenance, and
-> physical App Attest evidence gates pass.
+> SDK **1.1.0** keeps contract 1.0.0 and wire protocol 2. Core transport supports
+> server 1.0.0 or newer; the expanded Foundation Models adapter requires server
+> **1.0.2**. Compatible legacy wire-1 root grants remain readable. See the
+> [release notes](docs/release/v1.1.0.md) for additions and known backend limits.
 
 ## Requirements
 
@@ -33,8 +30,9 @@ hardware attestation.
 - `LatchwayFirebaseAuth`: optional closure adapter; the core target has no
   Firebase dependency
 - `LatchwaySwiftOpenAI`: audited SwiftOpenAI 4.6.0 async HTTP/streaming adapter
-- `LatchwayFoundationModels`: narrow OS 27 custom-executor adapter whose runtime
-  and physical-device gates remain pending
+- `LatchwayFoundationModels`: OS 27 custom-executor adapter for streaming,
+  multi-turn local tools, guided JSON generation, and reasoning through a
+  server-configured Responses route; see [the integration guide](Documentation/FoundationModels.md)
 - `LatchwayTesting`: deterministic signers, clocks, storage, transports,
   identity providers, and attestation doubles
 
@@ -44,18 +42,21 @@ version, then link `Latchway` and `LatchwayAppAttest` to the application target:
 ```swift
 .package(
     url: "https://github.com/Latchway/latchway-ios-sdk.git",
-    from: "1.0.0"
+    from: "1.1.0"
 )
 ```
 
 Swift Package Manager is the canonical distribution. The production
 `Latchway.podspec` publishes the `Latchway/Core`, `Latchway/AppAttest`,
-`Latchway/AppExtensions`, and `Latchway/FirebaseAuth` subspecs, including the
+`Latchway/AppExtensions`, `Latchway/FirebaseAuth`, and optional iOS 27
+`Latchway/FoundationModels` subspecs, including the
 extension-safe surface used by Widget, Share, and Action targets:
 
 ```ruby
-pod 'Latchway/AppAttest', '1.0.0'
-pod 'Latchway/AppExtensions', '1.0.0'
+pod 'Latchway/AppAttest', '1.1.0'
+pod 'Latchway/AppExtensions', '1.1.0'
+# Optional; requires iOS 27 and Xcode 27:
+# pod 'Latchway/FoundationModels', '1.1.0'
 ```
 
 CocoaPods compiles selected subspecs into the `Latchway` module; SwiftPM keeps
@@ -234,17 +235,17 @@ tuist generate --path Examples/AppAttestConformance --no-open
 
 `verify-package.sh` parses the manifest, builds every library in release mode,
 runs the suite in parallel, compiles a separate consumer package importing all
-public products, requires the exact four-subspec CocoaPods surface, and
+public products, requires the exact five-subspec CocoaPods surface, and
 strictly lints every published subspec individually when CocoaPods is
 installed.
-Pull requests and pushes to `main` run the same gate on the pinned macOS runner.
+The Foundation Models runtime suite and subspec require Xcode 27. These are
+local verification commands; automatic verification CI is currently disabled.
 
-Stable `vMAJOR.MINOR.PATCH` tags drive publication. The tag, public SDK version,
-podspec version, contract lock, repository cleanliness, and forbidden-file scan
-must all pass before the workflow creates a deterministic source archive,
-SHA-256 checksum, and GitHub release. CocoaPods publication runs only when the
-protected no-checkout publisher has a `COCOAPODS_TRUNK_TOKEN`; candidate builds,
-tests, archives, and podspec linting never receive it. Maintainers can run
+Maintainers dispatch `single-maintainer-release.yml` on `main` with a release
+version matching the SDK and podspec. It creates an annotated tag, source
+archive, portable SHA-256 checksum, CocoaPods publication, and GitHub release.
+The existing `single-maintainer-v1` environment supplies the CocoaPods token.
+The simple publication workflow does not add verification CI gates. Maintainers can run
 `scripts/release-preflight.sh vMAJOR.MINOR.PATCH`
 locally against an existing tag before pushing it.
 

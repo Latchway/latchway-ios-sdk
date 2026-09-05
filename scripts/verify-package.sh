@@ -33,10 +33,10 @@ if command -v pod >/dev/null 2>&1; then
   ruby -rjson -e '
     spec = JSON.parse(File.read(ARGV.fetch(0)))
     names = spec.fetch("subspecs").map { |entry| entry.fetch("name") }.sort
-    expected = %w[AppAttest AppExtensions Core FirebaseAuth]
+    expected = %w[AppAttest AppExtensions Core FirebaseAuth FoundationModels]
     abort "CocoaPods subspec surface mismatch: expected #{expected.inspect}, got #{names.inspect}" unless names == expected
   ' "$podspec_json"
-  for subspec in AppAttest AppExtensions Core FirebaseAuth; do
+  for subspec in AppAttest AppExtensions Core FirebaseAuth FoundationModels; do
     pod lib lint Latchway.podspec \
       --platforms=ios \
       --fail-fast \

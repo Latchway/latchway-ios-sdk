@@ -1,18 +1,24 @@
-name: Publish iOS SDK v1.0.0
+name: Publish iOS SDK
 
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: Version without the v prefix
+        required: true
+        default: 1.1.0
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: ios-v1.0.0-publication
+  group: ios-publication
   cancel-in-progress: false
 
 env:
-  RELEASE_VERSION: 1.0.0
-  RELEASE_TAG: v1.0.0
+  RELEASE_VERSION: ${{ inputs.version }}
+  RELEASE_TAG: v${{ inputs.version }}
 
 jobs:
   publish:
@@ -24,20 +30,24 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Check out the v1 source
+      - name: Check out the release source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
 
-      - name: Create the v1.0.0 tag
+      - name: Create the release tag
         run: |
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git tag --annotate "$RELEASE_TAG" --message 'Latchway iOS SDK v1.0.0'
-          git push origin "refs/tags/$RELEASE_TAG"
+          if git show-ref --verify --quiet "refs/tags/$RELEASE_TAG"; then
+            test "$(git rev-parse "$RELEASE_TAG^{commit}")" = "$GITHUB_SHA"
+          else
+            git tag --annotate "$RELEASE_TAG" --message "Latchway iOS SDK $RELEASE_TAG"
+            git push origin "refs/tags/$RELEASE_TAG"
+          fi
 
-      - name: Package the v1.0.0 source and CocoaPods metadata
+      - name: Package the source and CocoaPods metadata
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/release"
@@ -45,10 +55,10 @@ jobs:
           git archive --format=tar \
             --prefix="latchway-ios-sdk-$RELEASE_VERSION/" \
             "$RELEASE_TAG" | gzip -9 > "$archive"
-          shasum -a 256 "$archive" > "$archive.sha256"
+          (cd "$RUNNER_TEMP/release" && shasum -a 256 "latchway-ios-sdk-$RELEASE_VERSION.tar.gz") > "$archive.sha256"
           pod ipc spec Latchway.podspec > "$RUNNER_TEMP/release/Latchway.podspec.json"
 
-      - name: Publish Latchway 1.0.0 to CocoaPods
+      - name: Publish Latchway to CocoaPods
         env:
           COCOAPODS_TRUNK_TOKEN: ${{ secrets.COCOAPODS_TRUNK_TOKEN }}
         run: |
@@ -70,20 +80,16 @@ jobs:
             --output "$response" \
             'https://trunk.cocoapods.org/api/v1/pods?allow_warnings=true'
 
-      - name: Create the GitHub v1.0.0 release
+      - name: Create the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          printf '%s\n' \
-            'Initial Latchway iOS SDK v1.0.0 release.' \
-            '' \
-            'Published to CocoaPods as Latchway 1.0.0.' \
-            > "$RUNNER_TEMP/release-notes.md"
           gh release create "$RELEASE_TAG" \
             "$RUNNER_TEMP/release/latchway-ios-sdk-$RELEASE_VERSION.tar.gz" \
             "$RUNNER_TEMP/release/latchway-ios-sdk-$RELEASE_VERSION.tar.gz.sha256" \
             "$RUNNER_TEMP/release/Latchway.podspec.json" \
             --repo "$GITHUB_REPOSITORY" \
-            --title 'Latchway iOS SDK v1.0.0' \
-            --notes-file "$RUNNER_TEMP/release-notes.md"
+            --title "Latchway iOS SDK $RELEASE_TAG" \
+            --verify-tag --latest \
+            --notes-file "docs/release/$RELEASE_TAG.md"

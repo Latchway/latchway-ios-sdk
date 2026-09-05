@@ -14,6 +14,33 @@ Versioning once package publication begins.
   Security query, and fail closed when known root records remain in declared
   extension-shared groups.
 
+## [1.1.0] - 2026-09-05
+
+### Added
+
+- Foundation Models OS 27 translation for `@Generable` / dynamic JSON schemas,
+  structured transcript segments, enabled function definitions, tool calls and
+  results across turns, tool-calling modes, reasoning context, request IDs, and
+  bounded string/JSON-valued metadata.
+- Greedy (temperature zero), unseeded nucleus (top-p), and top-k request
+  translation. Top-k requires a compatible upstream; Responses does not expose
+  a portable seed, so seeded requests fail explicitly instead of losing it.
+- Bounded SSE decoding, reasoning summaries/signatures, terminal usage,
+  refusal handling, and deferred tool dispatch: incomplete, failed, malformed,
+  or disabled-tool responses cannot execute a local tool.
+- Optional `Latchway/FoundationModels` CocoaPods subspec for iOS 27 with Xcode 27.
+- LatchwayChat's Settings-selectable Foundation Models and Custom URLSession
+  modes, live Open-Meteo weather tool, and physical two-turn smoke-test entry.
+
+### Compatibility
+
+- The core SDK keeps its iOS 15 minimum and wire protocol 2 / contract 1.0.0.
+  Rich Responses requests require the companion gateway update; server 1.0.1
+  rejects metadata and trusted-accounted tools/schemas.
+- Requires server 1.0.2 for the expanded Foundation Models route. Images,
+  seeded sampling, and encrypted reasoning under strict text-accounting quotas
+  remain unsupported; see `Documentation/FoundationModels.md`.
+
 ## [1.0.0] - 2026-09-01
 
 ### Added

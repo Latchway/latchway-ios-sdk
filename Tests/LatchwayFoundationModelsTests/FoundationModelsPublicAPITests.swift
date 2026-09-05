@@ -192,41 +192,151 @@ struct FoundationModelsPublicAPITests {
         #expect(session.usage.output.totalTokenCount == 3)
     }
 
-    @Test func guidedGenerationAndToolsFailExplicitlyWithoutDispatch() async throws {
+    @Test func guidedGenerationUsesTheActualFrameworkDecoder() async throws {
         guard #available(iOS 27.0, macOS 27.0, visionOS 27.0, watchOS 27.0, *) else { return }
-        FoundationModelsURLProtocol.reset(stubs: [])
+        FoundationModelsURLProtocol.reset(stubs: [.response(
+            statusCode: 200, headers: ["Content-Type": "text/event-stream"],
+            body: responsesStream(deltas: ["{\"value\":", "\"guided\"}"])
+        )])
         let fixture = makeTransport()
         let model = LatchwayLanguageModel(configuration: .init(transport: fixture.transport))
-        #expect(!model.capabilities.contains(.guidedGeneration))
-        #expect(!model.capabilities.contains(.toolCalling))
+        #expect(model.capabilities.contains(.guidedGeneration))
+        #expect(model.capabilities.contains(.toolCalling))
 
         let structured = LanguageModelSession(model: model)
-        do {
-            let _: LanguageModelSession.Response<StructuredAnswer> = try await structured.respond(
-                to: "Return a value",
-                generating: StructuredAnswer.self
-            )
-            Issue.record("Guided generation must fail until its translation is implemented")
-        } catch let error as LanguageModelError {
-            switch error {
-            case .unsupportedGenerationGuide, .unsupportedCapability:
-                break
-            default:
-                Issue.record("Unexpected guided-generation error: \(error)")
-            }
-        }
+        let response = try await structured.respond(to: "Return a value", generating: StructuredAnswer.self)
+        #expect(response.content.value == "guided")
+        let request = try #require(await fixture.recorder.requests.first)
+        let body = try requestJSONObject(request)
+        let text = try #require(body["text"] as? [String: Any])
+        let format = try #require(text["format"] as? [String: Any])
+        let schema = try #require(format["schema"] as? [String: Any])
+        #expect(format["type"] as? String == "json_schema")
+        #expect(format["strict"] as? Bool == true)
+        #expect(schema["type"] as? String == "object")
+        #expect((schema["properties"] as? [String: Any])?["value"] != nil)
+        #expect(body["model"] as? String == "latchway-feature")
+        #expect(body["store"] as? Bool == false)
+    }
 
-        let withTool = LanguageModelSession(model: model, tools: [EchoTool()])
-        do {
-            _ = try await withTool.respond(to: "Call the echo tool")
-            Issue.record("Tool calling must fail until its translation is implemented")
-        } catch let error as LanguageModelError {
-            guard case .unsupportedCapability = error else {
-                Issue.record("Unexpected tool-capability error: \(error)")
-                return
-            }
+    @Test func toolLoopAndLaterTurnPreserveCallIDsAndResults() async throws {
+        guard #available(iOS 27.0, macOS 27.0, visionOS 27.0, watchOS 27.0, *) else { return }
+        FoundationModelsURLProtocol.reset(stubs: [
+            .response(statusCode: 200, headers: ["Content-Type": "text/event-stream"], body: toolStream()),
+            .response(statusCode: 200, headers: ["Content-Type": "text/event-stream"], body: responsesStream(deltas: ["Tool returned sunny"])),
+            .response(statusCode: 200, headers: ["Content-Type": "text/event-stream"], body: responsesStream(deltas: ["You asked about sunny weather"])),
+        ])
+        let fixture = makeTransport()
+        let model = LatchwayLanguageModel(configuration: .init(transport: fixture.transport))
+        let session = LanguageModelSession(model: model, tools: [EchoTool()])
+        let first = try await session.respond(to: "Call echo with sunny")
+        #expect(first.content == "Tool returned sunny")
+        let second = try await session.respond(to: "What did I ask?")
+        #expect(second.content == "You asked about sunny weather")
+        let requests = await fixture.recorder.requests
+        #expect(requests.count == 3)
+        let body = try requestJSONObject(requests[1])
+        let input = try #require(body["input"] as? [[String: Any]])
+        let call = try #require(input.first { $0["type"] as? String == "function_call" })
+        let result = try #require(input.first { $0["type"] as? String == "function_call_output" })
+        #expect(call["call_id"] as? String == "call_weather_1")
+        #expect(result["call_id"] as? String == "call_weather_1")
+        #expect(result["output"] as? String == "sunny")
+        let finalInput = try #require(try requestJSONObject(requests[2])["input"] as? [[String: Any]])
+        #expect(finalInput.contains { $0["type"] as? String == "function_call_output" })
+        #expect(session.usage.input.totalTokenCount == 6)
+    }
+
+    @Test func generationFieldsAreTranslatedWithoutChangingIdentityHeaders() throws {
+        guard #available(iOS 27.0, macOS 27.0, visionOS 27.0, watchOS 27.0, *) else { return }
+        let id = UUID()
+        var request = LanguageModelExecutorGenerationRequest(
+            id: id, transcript: Transcript(entries: [.prompt(.init(segments: [.text(.init(content: "hello"))]))]),
+            enabledTools: [Transcript.ToolDefinition(tool: EchoTool())], schema: StructuredAnswer.generationSchema,
+            generationOptions: .init(samplingMode: .random(probabilityThreshold: 0.8), temperature: 0.6, maximumResponseTokens: 123, toolCallingMode: .required),
+            contextOptions: .init(includeSchemaInPrompt: true, reasoningLevel: .moderate),
+            metadata: ["sample": GeneratedContent(kind: .structure(properties: ["count": GeneratedContent(2)], orderedKeys: ["count"]))]
+        )
+        let body = try #require(JSONSerialization.jsonObject(with: FoundationModelsRequest.encode(request)) as? [String: Any])
+        #expect(body["top_p"] as? Double == 0.8)
+        #expect(body["temperature"] as? Double == 0.6)
+        #expect(body["max_output_tokens"] as? Int == 123)
+        #expect(body["tool_choice"] as? String == "required")
+        #expect((body["reasoning"] as? [String: String])?["effort"] == "medium")
+        #expect((body["metadata"] as? [String: String])?["latchway_generation_id"] == id.uuidString)
+        #expect((body["instructions"] as? String)?.contains("schema") == true)
+        request.generationOptions.samplingMode = .greedy
+        let greedy = try #require(JSONSerialization.jsonObject(with: FoundationModelsRequest.encode(request)) as? [String: Any])
+        #expect(greedy["temperature"] as? Int == 0)
+        request.generationOptions.samplingMode = .random(top: 20)
+        let topK = try #require(JSONSerialization.jsonObject(with: FoundationModelsRequest.encode(request)) as? [String: Any])
+        #expect(topK["top_k"] as? Int == 20)
+        request.generationOptions.samplingMode = .random(top: 20, seed: 42)
+        #expect(throws: LatchwayFoundationModelsError.self) { try FoundationModelsRequest.encode(request) }
+    }
+
+    @Test func incompleteAndDisabledToolStreamsNeverRunTools() async throws {
+        guard #available(iOS 27.0, macOS 27.0, visionOS 27.0, watchOS 27.0, *) else { return }
+        for body in [Data("data: [DONE]\n\n".utf8), toolStream(name: "not_enabled"), toolStream(completed: false)] {
+            FoundationModelsURLProtocol.reset(stubs: [.response(statusCode: 200, headers: ["Content-Type": "text/event-stream"], body: body)])
+            let fixture = makeTransport()
+            let session = LanguageModelSession(model: LatchwayLanguageModel(configuration: .init(transport: fixture.transport)), tools: [EchoTool()])
+            await #expect(throws: (any Error).self) { try await session.respond(to: "test") }
+            #expect(await fixture.recorder.requests.count == 1)
         }
-        #expect(FoundationModelsURLProtocol.snapshot().requests.isEmpty)
+    }
+
+    @Test func parallelCallsAndCRDelimitedEventsPreserveDistinctResults() async throws {
+        guard #available(iOS 27.0, macOS 27.0, visionOS 27.0, watchOS 27.0, *) else { return }
+        let items: [[String: Any]] = ["one", "two"].map { value in
+            ["type": "function_call", "id": "fc_" + value, "call_id": "call_" + value,
+             "name": "echo", "arguments": "{\"value\":\"\(value)\"}"]
+        }
+        let completed: [String: Any] = ["type": "response.completed", "response": ["status": "completed", "output": items]]
+        let data = Data(("data: " + String(decoding: try JSONSerialization.data(withJSONObject: completed), as: UTF8.self) + "\r\r").utf8)
+        FoundationModelsURLProtocol.reset(stubs: [
+            .response(statusCode: 200, headers: ["Content-Type": "text/event-stream"], body: data),
+            .response(statusCode: 200, headers: ["Content-Type": "text/event-stream"], body: responsesStream(deltas: ["both returned"])),
+        ])
+        let fixture = makeTransport()
+        let session = LanguageModelSession(model: LatchwayLanguageModel(configuration: .init(transport: fixture.transport)), tools: [EchoTool()])
+        #expect(try await session.respond(to: "Call echo twice").content == "both returned")
+        let requests = await fixture.recorder.requests
+        #expect(requests.count == 2)
+        let input = try #require(try requestJSONObject(requests[1])["input"] as? [[String: Any]])
+        let outputs = input.filter { $0["type"] as? String == "function_call_output" }
+        #expect(Set(outputs.compactMap { $0["call_id"] as? String }) == ["call_one", "call_two"])
+        #expect(Set(outputs.compactMap { $0["output"] as? String }) == ["one", "two"])
+    }
+
+    @Test func reasoningAndNullableNestedSchemaRoundTrip() async throws {
+        guard #available(iOS 27.0, macOS 27.0, visionOS 27.0, watchOS 27.0, *) else { return }
+        let schema = try GenerationSchema(root: DynamicGenerationSchema(name: "Nested", properties: [
+            .init(name: "city", schema: .init(type: String.self)),
+            .init(name: "note", schema: .init(type: String.self), isOptional: true),
+        ]), dependencies: [])
+        let normalized = try FoundationModelsRequest.schemaObject(schema)
+        #expect(Set(normalized["required"] as? [String] ?? []) == ["city", "note"])
+        let properties = try #require(normalized["properties"] as? [String: [String: Any]])
+        #expect(properties["note"]?["anyOf"] != nil)
+        let completed: [String: Any] = ["type": "response.completed", "response": ["status": "completed", "output": [
+            ["type": "reasoning", "id": "rs_test", "summary": [["type": "summary_text", "text": "Check the result."]], "encrypted_content": "opaque-signature"],
+            ["type": "message", "id": "msg_test", "content": [["type": "output_text", "text": "Ready."]]],
+        ]]]
+        let data = Data(("data: " + String(decoding: try JSONSerialization.data(withJSONObject: completed), as: UTF8.self) + "\n\n").utf8)
+        FoundationModelsURLProtocol.reset(stubs: [
+            .response(statusCode: 200, headers: ["Content-Type": "text/event-stream"], body: data),
+            .response(statusCode: 200, headers: ["Content-Type": "text/event-stream"], body: responsesStream(deltas: ["Next."])),
+        ])
+        let fixture = makeTransport()
+        let session = LanguageModelSession(model: LatchwayLanguageModel(configuration: .init(transport: fixture.transport)))
+        #expect(try await session.respond(to: "Reason briefly").content == "Ready.")
+        _ = try await session.respond(to: "Continue")
+        let requests = await fixture.recorder.requests
+        let input = try #require(try requestJSONObject(requests[1])["input"] as? [[String: Any]])
+        let reasoning = try #require(input.first { $0["type"] as? String == "reasoning" })
+        #expect(reasoning["id"] as? String == "rs_test")
+        #expect(reasoning["encrypted_content"] as? String == "opaque-signature")
     }
 
     // FW-BEH-105, FW-BEH-106
@@ -445,6 +555,19 @@ private func responsesStream(
     ], options: [.sortedKeys])
     lines.append("data: \(String(decoding: completed, as: UTF8.self))\n\n")
     return Data(lines.joined().utf8)
+}
+
+private func toolStream(name: String = "echo", completed: Bool = true) -> Data {
+    let item: [String: Any] = ["type": "function_call", "id": "fc_weather_1", "call_id": "call_weather_1", "name": name, "arguments": ""]
+    var events: [[String: Any]] = [
+        ["type": "response.output_item.added", "item": item],
+        ["type": "response.function_call_arguments.delta", "item_id": "fc_weather_1", "delta": "{\"value\":"],
+        ["type": "response.function_call_arguments.delta", "item_id": "fc_weather_1", "delta": "\"sunny\"}"],
+    ]
+    if completed { events.append(["type": "response.completed", "response": ["status": "completed", "usage": ["input_tokens": 2, "output_tokens": 2]]]) }
+    return Data(events.map { event in
+        "data: " + String(decoding: try! JSONSerialization.data(withJSONObject: event), as: UTF8.self) + "\n\n"
+    }.joined().utf8)
 }
 
 private func sessionExpiredProblem(requestID: String) throws -> Data {

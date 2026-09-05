@@ -2,6 +2,14 @@
 
 Date: 2026-08-30
 
+> Historical spike: the capability and nine-test descriptions below describe
+> the initial implementation, not SDK 1.1.0. As of 2026-09-05,
+> the adapter translates guided schemas, local tools/results, unseeded
+> sampling, context options, metadata, and reasoning. Seventeen iOS 27
+> simulator tests and the optional CocoaPods subspec validation pass. Follow
+> [the current adapter guide](../../Documentation/FoundationModels.md) for
+> supported behavior and explicit backend limits.
+
 Decision: conditionally implemented for the Foundation Models custom
 `LanguageModel`/`LanguageModelExecutor` API available in the OS 27 SDK. The
 narrow adapter passes its Xcode 27 / iOS 27 simulator runtime suite. Keep the

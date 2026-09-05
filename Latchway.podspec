@@ -1,6 +1,6 @@
 Pod::Spec.new do |spec|
   spec.name = 'Latchway'
-  spec.version = '1.0.0'
+  spec.version = '1.1.0'
   spec.summary = 'Device-bound access to a self-hosted Latchway gateway.'
   spec.description = <<-DESC
     Latchway authorizes iOS and React Native requests without embedding
@@ -46,5 +46,12 @@ Pod::Spec.new do |spec|
     firebase_auth.dependency 'Latchway/Core', spec.version.to_s
     firebase_auth.source_files = 'Sources/LatchwayFirebaseAuth/**/*.swift'
     firebase_auth.frameworks = 'Foundation'
+  end
+
+  spec.subspec 'FoundationModels' do |foundation_models|
+    foundation_models.dependency 'Latchway/Core', spec.version.to_s
+    foundation_models.ios.deployment_target = '27.0'
+    foundation_models.source_files = 'Sources/LatchwayFoundationModels/**/*.swift'
+    foundation_models.frameworks = 'Foundation', 'FoundationModels'
   end
 end
