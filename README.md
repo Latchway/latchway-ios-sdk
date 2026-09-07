@@ -10,6 +10,12 @@ boundary.
 > **1.0.2**. Compatible legacy wire-1 root grants remain readable. See the
 > [release notes](docs/release/v1.1.0.md) for additions and known backend limits.
 
+SDK 1.1.0 is available through the GitHub tag/SwiftPM and CocoaPods. Server
+1.0.3 additionally permits native iOS and React Native iOS main-app roots to
+share a bundle identifier when both require direct App Attest. Configure each
+platform explicitly; this does not merge their installations or duplicate a
+shared per-user quota. No iOS SDK update beyond 1.1.0 is needed for that server fix.
+
 ## Requirements
 
 The package uses Swift 6 strict concurrency and supports iOS 15 or newer. A
