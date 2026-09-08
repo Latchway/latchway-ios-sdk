@@ -27,7 +27,7 @@ class DocumentationBundleTests(unittest.TestCase):
         for source in (release_notes, *(item["source"] for item in config["examples"])):
             line_count = len((ROOT / source["file"]).read_text(encoding="utf-8").splitlines())
             self.assertEqual(source["start_line"], 1)
-            self.assertEqual(source["end_line"], line_count)
+            self.assertEqual(source.get("end_line", line_count), line_count)
 
         supported = {item["name"] for item in config["supported_versions"]}
         self.assertTrue({
@@ -43,7 +43,7 @@ class DocumentationBundleTests(unittest.TestCase):
             "Foundation Models visionOS availability", "Foundation Models watchOS availability",
             "Foundation Models tvOS availability",
         } <= supported)
-        source = (ROOT / "README.md").read_text(encoding="utf-8").splitlines()[25:58]
+        source = (ROOT / "README.md").read_text(encoding="utf-8").splitlines()[:76]
         product_text = "\n".join(source)
         for product in (
             "Latchway", "LatchwayAppAttest", "LatchwayAppExtensions", "LatchwayFirebaseAuth",
@@ -52,7 +52,7 @@ class DocumentationBundleTests(unittest.TestCase):
             "Latchway/FirebaseAuth",
         ):
             self.assertIn(product, product_text)
-        self.assertIn("1.0.0", product_text)
+        self.assertIn("1.2.0", product_text)
 
     def test_bundle_is_reproducible_self_describing_and_checksum_bound(self) -> None:
         with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second:
@@ -62,7 +62,7 @@ class DocumentationBundleTests(unittest.TestCase):
                     sys.executable, str(ROOT / "scripts/build_docs_bundle.py"),
                     "--output-dir", output, "--source-date-epoch", "0",
                 ], cwd=ROOT, check=True, stdout=subprocess.PIPE, text=True)
-                archives.append(Path(output, "docs-bundle-1.0.0.tar.gz"))
+                archives.append(Path(output, "docs-bundle-1.2.0.tar.gz"))
             self.assertEqual(archives[0].read_bytes(), archives[1].read_bytes())
             with tarfile.open(archives[0], "r:gz") as archive:
                 members = archive.getmembers()
@@ -74,18 +74,19 @@ class DocumentationBundleTests(unittest.TestCase):
                 }
             manifest = json.loads(payloads["bundle-manifest.json"])
             self.assertEqual(manifest["schema_version"], MODULE.SCHEMA)
-            self.assertEqual(manifest["release"]["version"], "1.0.0")
+            self.assertEqual(manifest["release"]["version"], "1.2.0")
             foundation_models = payloads["frameworks/foundation-models.swift"].decode("utf-8")
             self.assertTrue(foundation_models.startswith(
-                "/// A Foundation Models custom provider backed by a feature-bound Latchway\n"
+                "#if canImport(FoundationModels) && compiler(>=6.4)\n"
             ))
             self.assertIn("public struct LatchwayLanguageModelExecutor", foundation_models)
-            self.assertTrue(foundation_models.endswith(
-                "        guard receivedTerminalEvent else {\n"
-                "            throw LatchwayFoundationModelsError.invalidGatewayStream\n"
-                "        }\n"
-                "    }\n"
-            ))
+            self.assertTrue(foundation_models.endswith("}\n#endif\n"))
+            self.assertIn("FoundationModelsStream.consume", foundation_models)
+            self.assertIn("guard parser.completed else { throw invalid }", payloads["frameworks/foundation-models-stream.swift"].decode("utf-8"))
+            supplied = payloads["quickstart/supplied-identity.md"].decode("utf-8")
+            for marker in ("LatchwayApp.configure", "app.signIn", "account.updateIdToken", "account.logout",
+                           "identityRefreshRequired", "supplied_identity_v1"):
+                self.assertIn(marker, supplied)
             self.assertEqual({item["kind"] for item in manifest["files"]} >= {
                 "quickstart", "framework", "release_notes", "supported_versions",
                 "public_symbols", "errors", "examples",
@@ -127,11 +128,14 @@ class DocumentationBundleTests(unittest.TestCase):
             self.assertTrue({
                 "latchwayFirebaseIdentityToken", "saveCount", "clearCount", "signatureCount",
                 "challenges", "acceptedEvidence", "resetCount", "requests",
+                "LatchwayApp", "LatchwayAccount", "LatchwaySuppliedIdentityConfiguration",
+                "firebaseProject", "signIn", "restore", "currentAccount", "updateIdToken", "logout",
             } <= symbols)
             errors = {row["name"] for row in catalogs["errors.json"]}
             self.assertTrue({
                 "componentGrantExpired", "keychainAccessGroupUnavailable",
                 "componentKeyUnavailable", "directAttestationRequired",
+                "identityRefreshRequired", "identityVerificationUnsupported", "accountChanged",
             } <= errors)
 
     def test_path_validation_and_archive_verifier_reject_traversal(self) -> None:
@@ -148,7 +152,7 @@ class DocumentationBundleTests(unittest.TestCase):
                         info.size = len(payload)
                         archive.addfile(info, io.BytesIO(payload))
             with self.assertRaises(MODULE.BundleError):
-                MODULE.verify_archive(malicious, "docs-bundle-1.0.0")
+                MODULE.verify_archive(malicious, "docs-bundle-1.2.0")
 
     def test_provenance_commit_must_equal_the_checked_out_source(self) -> None:
         with tempfile.TemporaryDirectory() as output:

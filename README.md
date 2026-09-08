@@ -4,14 +4,14 @@ SDK **1.2.0** adds [developer-supplied identity and shared native/RN accounts](D
 Configure from either native or React Native first, supply an ID token, and use
 the shared account. No Firebase dependency, native auth bootstrap or permanent
 JavaScript token provider is required. This path requires a gateway advertising
-`supplied_identity_v1` and an enabled shared-native application policy.
+`supplied_identity_v1`, server 1.1.1 or later, and an enabled shared-native application policy.
 
 Latchway lets an untrusted iOS application call AI infrastructure through a
 self-hosted gateway without embedding an upstream provider key. This package
 provides the Swift transport and platform-security integration for that client
 boundary.
 
-> The compatible legacy client keeps contract 1.0.0 and wire protocol 2. Core transport supports
+> The compatible legacy constructor keeps wire protocol 2; this SDK ships contract 1.1.0. Core transport supports
 > server 1.0.0 or newer; the expanded Foundation Models adapter requires server
 > **1.0.2**. Compatible legacy wire-1 root grants remain readable. See the
 > [release notes](docs/release/v1.1.0.md) for additions and known backend limits.
@@ -54,7 +54,7 @@ version, then link `Latchway` and `LatchwayAppAttest` to the application target:
 ```swift
 .package(
     url: "https://github.com/Latchway/latchway-ios-sdk.git",
-    from: "1.1.0"
+    from: "1.2.0"
 )
 ```
 
@@ -65,17 +65,20 @@ Swift Package Manager is the canonical distribution. The production
 extension-safe surface used by Widget, Share, and Action targets:
 
 ```ruby
-pod 'Latchway/AppAttest', '1.1.0'
-pod 'Latchway/AppExtensions', '1.1.0'
+pod 'Latchway/AppAttest', '1.2.0'
+pod 'Latchway/AppExtensions', '1.2.0'
 # Optional; requires iOS 27 and Xcode 27:
-# pod 'Latchway/FoundationModels', '1.1.0'
+# pod 'Latchway/FoundationModels', '1.2.0'
 ```
 
 CocoaPods compiles selected subspecs into the `Latchway` module; SwiftPM keeps
 `LatchwayAppAttest`, `LatchwayAppExtensions`, and `LatchwayFirebaseAuth` as
 separate modules.
 
-## Basic usage
+## Legacy constructor usage
+
+For new integrations use the minimal, order-independent
+[supplied identity setup](Documentation/SuppliedIdentity.md).
 
 ```swift
 import Latchway

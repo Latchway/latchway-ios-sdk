@@ -70,7 +70,7 @@ require explicit migration inventory; do not supply an invented empty list.
 
 ## Server requirements
 
-Shared mode uses wire 3 with required native-host attestation and allowed shared
+Use server 1.1.1 or later. Shared mode uses wire 3 with required native-host attestation and allowed shared
 callers. Discovery must advertise `supplied_identity_v1` and the canonical
 `/client/v1/sessions/identity` endpoint. Unsupported servers fail explicitly.
 Initial sign-in establishes an attested session. Token updates prove possession
