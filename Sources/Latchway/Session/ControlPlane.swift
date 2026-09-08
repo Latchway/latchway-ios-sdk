@@ -52,7 +52,7 @@ struct LatchwayControlPlane: Sendable {
             environment: configuration.environment,
             identityProvider: configuration.identityProvider,
             identityToken: identityToken,
-            platform: configuration.clientRuntime.platformIdentifier,
+            platform: configuration.installationPlatform,
             sdkVersion: configuration.clientSDKVersion
         )
         return try await sendJSON(
@@ -95,6 +95,23 @@ struct LatchwayControlPlane: Sendable {
             expectedStatus: 200,
             as: SessionGrantWire.self
         )
+    }
+
+    func requireSuppliedIdentitySupport() async throws {
+        let response = try await sendAuthorized(method: "GET", path: ".well-known/latchway", accessToken: nil, body: nil)
+        guard response.statusCode == 200 else { throw LatchwayLifecycleError.identityVerificationUnsupported }
+        let discovery = try decode(response, expectedStatus: 200, as: LatchwaySuppliedIdentityDiscovery.self)
+        guard discovery.capabilities?.contains("supplied_identity_v1") == true,
+              discovery.identityVerificationEndpoint == "/client/v1/sessions/identity" else {
+            throw LatchwayLifecycleError.identityVerificationUnsupported
+        }
+    }
+
+    func verifyIdentity(refreshToken: String, idToken: String) async throws -> LatchwayVerifiedIdentityWire {
+        try await sendJSON(method: "POST", path: "client/v1/sessions/identity",
+            body: LatchwayIdentityVerificationRequest(refreshToken: refreshToken,
+                identity: .init(provider: configuration.identityProvider, token: idToken)),
+            accessToken: nil, expectedStatus: 200, as: LatchwayVerifiedIdentityWire.self)
     }
 
     func quota(feature: String, accessToken: String) async throws -> LatchwayQuotaSnapshot {
@@ -350,9 +367,11 @@ struct LatchwayControlPlane: Sendable {
     }
 
     private func addStandardHeaders(to request: inout URLRequest) {
-        request.setValue(configuration.clientRuntime.sdkIdentifier, forHTTPHeaderField: "X-Latchway-SDK")
+        request.setValue(configuration.sharedNative ? configuration.clientRuntime.sdkIdentifier : nil,
+                         forHTTPHeaderField: "X-Latchway-Caller")
+        request.setValue(configuration.sdkIdentifier, forHTTPHeaderField: "X-Latchway-SDK")
         request.setValue(configuration.clientSDKVersion, forHTTPHeaderField: "X-Latchway-SDK-Version")
-        request.setValue(String(LatchwayVersion.protocolVersion), forHTTPHeaderField: "X-Latchway-Protocol-Version")
+        request.setValue(String(configuration.wireProtocol), forHTTPHeaderField: "X-Latchway-Protocol-Version")
         if request.value(forHTTPHeaderField: "X-Latchway-Request-ID") == nil {
             request.setValue(UUID().uuidString.lowercased(), forHTTPHeaderField: "X-Latchway-Request-ID")
         }

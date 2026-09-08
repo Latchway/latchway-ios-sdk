@@ -23,8 +23,9 @@ final class ProtocolManifestTests: XCTestCase {
 
         XCTAssertEqual(root["contract_version"] as? String, LatchwayVersion.contract)
         XCTAssertEqual(root["contract_status"] as? String, "released")
-        XCTAssertEqual(root["released_at"] as? String, "2026-09-01T20:25:00Z")
-        XCTAssertEqual(wire["current"] as? Int, LatchwayVersion.protocolVersion)
+        XCTAssertEqual(root["released_at"] as? String, "2026-09-08T10:54:39Z")
+        XCTAssertEqual(wire["current"] as? Int, 3)
+        XCTAssertEqual(LatchwayVersion.protocolVersion, 2, "Legacy client constructors deliberately keep wire 2")
         XCTAssertEqual(wire["supported"] as? [Int], LatchwayVersion.supportedProtocolVersions)
         XCTAssertEqual(wire["minimum"] as? Int, LatchwayVersion.minimumProtocolVersion)
         XCTAssertTrue(requiredEntries.contains("component-attestation-binding.schema.json"))

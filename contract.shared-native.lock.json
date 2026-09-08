@@ -1,0 +1,17 @@
+{
+  "contract_version": "1.1.0",
+  "wire_protocol": 3,
+  "status": "released",
+  "core_release": "v1.1.0",
+  "core_commit": "0a60cbef57d904664430e235e1e165fea14f610b",
+  "bundle_sha256": "deb25aaae5160a7342bfae0efa4a9ce0403d8c40ed8da74eb2c99be4d4ede293",
+  "minimum_server_version": "1.1.0",
+  "maximum_tested_server_version": "1.1.0",
+  "files": {
+    "Tests/ConformanceTests/Fixtures/shared-native/protocol-version.json": "c8f32d02af792dcec2e92ea1dc5816b85ccf8214f31c9c334cfafc38aa078932",
+    "Tests/ConformanceTests/Fixtures/shared-native/shared-native-v3.json": "adb5de4788794a9fe8707f005e1038347d26ec18b96fbc5e41bb34125ba04c4a",
+    "Tests/ConformanceTests/Fixtures/shared-native/sdk-error-codes.yaml": "37c235450badeac051a943be7bd1a926ff83f51bae8e51f5f7370011e0d3711a",
+    "Tests/ConformanceTests/Fixtures/shared-native/supplied-identity-v1.json": "d6c547f85ba7b7fa130089f977d7314f69c85b3a68f8530beb8cb3dfb6d008e8",
+    "Tests/ConformanceTests/Fixtures/shared-native/client.openapi.yaml": "763206fb4f4c903b599792baf46d6bc99394cffe66f3cb072aa1f7ef3d968f2c"
+  }
+}

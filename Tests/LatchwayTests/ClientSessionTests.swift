@@ -4,6 +4,68 @@ import LatchwayTesting
 import XCTest
 
 final class ClientSessionTests: XCTestCase {
+    func testSuppliedIdentityReestablishesExpiredPossessionDespiteCachedUsableAccess() async throws {
+        let fixture = try await makeSharedFixture(sharedApp: true)
+        var request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        request.httpMethod = "POST"
+        try await fixture.clients[0].authorize(&request, feature: "habit-assistant")
+        let original = try await fixture.journal.load(fixture.generationID)
+        let stored = try XCTUnwrap(original)
+        let now = await fixture.clock.now()
+        try await fixture.journal.save(.init(refreshToken: stored.refreshToken,
+            refreshExpiresAt: now.addingTimeInterval(-1), installation: stored.installation,
+            installationFamily: stored.installationFamily, component: stored.component), generation: fixture.generationID)
+        let verified = try await fixture.clients[0].verifySuppliedIdentity(idToken: "fixture-fresh-id-token")
+        XCTAssertEqual(verified.identity.subject, "A")
+        let counts = await fixture.server.counts()
+        XCTAssertEqual(counts.exchange, 2, "Expired refresh possession must not be masked by usable cached access")
+        XCTAssertEqual(counts.refresh, 0)
+    }
+
+    func testNativeAndReactNativeShareActualSessionButNeverDPoPProofs() async throws {
+        let fixture = try await makeSharedFixture(sharedApp: true)
+        let requests = try await withThrowingTaskGroup(of: URLRequest.self, returning: [URLRequest].self) { group in
+            for client in fixture.clients {
+                group.addTask {
+                    var request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+                    request.httpMethod = "POST"
+                    try await client.authorize(&request, feature: "habit-assistant")
+                    return request
+                }
+            }
+            var results: [URLRequest] = []
+            for try await request in group { results.append(request) }
+            return results
+        }
+        XCTAssertEqual(Set(requests.compactMap { $0.value(forHTTPHeaderField: "Authorization") }).count, 1)
+        XCTAssertEqual(Set(requests.compactMap { $0.value(forHTTPHeaderField: "DPoP") }).count, 2)
+        XCTAssertEqual(Set(requests.compactMap { $0.value(forHTTPHeaderField: "X-Latchway-Caller") }), ["ios", "react-native"])
+        XCTAssertTrue(requests.allSatisfy { $0.value(forHTTPHeaderField: "X-Latchway-SDK") == "native" })
+        XCTAssertTrue(requests.allSatisfy { $0.value(forHTTPHeaderField: "X-Latchway-Protocol-Version") == "3" })
+        let initial = await fixture.server.counts()
+        XCTAssertEqual(initial.challenge, 1)
+        XCTAssertEqual(initial.exchange, 1)
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for client in fixture.clients { group.addTask { try await client.refresh() } }
+            try await group.waitForAll()
+        }
+        let refreshed = await fixture.server.counts()
+        XCTAssertEqual(refreshed.refresh, 1)
+        let identityBefore = await fixture.identity.count()
+        try await fixture.clients[0].logout()
+        let identityAfter = await fixture.identity.count()
+        XCTAssertEqual(identityBefore, identityAfter)
+        for client in fixture.clients {
+            var request = URLRequest(url: requests[0].url!)
+            request.httpMethod = "POST"
+            do { try await client.authorize(&request, feature: "habit-assistant"); XCTFail("Old sibling survived logout") }
+            catch let error as LatchwayLifecycleError { XCTAssertEqual(error, .loggedOut) }
+        }
+        let terminal = await fixture.server.counts()
+        XCTAssertEqual(terminal.challenge, 1)
+        XCTAssertEqual(terminal.refresh, 1)
+    }
+
     func testSeparateClientsShareFirstSessionEstablishment() async throws {
         let fixture = try await makeSharedFixture()
 
@@ -1404,6 +1466,9 @@ final class ClientSessionTests: XCTestCase {
         let server: SessionServerTransport
         let identity: CountingIdentityProvider
         let storage: LatchwayInMemorySessionStorage
+        let journal: LatchwayAppSessionJournal
+        let generationID: UUID
+        let clock: LatchwayTestClock
     }
 
     private static let fixtureEvidence = LatchwayAttestationEvidence(
@@ -1416,7 +1481,8 @@ final class ClientSessionTests: XCTestCase {
 
     private func makeSharedFixture(
         attestationResults: [Result<LatchwayAttestationEvidence, Error>]? = nil,
-        clientCount: Int = 2
+        clientCount: Int = 2,
+        sharedApp: Bool = false
     ) async throws -> SharedFixture {
         let raw = try decodeBase64URL("2ZFd1bc5bCB8zu8OEf5l7O9x_SxbsQNQMNn0si4NxxI")
         let key = try LatchwayDeterministicInstallationKey(rawPrivateKey: raw)
@@ -1449,21 +1515,35 @@ final class ClientSessionTests: XCTestCase {
             ]
         )
         let storage = LatchwayInMemorySessionStorage()
-        let configuration = LatchwayConfiguration(
-            baseURL: URL(string: "https://gateway.example.test")!,
-            applicationID: "app_01J00000000000000000000000",
-            environment: "production",
-            rootKeychainAccessGroup: "ABCDE12345.com.example.latchway",
-            appVersion: "1.2.3"
-        )
+        let journal = LatchwayAppSessionJournal(records: SharedFixtureLifecycleRecords())
+        let account = try LatchwayIdentitySnapshot(issuer: "fixture", subject: "A", token: "fixture-token")
+            .binding(expectedIssuer: "fixture", expectedTenant: nil)
+        let entry = try await journal.activate(account: account)
+        let generation = LatchwayAccountGeneration(entry: entry, scope: UUID().uuidString,
+            issuer: "fixture", tenant: nil,
+            authority: LatchwayClosureIdentityAuthority {
+                .init(issuer: "fixture", subject: "A", token: try await identity.identityToken())
+            }, journal: journal, cleanup: {})
         let namespace = "shared-root-\(UUID().uuidString)"
-        let clients = (0 ..< clientCount).map { _ in
-            LatchwayClient(
+        let clients = (0 ..< clientCount).map { index in
+            var configuration = LatchwayConfiguration(
+                baseURL: URL(string: "https://gateway.example.test")!,
+                applicationID: "app_01J00000000000000000000000",
+                environment: "production",
+                rootKeychainAccessGroup: "ABCDE12345.com.example.latchway",
+                clientRuntime: sharedApp && index % 2 == 1 ? .reactNativeIOS : .iOS,
+                appVersion: "1.2.3"
+            )
+            if sharedApp {
+                configuration.accountGeneration = generation
+                configuration.accountLogout = { try await generation.logout() }
+            }
+            return LatchwayClient(
                 configuration: configuration,
                 identityTokenProvider: identity,
                 attestationProvider: attestation,
                 installationKey: key,
-                sessionStorage: storage,
+                sessionStorage: sharedApp ? LatchwayGenerationSessionStorage(journal: journal, generation: entry.generation) : storage,
                 transport: server,
                 clock: clock,
                 rootKeychainPreflight: {},
@@ -1474,7 +1554,10 @@ final class ClientSessionTests: XCTestCase {
             clients: clients,
             server: server,
             identity: identity,
-            storage: storage
+            storage: storage,
+            journal: journal,
+            generationID: entry.generation,
+            clock: clock
         )
     }
 
@@ -1707,6 +1790,15 @@ private actor SessionServerTransport: LatchwayHTTPTransport {
             return LatchwayHTTPResponse(statusCode: 204, headers: [:], body: Data())
         }
         switch path {
+        case "/.well-known/latchway":
+            return json(status: 200, object: ["capabilities": ["supplied_identity_v1"],
+                "identity_verification_endpoint": "/client/v1/sessions/identity"])
+        case "/client/v1/sessions/identity":
+            return json(status: 200, object: [
+                "identity": ["provider": "firebase", "issuer": "fixture", "subject": "A", "audience": ["fixture"],
+                    "verified_at": iso(now), "expires_at": iso(now.addingTimeInterval(3600))] as [String: Any],
+                "installation_id": "ins_01J00000000000000000000000",
+            ])
         case "/client/v1/session-challenges":
             challengeCount += 1
             proofs.append(request.value(forHTTPHeaderField: "DPoP") ?? "")
@@ -2299,6 +2391,14 @@ private actor ClientComponentRetirer: LatchwayComponentStateRetiring {
     }
 
     func attempts() -> [String] { retired }
+}
+
+/// The synchronous fake record uses one lock for every read/write.
+private final class SharedFixtureLifecycleRecords: LatchwayLifecycleRecords, @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Data?
+    func read() throws -> Data? { lock.withLock { value } }
+    func write(_ data: Data) throws { lock.withLock { value = data } }
 }
 
 private func XCTAssertThrowsErrorAsync(

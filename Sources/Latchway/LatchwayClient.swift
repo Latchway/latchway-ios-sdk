@@ -6,7 +6,10 @@ private struct CoordinatedRootSession: Sendable {
 }
 
 public actor LatchwayClient {
+    /// Approved native-owner groups inherited by embedded RN client leases.
+    public nonisolated var componentKeychainAccessGroups: [String] { configuration.sharedComponentGroups }
     private let configuration: LatchwayConfiguration
+    private let lease = LatchwayClientLease()
     private let identityTokenProvider: any LatchwayIdentityTokenProvider
     private let attestationProvider: any LatchwayAttestationProvider
     private let installationKey: any LatchwayInstallationKey
@@ -35,6 +38,77 @@ public actor LatchwayClient {
     private var serverVersion: String?
     private var terminalError: LatchwayError?
     private var rootKeychainPreflightComplete = false
+    private var disposed = false
+    private var logoutCompleted = false
+    private var suppliedIdentityRecovery = false
+
+    /// Internal, non-exported recovery client. Only this identity operation can
+    /// bypass token freshness; installation possession and journal fencing stay
+    /// mandatory. It is never returned by makeClient or used for model requests.
+    func verifySuppliedIdentity(idToken: String) async throws -> LatchwayVerifiedIdentityWire {
+        guard configuration.accountGeneration != nil else { throw LatchwayLifecycleError.configurationConflict }
+        suppliedIdentityRecovery = true
+        defer { suppliedIdentityRecovery = false }
+        try await checkAccount()
+        try await controlPlane.requireSuppliedIdentitySupport()
+        var stored = try await sessionStorage.load()
+        let recoveryTime = await clock.now()
+        if stored == nil || stored!.refreshExpiresAt <= recoveryTime {
+            // A cached access token can outlive possession in unusual grant
+            // configurations. Invalidate it under the same native coordinator
+            // before re-establishment; activeSession alone could return it.
+            let permit = try await processCoordinator.acquire(configurationFingerprint: processConfigurationFingerprint)
+            do {
+                try await checkAccount()
+                let latest = try await sessionStorage.load()
+                let latestTime = await clock.now()
+                if latest == nil || latest!.refreshExpiresAt <= latestTime {
+                    try await sessionStorage.clear()
+                    sessionRevision = await processCoordinator.invalidate(terminal: false, for: permit)
+                    session = nil
+                }
+                await processCoordinator.release(permit)
+            } catch {
+                await processCoordinator.release(permit)
+                throw error
+            }
+            _ = try await activeSession()
+            stored = try await sessionStorage.load()
+        }
+        guard let stored else { throw LatchwayError.sessionUnavailable }
+        let verified = try await controlPlane.verifyIdentity(refreshToken: stored.refreshToken, idToken: idToken)
+        try await checkAccount()
+        guard verified.installationID == stored.installation.id else { throw LatchwayError.invalidServerResponse }
+        return verified
+    }
+
+    /// Offline account retirement for clients created by LatchwayApp. This is
+    /// not Firebase sign-out or installation revocation.
+    public func logout() async throws {
+        if logoutCompleted { return }
+        guard !disposed else { throw LatchwayLifecycleError.disposed }
+        guard let logout = configuration.accountLogout else {
+            throw LatchwayError.invalidConfiguration("Account logout requires an account-bound LatchwayApp client")
+        }
+        try await logout()
+        session = nil
+        sessionRevision = nil
+        logoutCompleted = true
+    }
+
+    /// Releases this lease only. It cannot retire another native/RN consumer's
+    /// session, refresh operation or transport.
+    public func close() async { disposed = true; session = nil; await lease.close() }
+
+    private func checkAccount() async throws {
+        guard !disposed else { throw LatchwayLifecycleError.disposed }
+        if let generation = configuration.accountGeneration {
+            if suppliedIdentityRecovery { try await generation.check() }
+            else { _ = try await generation.identityToken() }
+        }
+        else { try await LatchwayAppRegistry.shared.requireLegacyScopeUnregistered(configuration) }
+        guard !disposed else { throw LatchwayLifecycleError.disposed }
+    }
 
     public init(
         configuration: LatchwayConfiguration,
@@ -178,6 +252,8 @@ public actor LatchwayClient {
         ) -> any LatchwayComponentCredentialStorage)? = nil,
         processScopeNamespace: String = UUID().uuidString
     ) {
+        var configuration = configuration
+        configuration.checksPersistentLegacyFence = processScopeNamespace == LatchwayProcessScopeIdentity.productionNamespace
         let proofFactory = LatchwayDPoPProofFactory(key: installationKey, clock: clock)
         let processConfigurationFingerprint = LatchwayProcessScopeIdentity.rootFingerprint(
             configuration: configuration
@@ -292,6 +368,8 @@ public actor LatchwayClient {
             framework: framework,
             baseURL: configuration.baseURL,
             session: session,
+            generation: configuration.accountGeneration,
+            lease: lease,
             authorize: { [self] request in
                 try await authorizedFrameworkRequest(
                     request,
@@ -340,6 +418,7 @@ public actor LatchwayClient {
     /// credentials. This is intended for caller-owned transports after a
     /// validated, same-origin `session_expired` rejection.
     public func refresh() async throws {
+        try await checkAccount()
         try validateConfiguration()
         try ensureRootKeychainPreflight()
         _ = try await refreshSession(force: true)
@@ -374,6 +453,7 @@ public actor LatchwayClient {
             accessToken: active.accessToken,
             nonce: dpopNonce
         )
+        try await checkAccount()
         guard !Task.isCancelled else { throw LatchwayError.cancelled }
         request.setValue("DPoP \(active.accessToken)", forHTTPHeaderField: "Authorization")
         request.setValue(proof, forHTTPHeaderField: "DPoP")
@@ -628,11 +708,16 @@ public actor LatchwayClient {
         }
 
         do {
-            try await LatchwayComponentFamilyRetirement.retireAll(
-                registry: componentRegistry,
-                including: components,
-                retire: { [self] component in try await retireComponentState(component) }
-            )
+            if let generation = configuration.accountGeneration {
+                let registered = try await generation.registeredComponents()
+                for component in Set(registered + components) { try await retireComponentState(component) }
+            } else {
+                try await LatchwayComponentFamilyRetirement.retireAll(
+                    registry: componentRegistry,
+                    including: components,
+                    retire: { [self] component in try await retireComponentState(component) }
+                )
+            }
         } catch {
             firstError = firstError ?? error
         }
@@ -661,6 +746,19 @@ public actor LatchwayClient {
             diagnostics.append(try await prepareComponent(component, replacing: false))
         }
         return diagnostics
+    }
+
+    /// Returns only public account/generation coordinates for an authorized
+    /// extension handoff. Provision its component before sending the descriptor.
+    /// This never exports the root's session, identity token or signer.
+    public func componentAccount() async throws -> LatchwayComponentAccount {
+        guard let generation = configuration.accountGeneration,
+              let account = configuration.sharedComponentAccount else {
+            throw LatchwayLifecycleError.configurationConflict
+        }
+        try lease.check()
+        try await generation.check()
+        return account
     }
 
     /// Replaces one delegated component key and invalidates its previous server
@@ -700,7 +798,7 @@ public actor LatchwayClient {
         }
         do {
             try await retireComponentStateUncoordinated(component)
-            try await componentRegistry.unregister(component)
+            if configuration.sharedComponentAccount == nil { try await componentRegistry.unregister(component) }
             _ = await coordinator.invalidate(terminal: true, for: permit)
             await coordinator.release(permit)
         } catch {
@@ -756,6 +854,7 @@ public actor LatchwayClient {
 
     public func diagnostics() async -> LatchwayDiagnostics {
         do {
+            try await checkAccount()
             try validateConfiguration()
             try ensureRootKeychainPreflight()
         } catch let error as LatchwayError {
@@ -844,7 +943,7 @@ public actor LatchwayClient {
             trustProvider = active.trust.provider
             trustLevel = active.trust.level
             if let remote = try? await controlPlane.diagnostics(accessToken: active.accessToken),
-               Self.validDiagnostics(remote, active: active, thumbprint: thumbprint) {
+               Self.validDiagnostics(remote, active: active, thumbprint: thumbprint, configuration: configuration) {
                 serverVersion = remote.serverVersion
                 lastRequestID = remote.requestID
                 installationID = remote.installation.id
@@ -874,6 +973,7 @@ public actor LatchwayClient {
     }
 
     private func activeSession() async throws -> RuntimeSession {
+        try await checkAccount()
         try validateConfiguration()
         try ensureRootKeychainPreflight()
         if state == .revoked { throw terminalError ?? LatchwayError.sessionUnavailable }
@@ -958,6 +1058,7 @@ public actor LatchwayClient {
     }
 
     private func refreshSession(force: Bool) async throws -> RuntimeSession {
+        try await checkAccount()
         if state == .revoked { throw terminalError ?? LatchwayError.sessionUnavailable }
         if !force, let session, session.isUsable(at: await clock.now()) { return session }
         if let refreshTask { return try await resolve(refreshTask, kind: .refreshing) }
@@ -1049,14 +1150,14 @@ public actor LatchwayClient {
                         options: .regularExpression
                     ) != nil
                     && stored.installation.platform
-                        == configuration.clientRuntime.platformIdentifier
+                        == configuration.installationPlatform
                     && stored.installation.status == "active"
                     && stored.installation.dpopJKT == expectedThumbprint
                     && validRootBinding(
                         family: stored.installationFamily,
                         component: stored.component,
                         expectedThumbprint: expectedThumbprint,
-                        platform: configuration.clientRuntime.platformIdentifier
+                        platform: configuration.installationPlatform
                     )
                 if validStored {
                     do {
@@ -1202,6 +1303,7 @@ public actor LatchwayClient {
         state = kind
         do {
             let result = try await task.value
+            try await checkAccount()
             session = result.value
             sessionRevision = result.revision
             state = .active
@@ -1210,6 +1312,10 @@ public actor LatchwayClient {
         } catch is CancellationError {
             state = session == nil ? .absent : .expired
             throw LatchwayError.cancelled
+        } catch let error as LatchwayLifecycleError {
+            session = nil
+            state = .absent
+            throw error
         } catch let error as LatchwayError {
             await record(error)
             throw error
@@ -1227,12 +1333,14 @@ public actor LatchwayClient {
         storage: any LatchwaySessionStorage,
         configuration: LatchwayConfiguration
     ) async throws -> RuntimeSession {
+        if let generation = configuration.accountGeneration { try await generation.check() }
+        else { try await LatchwayAppRegistry.shared.requireLegacyScopeUnregistered(configuration) }
         guard grant.tokenType == "DPoP",
               (60 ... 3_600).contains(grant.expiresIn),
               (300 ... 31_536_000).contains(grant.refreshExpiresIn),
               (64 ... 16_384).contains(grant.accessToken.utf8.count),
               (32 ... 2_048).contains(grant.refreshToken.utf8.count),
-              grant.installation.platform == configuration.clientRuntime.platformIdentifier,
+              grant.installation.platform == configuration.installationPlatform,
               grant.installation.status == "active",
               grant.installation.dpopJKT == expectedThumbprint,
               grant.installation.id.range(
@@ -1243,7 +1351,7 @@ public actor LatchwayClient {
                   family: grant.installationFamily,
                   component: grant.component,
                   expectedThumbprint: expectedThumbprint,
-                  platform: configuration.clientRuntime.platformIdentifier
+                  platform: configuration.installationPlatform
               ),
               Self.validRootTrustBinding(
                   grant.trust,
@@ -1277,6 +1385,11 @@ public actor LatchwayClient {
                 installationFamily: runtime.installationFamily,
                 component: runtime.component
             ))
+        } catch let error as LatchwayLifecycleError {
+            // A late response cannot overwrite a retired generation. Preserve
+            // the actionable lifecycle code; clearing a guarded store here
+            // would only retry work that belongs to logout's cleanup journal.
+            throw error
         } catch {
             // A failed write after legacy root refresh must not leave the
             // previously rotated token available for accidental reuse.
@@ -1344,7 +1457,11 @@ public actor LatchwayClient {
         // access or mutation. If provisioning later fails, retaining a
         // harmless stale descriptor is preferable to leaving secret state
         // untracked.
-        try await componentRegistry.register(component)
+        if let generation = configuration.accountGeneration, let account = configuration.sharedComponentAccount {
+            try await generation.registerComponent(component, account: account)
+        } else {
+            try await componentRegistry.register(component)
+        }
         let coordinator = componentProcessCoordinator(for: component)
         let fingerprint = LatchwayProcessScopeIdentity.componentFingerprint(
             configuration: configuration,
@@ -1358,7 +1475,12 @@ public actor LatchwayClient {
                 active.installationFamily?.id != stored.family.id
             } ?? false
             if replacing || changedFamily {
-                try await retireComponentStateUncoordinated(component)
+                if configuration.sharedComponentAccount != nil {
+                    try await componentStorage(for: component).clear()
+                    try await componentKey(for: component).reset()
+                } else {
+                    try await retireComponentStateUncoordinated(component)
+                }
                 _ = await coordinator.invalidate(terminal: false, for: permit)
             }
 
@@ -1434,7 +1556,12 @@ public actor LatchwayClient {
     private func componentKey(
         for component: LatchwayComponentConfiguration
     ) -> LatchwayComponentKeyManager {
-        LatchwayComponentKeyManager(
+        if let account = configuration.sharedComponentAccount {
+            return LatchwayComponentKeyManager(softwareFallbackPolicy: configuration.softwareKeyFallbackPolicy,
+                store: LatchwaySharedComponentKeyStorage(state: .init(account: account, component: component)),
+                preferSecureEnclave: true)
+        }
+        return LatchwayComponentKeyManager(
             applicationID: configuration.applicationID,
             environment: configuration.environment,
             definitionID: component.definitionID,
@@ -1448,6 +1575,9 @@ public actor LatchwayClient {
     ) -> any LatchwayComponentCredentialStorage {
         if let componentStorageOverride {
             return componentStorageOverride(component)
+        }
+        if let account = configuration.sharedComponentAccount {
+            return LatchwaySharedComponentCredentialStorage(state: .init(account: account, component: component))
         }
         return LatchwayKeychainComponentStorage(
             applicationID: configuration.applicationID,
@@ -1496,13 +1626,27 @@ public actor LatchwayClient {
     private func retireComponentStateUncoordinated(
         _ component: LatchwayComponentConfiguration
     ) async throws {
-        try await componentStateRetirer.retire(component)
+        if let account = configuration.sharedComponentAccount {
+            let state = LatchwaySharedComponentState(account: account, component: component)
+            try state.retire()
+            // This helper is explicit installation/component revocation, not
+            // ordinary logout. Revoked component keys must not be resurrected.
+            try state.evictRetiredKeys()
+        } else {
+            try await componentStateRetirer.retire(component)
+        }
     }
 
     private func validateComponentConfiguration(
         _ component: LatchwayComponentConfiguration
     ) throws {
         try component.validateForContainingApplication()
+        if configuration.sharedNative {
+            guard configuration.sharedComponentGroups.contains(component.keychainAccessGroup),
+                  component.keychainAccessGroup != configuration.rootKeychainAccessGroup else {
+                throw LatchwayComponentError.invalidConfiguration("The native app has not approved this component Keychain group")
+            }
+        }
     }
 
     private static func validatedComponentProvisioning(
@@ -1638,13 +1782,26 @@ public actor LatchwayClient {
     }
 
     private func sendThroughTransport(_ request: URLRequest) async throws -> LatchwayHTTPResponse {
-        do { return try await transport.send(request) }
+        try lease.check()
+        let task = Task { [transport] in try await transport.send(request) }
+        let cancellation: UUID
+        do { cancellation = try await lease.register { task.cancel() } }
+        catch { task.cancel(); throw error }
+        defer { Task { await lease.unregister(cancellation) } }
+        do {
+            let response = try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
+            try lease.check()
+            try await checkAccount()
+            return response
+        }
         catch is CancellationError {
             let error = LatchwayError.cancelled
             await record(error)
             throw error
         } catch let error as LatchwayError {
             await record(error)
+            throw error
+        } catch let error as LatchwayLifecycleError {
             throw error
         } catch {
             let error = LatchwayError.transportFailure
@@ -1673,6 +1830,7 @@ public actor LatchwayClient {
         guard !Task.isCancelled else { throw LatchwayError.cancelled }
         let method = request.httpMethod?.uppercased() ?? "GET"
         let proof = try await proofFactory.proof(method: method, url: url, accessToken: active.accessToken, nonce: nonce)
+        try await checkAccount()
         guard !Task.isCancelled else { throw LatchwayError.cancelled }
         request.setValue("DPoP \(active.accessToken)", forHTTPHeaderField: "Authorization")
         request.setValue(proof, forHTTPHeaderField: "DPoP")
@@ -1805,10 +1963,11 @@ public actor LatchwayClient {
     private static func validDiagnostics(
         _ remote: ClientDiagnosticsWire,
         active: RuntimeSession,
-        thumbprint: String?
+        thumbprint: String?,
+        configuration: LatchwayConfiguration
     ) -> Bool {
-        remote.contractVersion == LatchwayVersion.contract
-            && remote.protocolVersion == LatchwayVersion.protocolVersion
+        remote.contractVersion == configuration.wireContract
+            && remote.protocolVersion == configuration.wireProtocol
             && remote.installation.id == active.installation.id
             && remote.installation.platform == active.installation.platform
             && remote.installation.status == "active"

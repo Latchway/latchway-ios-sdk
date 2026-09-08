@@ -28,9 +28,11 @@ enum LatchwayComponentRequestSecurity {
         configuration: LatchwayConfiguration,
         framework: LatchwayFrameworkMetadata?
     ) {
-        request.setValue(configuration.clientRuntime.sdkIdentifier, forHTTPHeaderField: "X-Latchway-SDK")
+        request.setValue(configuration.sharedNative ? configuration.clientRuntime.sdkIdentifier : nil,
+                         forHTTPHeaderField: "X-Latchway-Caller")
+        request.setValue(configuration.sdkIdentifier, forHTTPHeaderField: "X-Latchway-SDK")
         request.setValue(configuration.clientSDKVersion, forHTTPHeaderField: "X-Latchway-SDK-Version")
-        request.setValue(String(LatchwayVersion.protocolVersion), forHTTPHeaderField: "X-Latchway-Protocol-Version")
+        request.setValue(String(configuration.wireProtocol), forHTTPHeaderField: "X-Latchway-Protocol-Version")
         if let framework {
             request.setValue(framework.identifier, forHTTPHeaderField: "X-Latchway-Framework")
             request.setValue(framework.version, forHTTPHeaderField: "X-Latchway-Framework-Version")

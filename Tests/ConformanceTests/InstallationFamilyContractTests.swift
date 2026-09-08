@@ -5,7 +5,7 @@ import XCTest
 final class InstallationFamilyContractTests: XCTestCase {
     func testCanonicalWireTwoFamilyVectorMatchesSwiftWireModels() throws {
         let root = try fixture()
-        XCTAssertEqual(root["contract_version"] as? String, LatchwayVersion.contract)
+        XCTAssertEqual(root["contract_version"] as? String, "1.0.0", "The normative wire-2 fixture retains its original edition")
         XCTAssertEqual(root["wire_protocol_version"] as? Int, LatchwayVersion.protocolVersion)
 
         let familyObject = try object(root, "family")

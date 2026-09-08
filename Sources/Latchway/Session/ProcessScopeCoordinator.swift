@@ -30,6 +30,45 @@ actor LatchwayProcessScopeCoordinator<Value: Sendable> {
     private var revision: UInt64 = 0
     private var value: Value?
     private var terminal = false
+    private var permanentlyRetired = false
+    private struct DrainWaiter {
+        let continuation: CheckedContinuation<Void, Error>
+        let deadline: Task<Void, Never>
+    }
+    private var drainWaiters: [UUID: DrainWaiter] = [:]
+
+    /// New shared-app registration retires a legacy runtime scope regardless
+    /// of its former request options. It can never be reinitialized in-process.
+    func retireForMigration() {
+        permanentlyRetired = true
+        terminal = true
+        value = nil
+        revision &+= 1
+        let pending = waiters
+        waiters.removeAll()
+        for waiter in pending { waiter.continuation.resume(throwing: LatchwayLifecycleError.loggedOut) }
+    }
+
+    /// Migration cannot erase credentials and declare success while an old
+    /// owner can still finish a storage write. Timeout leaves the scope retired
+    /// and the caller's durable migration journal pending for an explicit retry.
+    func retireForMigrationAndDrain(timeoutNanoseconds: UInt64 = 30_000_000_000) async throws {
+        retireForMigration()
+        guard owner != nil else { return }
+        let id = UUID()
+        try await withCheckedThrowingContinuation { continuation in
+            let deadline = Task {
+                do { try await Task.sleep(nanoseconds: timeoutNanoseconds) }
+                catch { return }
+                self.expireDrain(id)
+            }
+            drainWaiters[id] = .init(continuation: continuation, deadline: deadline)
+        }
+    }
+
+    private func expireDrain(_ id: UUID) {
+        drainWaiters.removeValue(forKey: id)?.continuation.resume(throwing: LatchwayLifecycleError.cleanupRequired)
+    }
 
     init(configurationFingerprint: String) {
         self.configurationFingerprint = configurationFingerprint
@@ -48,6 +87,7 @@ actor LatchwayProcessScopeCoordinator<Value: Sendable> {
     func acquire(
         configurationFingerprint candidate: String
     ) async throws -> LatchwayProcessScopePermit {
+        guard !permanentlyRetired else { throw LatchwayLifecycleError.loggedOut }
         guard candidate == configurationFingerprint else {
             throw LatchwayError.invalidConfiguration(
                 "Clients sharing one Latchway Keychain namespace must use the same gateway and identity configuration"
@@ -79,6 +119,7 @@ actor LatchwayProcessScopeCoordinator<Value: Sendable> {
     @discardableResult
     func publish(_ value: Value, for permit: LatchwayProcessScopePermit) -> UInt64 {
         precondition(owner == permit.id, "Latchway process-scope permit is not the current owner")
+        guard !permanentlyRetired else { return revision }
         revision &+= 1
         self.value = value
         terminal = false
@@ -93,7 +134,7 @@ actor LatchwayProcessScopeCoordinator<Value: Sendable> {
         precondition(owner == permit.id, "Latchway process-scope permit is not the current owner")
         revision &+= 1
         value = nil
-        self.terminal = terminal
+        self.terminal = terminal || permanentlyRetired
         return revision
     }
 
@@ -101,6 +142,9 @@ actor LatchwayProcessScopeCoordinator<Value: Sendable> {
         precondition(owner == permit.id, "Latchway process-scope permit is not the current owner")
         if waiters.isEmpty {
             owner = nil
+            let pending = Array(drainWaiters.values)
+            drainWaiters.removeAll()
+            for waiter in pending { waiter.deadline.cancel(); waiter.continuation.resume() }
             return
         }
         let waiter = waiters.removeFirst()
@@ -159,10 +203,21 @@ final class LatchwayProcessScopeCoordinatorPool: @unchecked Sendable {
 enum LatchwayProcessScopeIdentity {
     static let productionNamespace = "production"
 
+    static func sharedRoot(scope: String, generation: UUID, namespace: String = productionNamespace) -> String {
+        encode([namespace, "shared-native-v3", scope, generation.uuidString])
+    }
+
+    static func sharedFingerprint(scope: String, generation: UUID) -> String {
+        encode(["shared-native-v3", scope, generation.uuidString])
+    }
+
     static func root(
         configuration: LatchwayConfiguration,
         namespace: String
     ) -> String {
+        if let generation = configuration.accountGeneration {
+            return sharedRoot(scope: generation.storageScope, generation: generation.id, namespace: namespace)
+        }
         let service = LatchwayKeychainNamespace.service(
             applicationID: configuration.applicationID,
             environment: configuration.environment,
@@ -181,6 +236,10 @@ enum LatchwayProcessScopeIdentity {
         component: LatchwayComponentConfiguration,
         namespace: String
     ) -> String {
+        if let account = configuration.sharedComponentAccount {
+            return encode([namespace, account.service(component), account.generationID.uuidString,
+                           component.keychainAccessGroup])
+        }
         let service = LatchwayKeychainNamespace.componentService(
             applicationID: configuration.applicationID,
             environment: configuration.environment,
@@ -195,7 +254,10 @@ enum LatchwayProcessScopeIdentity {
     }
 
     static func rootFingerprint(configuration: LatchwayConfiguration) -> String {
-        encode([
+        if let generation = configuration.accountGeneration {
+            return sharedFingerprint(scope: generation.storageScope, generation: generation.id)
+        }
+        return encode([
             configuration.baseURL.absoluteString,
             configuration.applicationID,
             configuration.environment,
@@ -213,7 +275,11 @@ enum LatchwayProcessScopeIdentity {
         configuration: LatchwayConfiguration,
         component: LatchwayComponentConfiguration
     ) -> String {
-        encode([
+        if let account = configuration.sharedComponentAccount {
+            return encode([account.appScope, account.accountScope, account.generationID.uuidString,
+                           component.definitionID, component.kind, encode(component.requestedFeatures.sorted())])
+        }
+        return encode([
             rootFingerprint(configuration: configuration),
             component.definitionID,
             component.kind,

@@ -5,7 +5,40 @@ All notable changes to this project will be documented in this file.
 The format follows Keep a Changelog, and releases will follow Semantic
 Versioning once package publication begins.
 
-## [Unreleased]
+## [1.2.0] — 2026-09-08
+
+### Added
+
+- Provider-neutral supplied JWT metadata, pure Firebase-project helper,
+  memory-only verified identity, one-call App Attest configuration, opaque
+  account handles and one-shot async sign-in/token update operations.
+- Gateway-verified identity replacement using `supplied_identity_v1`; expired
+  identity suspends access without retiring the account. A verified same-user
+  update resumes the existing generation without resetting quota.
+- Native sign-in cancellation tickets, guarded restoration after process death,
+  exclusive optional auth-binding leases and independent RN/native session use.
+
+- Shared native `LatchwayApp` registry, idempotent native/RN configuration,
+  account-aware compatibility identity snapshots, explicit activation and serialized
+  identity-authority transfer. Native/RN root clients share sessions/refresh,
+  while every request receives its own DPoP proof.
+- Captured-generation offline logout, persistent retirement/cleanup recovery,
+  terminal old handles and client-only disposal/stream cancellation.
+- Account-scoped delegated extension handoffs and revision-matched Keychain
+  persistence. Cached responses and late credential writes observe cross-process
+  retirement; credentials are erased separately from retained account keys.
+- Bounded root/component key retention, exact legacy native/RN/group inventory,
+  permanent legacy fences and an explicit native custom-store migration hook.
+- LatchwayChat's native auth-owner lifecycle, sign-out during streaming,
+  two-account UI/tool fencing and updated migration/extension guidance.
+
+### Compatibility
+
+- Shared mode requires the server-owned draft contract 1.1.0 / protocol 3 and
+  explicit required native-host `sharedNativeCallers` policy. Legacy wire 2
+  remains separate; no runtime downgrade or legacy credential adoption occurs.
+- Fixture/CAS tests and local consumer builds are not signed Keychain,
+  physical App Attest or extension proof; release verification reports them separately.
 
 ### Changed
 

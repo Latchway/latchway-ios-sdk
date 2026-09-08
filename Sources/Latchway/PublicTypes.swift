@@ -30,6 +30,17 @@ public enum LatchwayClientRuntime: String, Sendable, Codable, CaseIterable {
 }
 
 public struct LatchwayConfiguration: Sendable {
+    // Only the native app registry can create a shared, account-bound scope.
+    var accountGeneration: LatchwayAccountGeneration?
+    var sharedComponentAccount: LatchwayComponentAccount?
+    var sharedComponentGroups: [String] = []
+    var checksPersistentLegacyFence = true
+    var sharedNative: Bool { accountGeneration != nil || sharedComponentAccount != nil }
+    var accountLogout: (@Sendable () async throws -> Void)?
+    var installationPlatform: String { sharedNative ? "ios" : clientRuntime.platformIdentifier }
+    var sdkIdentifier: String { sharedNative ? "native" : clientRuntime.sdkIdentifier }
+    var wireProtocol: Int { sharedNative ? 3 : LatchwayVersion.protocolVersion }
+    var wireContract: String { sharedNative ? "1.1.0" : LatchwayVersion.contract }
     public let baseURL: URL
     public let applicationID: String
     public let environment: String

@@ -54,6 +54,9 @@ public struct LatchwayAsyncBytes: AsyncSequence, Sendable {
         private var prefixIndex: Int
         private var lookahead: UInt8?
         private var remainder: URLSession.AsyncBytes.Iterator?
+        fileprivate var generation: LatchwayAccountGeneration?
+        fileprivate var lease: LatchwayClientLease?
+        fileprivate var persistentCheck: (@Sendable () throws -> Void)?
 
         fileprivate init(
             prefix: Data,
@@ -67,6 +70,9 @@ public struct LatchwayAsyncBytes: AsyncSequence, Sendable {
         }
 
         public mutating func next() async throws -> UInt8? {
+            try lease?.check()
+            try generation?.checkLive()
+            try persistentCheck?()
             if prefixIndex < prefix.count {
                 defer { prefixIndex += 1 }
                 return prefix[prefixIndex]
@@ -77,6 +83,9 @@ public struct LatchwayAsyncBytes: AsyncSequence, Sendable {
             }
             guard var remainder else { return nil }
             let byte = try await remainder.next()
+            try lease?.check()
+            try generation?.checkLive()
+            try persistentCheck?()
             self.remainder = remainder
             return byte
         }
@@ -89,12 +98,33 @@ public struct LatchwayAsyncBytes: AsyncSequence, Sendable {
     }
 
     private let storage: Storage
+    private var generation: LatchwayAccountGeneration?
+    private var lease: LatchwayClientLease?
+    private var persistentCheck: (@Sendable () throws -> Void)?
+
+    func withPersistentCheck(_ check: @escaping @Sendable () throws -> Void) -> Self {
+        var copy = self
+        copy.persistentCheck = check
+        return copy
+    }
+
+    func withLease(_ value: LatchwayClientLease) -> Self {
+        var copy = self
+        copy.lease = value
+        return copy
+    }
+
+    func withGeneration(_ value: LatchwayAccountGeneration) -> Self {
+        var copy = self
+        copy.generation = value
+        return copy
+    }
 
     fileprivate init(_ bytes: URLSession.AsyncBytes) {
         storage = .native(bytes)
     }
 
-    fileprivate init(buffered bytes: Data) {
+    init(buffered bytes: Data) {
         storage = .buffered(bytes)
     }
 
@@ -107,7 +137,7 @@ public struct LatchwayAsyncBytes: AsyncSequence, Sendable {
     }
 
     public func makeAsyncIterator() -> AsyncIterator {
-        switch storage {
+        var iterator = switch storage {
         case let .native(bytes):
             AsyncIterator(
                 prefix: Data(),
@@ -123,6 +153,10 @@ public struct LatchwayAsyncBytes: AsyncSequence, Sendable {
                 remainder: remainder
             )
         }
+        iterator.generation = generation
+        iterator.lease = lease
+        iterator.persistentCheck = persistentCheck
+        return iterator
     }
 }
 
@@ -137,6 +171,41 @@ public struct LatchwayStreamingResponse: Sendable {
 
     private let finishOperation: @Sendable () -> Void
     private let cancelOperation: @Sendable () -> Void
+
+    func bound(check: @escaping @Sendable () throws -> Void) -> Self {
+        .init(response: response, bytes: bytes.withPersistentCheck {
+            do { try check() } catch { cancelOperation(); throw error }
+        },
+              finish: finishOperation, cancel: cancelOperation)
+    }
+
+    private init(response: HTTPURLResponse, bytes: LatchwayAsyncBytes,
+                 finish: @escaping @Sendable () -> Void, cancel: @escaping @Sendable () -> Void) {
+        self.response = response
+        self.bytes = bytes
+        finishOperation = finish
+        cancelOperation = cancel
+    }
+
+    func bound(to generation: LatchwayAccountGeneration, cancellation: UUID) -> Self {
+        .init(response: response, bytes: bytes.withGeneration(generation), finish: {
+            finishOperation()
+            Task { await generation.unregisterCancellation(cancellation) }
+        }, cancel: {
+            cancelOperation()
+            Task { await generation.unregisterCancellation(cancellation) }
+        })
+    }
+
+    func bound(to lease: LatchwayClientLease, cancellation: UUID) -> Self {
+        .init(response: response, bytes: bytes.withLease(lease), finish: {
+            finishOperation()
+            Task { await lease.unregister(cancellation) }
+        }, cancel: {
+            cancelOperation()
+            Task { await lease.unregister(cancellation) }
+        })
+    }
 
     init(response: HTTPURLResponse, bytes: URLSession.AsyncBytes, session: URLSession) {
         self.init(
@@ -180,6 +249,9 @@ public struct LatchwayFeatureTransport: Sendable {
     private let framework: LatchwayFrameworkMetadata?
     private let baseURL: URL
     private let sessionFactory: @Sendable () -> URLSession
+    private let generation: LatchwayAccountGeneration?
+    private let lease: LatchwayClientLease?
+    private let persistentCheck: (@Sendable () throws -> Void)?
     private let authorizeOperation: @Sendable (URLRequest) async throws -> URLRequest
     private let sendOperation: @Sendable (URLRequest) async throws -> LatchwayHTTPResponse
     private let streamingRetryOperation: (@Sendable (
@@ -194,6 +266,9 @@ public struct LatchwayFeatureTransport: Sendable {
         baseURL: URL,
         session: URLSession? = nil,
         makeSession: (@Sendable () -> URLSession)? = nil,
+        generation: LatchwayAccountGeneration? = nil,
+        lease: LatchwayClientLease? = nil,
+        persistentCheck: (@Sendable () throws -> Void)? = nil,
         authorize: @escaping @Sendable (URLRequest) async throws -> URLRequest,
         send: @escaping @Sendable (URLRequest) async throws -> LatchwayHTTPResponse,
         streamingRetry: (@Sendable (
@@ -204,6 +279,9 @@ public struct LatchwayFeatureTransport: Sendable {
     ) {
         self.feature = feature
         self.framework = framework
+        self.generation = generation
+        self.lease = lease
+        self.persistentCheck = persistentCheck
         self.baseURL = baseURL
         if let makeSession {
             sessionFactory = makeSession
@@ -238,14 +316,33 @@ public struct LatchwayFeatureTransport: Sendable {
         do {
             let authorized = try await authorizeOperation(request)
             let session = sessionFactory()
+            let cancellation: UUID?
+            let leaseCancellation: UUID?
+            do { leaseCancellation = try await lease?.register { session.invalidateAndCancel() } }
+            catch { session.invalidateAndCancel(); throw error }
+            do { cancellation = try await generation?.registerCancellation { session.invalidateAndCancel() } }
+            catch {
+                session.invalidateAndCancel()
+                if let leaseCancellation { await lease?.unregister(leaseCancellation) }
+                throw error
+            }
             do {
-                return try await bytes(
+                var response = try await bytes(
                     for: request,
                     authorized: authorized,
                     session: session
                 )
+                try generation?.checkLive()
+                try lease?.check()
+                try persistentCheck?()
+                if let persistentCheck { response = response.bound(check: persistentCheck) }
+                if let generation, let cancellation { response = response.bound(to: generation, cancellation: cancellation) }
+                if let lease, let leaseCancellation { response = response.bound(to: lease, cancellation: leaseCancellation) }
+                return response
             } catch {
                 session.invalidateAndCancel()
+                if let cancellation { await generation?.unregisterCancellation(cancellation) }
+                if let leaseCancellation { await lease?.unregister(leaseCancellation) }
                 throw error
             }
         } catch is CancellationError {
@@ -253,6 +350,8 @@ public struct LatchwayFeatureTransport: Sendable {
         } catch let error as URLError where error.code == .cancelled && Task.isCancelled {
             throw LatchwayError.cancelled
         } catch let error as LatchwayError {
+            throw error
+        } catch let error as LatchwayLifecycleError {
             throw error
         } catch {
             throw LatchwayError.transportFailure

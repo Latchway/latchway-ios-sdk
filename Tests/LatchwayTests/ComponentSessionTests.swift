@@ -4,6 +4,36 @@ import LatchwayTesting
 import XCTest
 
 final class ComponentSessionTests: XCTestCase {
+    func testSharedExtensionCachedSessionStopsAfterIndependentAccountRetirement() async throws {
+        let state = LatchwaySharedComponentState(records: ComponentCASMemoryRecords(), generation: UUID())
+        let fixture = try await makeFixture(kind: .provisioningGrant, clientRuntime: .reactNativeIOS,
+            sharedState: state)
+        var request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        request.httpMethod = "POST"
+        try await fixture.client.authorize(&request, feature: "habit-assistant")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "X-Latchway-SDK"), "native")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "X-Latchway-Caller"), "react-native")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "X-Latchway-Protocol-Version"), "3")
+        try LatchwaySharedComponentState(records: state.records, generation: state.generation).retire()
+        var subsequent = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+        do { try await fixture.client.authorize(&subsequent, feature: "habit-assistant"); XCTFail("Cached session survived logout") }
+        catch { XCTAssertEqual(error as? LatchwayLifecycleError, .loggedOut) }
+        XCTAssertNil(subsequent.value(forHTTPHeaderField: "Authorization"))
+        let count = await fixture.server.requestCount()
+        XCTAssertEqual(count, 1)
+    }
+
+    func testSharedExtensionLateRefreshCannotPersistAfterIndependentRetirement() async throws {
+        let state = LatchwaySharedComponentState(records: ComponentCASMemoryRecords(), generation: UUID())
+        let fixture = try await makeFixture(kind: .provisioningGrant, serverDelay: .milliseconds(30), sharedState: state)
+        let refresh = Task { try await fixture.client.refresh() }
+        while await fixture.server.requestCount() == 0 { await Task.yield() }
+        try state.retire()
+        do { try await refresh.value; XCTFail("Late grant persisted") }
+        catch { XCTAssertEqual(error as? LatchwayLifecycleError, .loggedOut) }
+        XCTAssertThrowsError(try state.read("credential"))
+    }
+
     func testSeparateExtensionClientsCoordinateProvisioningAndRefresh() async throws {
         let fixture = try await makeSharedComponentFixture(kind: .provisioningGrant)
         try await withThrowingTaskGroup(of: Void.self) { group in
@@ -755,7 +785,8 @@ final class ComponentSessionTests: XCTestCase {
         refreshPlatform: String = "ios",
         refreshRejection: String? = nil,
         baseURL: URL = URL(string: "https://gateway.example.test")!,
-        clientRuntime: LatchwayClientRuntime = .iOS
+        clientRuntime: LatchwayClientRuntime = .iOS,
+        sharedState: LatchwaySharedComponentState? = nil
     ) async throws -> Fixture {
         let raw = try decodeBase64URL("2ZFd1bc5bCB8zu8OEf5l7O9x_SxbsQNQMNn0si4NxxI")
         let key = try LatchwayDeterministicInstallationKey(rawPrivateKey: raw)
@@ -797,7 +828,7 @@ final class ComponentSessionTests: XCTestCase {
             refreshRejection: refreshRejection,
             delay: serverDelay
         )
-        let configuration = LatchwayConfiguration(
+        var configuration = LatchwayConfiguration(
             baseURL: baseURL,
             applicationID: "app_01J00000000000000000000000",
             environment: "production",
@@ -805,14 +836,25 @@ final class ComponentSessionTests: XCTestCase {
             clientRuntime: clientRuntime,
             appVersion: "1.2.3"
         )
+        let effectiveStorage: any LatchwayComponentCredentialStorage
+        if let sharedState {
+            try sharedState.initialize()
+            let sharedStorage = LatchwaySharedComponentCredentialStorage(state: sharedState)
+            try await sharedStorage.save(stored)
+            effectiveStorage = sharedStorage
+            configuration.sharedComponentAccount = .init(generationID: sharedState.generation,
+                appScope: LatchwayAppIdentity.digest([baseURL.absoluteString, configuration.applicationID, configuration.environment]),
+                accountScope: String(repeating: "b", count: 64))
+        } else { effectiveStorage = storage }
         return Fixture(
             client: try LatchwayExtensionClient(
                 configuration: configuration,
                 component: component,
                 key: key,
-                storage: storage,
+                storage: effectiveStorage,
                 transport: server,
-                clock: clock
+                clock: clock,
+                sharedState: sharedState
             ),
             storage: storage,
             server: server

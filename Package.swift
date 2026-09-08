@@ -70,7 +70,7 @@ let package = Package(
         ),
         .testTarget(
             name: "LatchwayTests",
-            dependencies: ["Latchway", "LatchwayTesting"],
+            dependencies: ["Latchway", "LatchwayTesting", "LatchwayFirebaseAuth"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
         .testTarget(

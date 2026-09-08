@@ -4,6 +4,7 @@ actor LatchwayKeychainComponentStorage: LatchwayComponentCredentialStorage {
     private let store: LatchwayKeychainStore
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
+    private let fence: LatchwayLegacyComponentFence
 
     init(
         applicationID: String,
@@ -11,6 +12,8 @@ actor LatchwayKeychainComponentStorage: LatchwayComponentCredentialStorage {
         definitionID: String,
         accessGroup: String
     ) {
+        fence = LatchwayLegacyComponentFence(applicationID: applicationID, environment: environment,
+            definitionID: definitionID, accessGroup: accessGroup)
         store = LatchwayKeychainStore(
             service: LatchwayKeychainNamespace.componentService(
                 applicationID: applicationID,
@@ -26,6 +29,7 @@ actor LatchwayKeychainComponentStorage: LatchwayComponentCredentialStorage {
     }
 
     func load() async throws -> LatchwayStoredComponentCredential? {
+        try fence.check()
         guard let data = try await store.read(account: "component-credential") else { return nil }
         do {
             return try decoder.decode(LatchwayStoredComponentCredential.self, from: data)
@@ -36,8 +40,15 @@ actor LatchwayKeychainComponentStorage: LatchwayComponentCredentialStorage {
     }
 
     func save(_ credential: LatchwayStoredComponentCredential) async throws {
+        try fence.check()
         do {
             try await store.write(try encoder.encode(credential), account: "component-credential")
+            do { try fence.check() } catch {
+                try await store.delete(account: "component-credential")
+                throw error
+            }
+        } catch let error as LatchwayLifecycleError {
+            throw error
         } catch {
             throw LatchwayComponentError.keychainAccessGroupUnavailable
         }

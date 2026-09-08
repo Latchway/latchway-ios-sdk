@@ -4,11 +4,20 @@ A disposable native SwiftUI chat app demonstrating Firebase email/password
 sign-up and login, real Apple App Attest, Secure Enclave DPoP, streamed chat,
 and server-settled token quota against a deployed Latchway server.
 
+## Unreleased shared-account update
+
+The current source uses the new native `LatchwayApp` registry, atomic Firebase
+identity authority, explicit activation and offline account logout. It requires
+the draft contract 1.1.0 / protocol 3 server and explicit iOS
+`sharedNativeCallers` policy; it does **not** silently fall back on server 1.0.x.
+No production gateway configuration was changed for this example update.
+The older receipts below are historical, not verification of the new lifecycle.
+
 ## Current setup
 
-- Gateway: `https://latchway.habitify.me`, running the private rich-Responses
-  integration candidate over public server 1.0.1. Public server 1.0.2 includes
-  the same Responses changes required by SDK 1.1.0.
+- Gateway: `https://latchway.habitify.me` is the existing disposable deployment
+  target. Upgrade/enable its shared-native policy explicitly before running this
+  source; a local build does not verify its currently deployed version.
 - Separate application: `LatchwayChat (Disposable)` (`latchway-chat`).
 - Application ID: `app_01M1RJ9GEX0RQ0J6VFRMVJYDZS`.
 - Development environment: `env_01M1RJ9HVTXQQRV4QRD65NFRVS`.
@@ -22,7 +31,7 @@ and server-settled token quota against a deployed Latchway server.
 
 The project preserves the user's iOS 27 deployment target and automatic signing.
 It links this repository's local Swift package and Firebase 12.15.0, the version
-used by the React Native example. It exercises this repository's 1.1.0 adapter.
+used by the React Native example. It exercises this repository's current source.
 Installing it replaces the older React Native example on the same device because
 both use `dev.latchway`.
 
@@ -50,8 +59,21 @@ xcodebuild -project LatchwayChat/LatchwayChat.xcodeproj \
 Sign in or create an account, wait for the green device-verification status,
 then ask about Latchway. Tap the shield for actual session/attestation/key-storage
 diagnostics, quota, and the last correlation ID. Use the menu to clear the chat
-or sign out. Sign-out revokes the active Latchway installation before clearing
-Firebase identity; failed revocation leaves the user signed in to retry.
+or sign out. Sign-out cancels chat/tools, fences UI callbacks, awaits captured
+generation logout, closes the old client, then signs out Firebase. It does not
+revoke the hardware installation or reset quota. Failed local cleanup leaves AI
+disabled and the same sign-out action retries cleanup without needing an ID token.
+One Firebase observer handles externally initiated account changes; the app
+cleans A before explicitly activating B and creates a fresh framework session.
+Screen disposal is not sign-out. A persisted Latchway logout does not silently
+reactivate on launch just because Firebase still has the same user; choose
+Reconnect or a new sign-in explicitly.
+
+For a two-account exercise, sign in as A, send a message, sign out while a reply
+or weather lookup is running, then sign in as B. A's text, quota, weather cards
+and delayed callbacks must not reappear. Repeat A → logout → A and confirm the
+server's existing daily usage remains. Record server principal/usage evidence
+separately from UI observations. This exercise is not yet a device receipt.
 
 ## Choose a chat engine
 
@@ -92,7 +114,7 @@ The gateway stores redacted usage/request metadata; OpenRouter processes the
 conversation according to its own policies. Each reply requests at most 1,024
 output tokens. The gateway, not the client, enforces quotas and determines usage.
 
-## Physical verification
+## Historical physical verification — legacy path
 
 Verified on a connected iPhone 16 Pro running iOS 27 on 2026-09-05:
 

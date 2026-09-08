@@ -1,16 +1,22 @@
 # Latchway iOS SDK
 
+SDK **1.2.0** adds [developer-supplied identity and shared native/RN accounts](Documentation/SuppliedIdentity.md).
+Configure from either native or React Native first, supply an ID token, and use
+the shared account. No Firebase dependency, native auth bootstrap or permanent
+JavaScript token provider is required. This path requires a gateway advertising
+`supplied_identity_v1` and an enabled shared-native application policy.
+
 Latchway lets an untrusted iOS application call AI infrastructure through a
 self-hosted gateway without embedding an upstream provider key. This package
 provides the Swift transport and platform-security integration for that client
 boundary.
 
-> SDK **1.1.0** keeps contract 1.0.0 and wire protocol 2. Core transport supports
+> The compatible legacy client keeps contract 1.0.0 and wire protocol 2. Core transport supports
 > server 1.0.0 or newer; the expanded Foundation Models adapter requires server
 > **1.0.2**. Compatible legacy wire-1 root grants remain readable. See the
 > [release notes](docs/release/v1.1.0.md) for additions and known backend limits.
 
-SDK 1.1.0 is available through the GitHub tag/SwiftPM and CocoaPods. Server
+The historical SDK 1.1.0 is available through GitHub/SwiftPM and CocoaPods. Server
 1.0.3 additionally permits native iOS and React Native iOS main-app roots to
 share a bundle identifier when both require direct App Attest. Configure each
 platform explicitly; this does not merge their installations or duplicate a

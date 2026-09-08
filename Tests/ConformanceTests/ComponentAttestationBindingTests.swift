@@ -16,7 +16,7 @@ final class ComponentAttestationBindingTests: XCTestCase {
             JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any]
         )
         XCTAssertEqual(root["format_version"] as? Int, 1)
-        XCTAssertEqual(root["contract_version"] as? String, LatchwayVersion.contract)
+        XCTAssertEqual(root["contract_version"] as? String, "1.0.0", "Stable component vectors retain their original edition in contract 1.1.0")
         XCTAssertEqual(root["binding_version"] as? Int, 2)
         XCTAssertEqual(root["canonicalization"] as? String, "RFC 8785 JCS")
         XCTAssertEqual(root["hash"] as? String, "SHA-256")

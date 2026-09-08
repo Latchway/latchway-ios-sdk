@@ -6,7 +6,7 @@ import Foundation
 /// the target extension's signed entitlements. In hardened deployments each
 /// component uses a different group, so sibling extensions cannot read one
 /// another's key reference or rotating grant.
-public struct LatchwayComponentConfiguration: Sendable, Hashable {
+public struct LatchwayComponentConfiguration: Sendable, Hashable, Codable {
     public let definitionID: String
     public let kind: String
     public let keychainAccessGroup: String

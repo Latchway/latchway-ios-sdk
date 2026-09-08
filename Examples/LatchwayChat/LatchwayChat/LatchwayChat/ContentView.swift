@@ -34,13 +34,14 @@ struct ContentView: View {
                     ToolbarItem(placement: .topBarTrailing) {
                         Menu {
                             Button("New conversation", systemImage: "square.and.pencil") { model.clearChat() }
+                                .disabled(model.streaming)
                             Button("Settings", systemImage: "gearshape") { showSettings = true }
                             Button("Connection details", systemImage: "network") { showConnection = true }
                             Button("Sign out", systemImage: "rectangle.portrait.and.arrow.right") {
                                 Task { await model.signOut() }
                             }
                         } label: { Image(systemName: "ellipsis.circle") }
-                        .disabled(model.busy || model.streaming)
+                        .disabled(model.busy)
                         .accessibilityLabel("Chat options")
                     }
                 }

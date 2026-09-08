@@ -6,7 +6,7 @@ import XCTest
 final class DPoPContractVectorTests: XCTestCase {
     func testEveryContractVector() throws {
         let root = try fixture(named: "dpop-v1")
-        XCTAssertEqual(root["contract_version"] as? String, LatchwayVersion.contract)
+        XCTAssertEqual(root["contract_version"] as? String, "1.0.0", "Stable RFC 9449 vectors retain their original edition in contract 1.1.0")
         let vectorWire = try XCTUnwrap(root["wire_protocol_version"] as? Int)
         XCTAssertTrue(LatchwayVersion.supportedProtocolVersions.contains(vectorWire))
         XCTAssertEqual(vectorWire, 1, "The stable RFC 9449 vector remains shared by wire 1 and wire 2")

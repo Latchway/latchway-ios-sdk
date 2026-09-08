@@ -1,9 +1,9 @@
 import Combine
 import Foundation
 import FirebaseAuth
+import FirebaseCore
 import Latchway
 import LatchwayAppAttest
-import LatchwayFirebaseAuth
 import FoundationModels
 import LatchwayFoundationModels
 
@@ -67,13 +67,31 @@ final class ChatModel: ObservableObject {
     @Published private(set) var engine = ChatEngine(rawValue: UserDefaults.standard.string(forKey: "chat.engine") ?? "") ?? .urlSession
     @Published private(set) var weatherLookups: [WeatherLookup] = []
     private var client: LatchwayClient?
+    private var app: LatchwayApp?
+    private var account: LatchwayAccount?
+    private var uiGeneration = UUID()
+    private var authListener: AuthStateDidChangeListenerHandle?
+    private var observedUser: User?
+    private var authTransition: Task<Void, Never>?
+    private var sendTask: Task<Void, Never>?
+    private var managingAuth = false
     private var foundationSession: LanguageModelSession?
-    private let weatherBudget = WeatherToolBudget()
+    private var weatherBudget = WeatherToolBudget()
     private var hasStarted = false
 
     func start() async {
         guard !hasStarted else { return }
         hasStarted = true
+        do { _ = try await configuredApp() } catch { show(error); return }
+        observedUser = Auth.auth().currentUser
+        authListener = Auth.auth().addStateDidChangeListener { [weak self] _, _ in
+            Task { @MainActor [weak self] in
+                guard let self, self.observedUser !== Auth.auth().currentUser else { return }
+                self.observedUser = Auth.auth().currentUser
+                guard !self.managingAuth else { return }
+                self.queueIdentityTransition()
+            }
+        }
         #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("--renew-demo-grant") {
             // Explicit development-only migration after adding a feature to
@@ -98,15 +116,22 @@ final class ChatModel: ObservableObject {
         }
         #endif
         email = Auth.auth().currentUser?.email
-        if email != nil { await reconnect() }
+        let initialState = await app?.snapshot().state
+        if initialState == .loggedOut || initialState == .retiring {
+            connectionStatus = "Latchway is signed out. Reconnect or sign in explicitly to continue."
+        } else if email != nil { await reconnect() }
     }
 
     func authenticate(email: String, password: String, creating: Bool) async {
         guard !busy else { return }
         busy = true
+        managingAuth = true
         errorMessage = nil
-        defer { busy = false }
+        defer { busy = false; managingAuth = false; observedUser = Auth.auth().currentUser }
         do {
+            invalidateAccountUI()
+            if let pending = authTransition { await pending.value }
+            try await retireAccount()
             if creating {
                 _ = try await Auth.auth().createUser(withEmail: email, password: password)
             } else {
@@ -127,30 +152,35 @@ final class ChatModel: ObservableObject {
 
     private func connect() async throws {
         guard Auth.auth().currentUser != nil else { throw DemoError.signedOut }
+        let epoch = uiGeneration
+        let app = try await configuredApp()
+        let snapshot = await app.snapshot()
+        if snapshot.state == .retiring || snapshot.state == .loggedOut {
+            try await retireAccount()
+        }
         verified = false
         connectionStatus = "Verifying App Attest & establishing DPoP session…"
         if client == nil {
-            let attestation = LatchwayAppAttestProvider(
-                applicationID: DemoConfiguration.applicationID,
-                environment: DemoConfiguration.environment,
-                rootKeychainAccessGroup: DemoConfiguration.keychainGroup
-            )
-            client = LatchwayClient(configuration: LatchwayConfiguration(
-                baseURL: DemoConfiguration.gateway,
-                applicationID: DemoConfiguration.applicationID,
-                environment: DemoConfiguration.environment,
-                rootKeychainAccessGroup: DemoConfiguration.keychainGroup,
-                identityProvider: "firebase",
-                softwareKeyFallbackPolicy: .disallow,
-                attestationProvider: attestation
-            ), identityTokenProvider: FirebaseLatchwayIdentityTokenProvider {
-                guard let user = Auth.auth().currentUser else { throw DemoError.signedOut }
-                return try await user.getIDToken()
-            })
+            let account = try await app.signIn { [weak self] in
+                guard let self else { throw DemoError.signedOut }
+                return try await self.currentIDToken()
+            }
+            guard uiGeneration == epoch else { throw CancellationError() }
+            self.account = account
+            let created = try await account.makeClient()
+            guard uiGeneration == epoch else { await created.close(); throw CancellationError() }
+            client = created
+        } else if let account {
+            try await account.updateIdToken { [weak self] in
+                guard let self else { throw DemoError.signedOut }
+                return try await self.currentIDToken()
+            }
         }
         guard let client else { throw DemoError.signedOut }
-        quota = try await client.quota(feature: engine.feature)
+        let currentQuota = try await client.quota(feature: engine.feature)
         let state = await client.diagnostics()
+        guard uiGeneration == epoch else { throw CancellationError() }
+        quota = currentQuota
         diagnostics = state
         guard state.sessionState == .active, state.trustProvider == "app_attest",
               state.trustLevel == "app_verified", state.keyStorage == .secureEnclave else {
@@ -161,18 +191,17 @@ final class ChatModel: ObservableObject {
     }
 
     func signOut() async {
-        guard !busy, !streaming else { return }
+        guard !busy else { return }
         busy = true
+        managingAuth = true
         errorMessage = nil
-        defer { busy = false }
+        defer { busy = false; managingAuth = false; observedUser = Auth.auth().currentUser }
         do {
-            // Revoke while the Firebase identity is still available. On failure,
-            // keep the user signed in so they can retry without orphaning a session.
-            if let client, (await client.diagnostics()).sessionState == .active {
-                try await client.revokeCurrentInstallation()
-            }
+            invalidateAccountUI()
+            if let pending = authTransition { await pending.value }
+            try await retireAccount()
             try Auth.auth().signOut()
-            client = nil
+            observedUser = nil
             email = nil
             verified = false
             diagnostics = nil
@@ -180,6 +209,85 @@ final class ChatModel: ObservableObject {
             clearChat()
             connectionStatus = "Sign in to verify your device"
         } catch { show(error) }
+    }
+
+    private func configuredApp() async throws -> LatchwayApp {
+        if let app { return app }
+        guard let project = FirebaseApp.app()?.options.projectID else { throw DemoError.signedOut }
+        let created = try await LatchwayApp.configure(.init(baseURL: DemoConfiguration.gateway,
+            applicationID: DemoConfiguration.applicationID, environment: DemoConfiguration.environment,
+            rootKeychainAccessGroup: DemoConfiguration.keychainGroup,
+            suppliedIdentity: try .firebaseProject(projectID: project),
+            softwareKeyFallbackPolicy: .disallow, exposeToReactNative: true,
+            legacyComponents: []), // This disposable native chat never provisioned extension grants.
+            name: "latchwaychat-development")
+        app = created
+        return created
+    }
+
+    /// Firebase is an application dependency only. The SDK captures its native
+    /// operation ticket before invoking this one-shot application token fetch.
+    private func currentIDToken() async throws -> String {
+        guard let user = Auth.auth().currentUser else { throw DemoError.signedOut }
+        let epoch = uiGeneration
+        let uid = user.uid
+        let token: String = try await withCheckedThrowingContinuation { continuation in
+            user.getIDTokenForcingRefresh(false) { token, error in
+                if let error { continuation.resume(throwing: error) }
+                else if let token { continuation.resume(returning: token) }
+                else { continuation.resume(throwing: DemoError.signedOut) }
+            }
+        }
+        guard epoch == uiGeneration, Auth.auth().currentUser === user, user.uid == uid else { throw CancellationError() }
+        return token
+    }
+
+    private func invalidateAccountUI() {
+        uiGeneration = UUID()
+        verified = false
+        sendTask?.cancel()
+        sendTask = nil
+        streaming = false
+        weatherBudget = WeatherToolBudget()
+        clearChat()
+        quota = nil
+        diagnostics = nil
+        connectionStatus = "Finishing account cleanup…"
+    }
+
+    private func retireAccount() async throws {
+        let app = try await configuredApp()
+        let snapshot = await app.snapshot()
+        if let account { try await account.logout() }
+        else if let captured = snapshot.generationID {
+            try await app.logout(generationID: captured)
+        }
+        if let client { await client.close() }
+        client = nil
+        account = nil
+    }
+
+    /// One native Firebase observer serializes external account changes. The
+    /// UI is fenced immediately; old token, weather and response completions
+    /// cannot update a later account while cleanup is awaiting storage.
+    private func queueIdentityTransition() {
+        invalidateAccountUI()
+        let epoch = uiGeneration
+        let previous = authTransition
+        authTransition = Task { [weak self] in
+            await previous?.value
+            guard let self else { return }
+            do {
+                try await self.retireAccount()
+                guard self.uiGeneration == epoch else { return }
+                self.email = Auth.auth().currentUser?.email
+                if self.email != nil { try await self.connect() }
+                else { self.connectionStatus = "Sign in to verify your device" }
+            } catch {
+                guard self.uiGeneration == epoch else { return }
+                self.show(error)
+            }
+        }
     }
 
     func clearChat() {
@@ -201,12 +309,25 @@ final class ChatModel: ObservableObject {
     }
 
     func send(_ text: String) async {
+        guard sendTask == nil else { return }
+        let epoch = uiGeneration
+        let task = Task { [weak self] in
+            guard let self else { return }
+            await self.performSend(text)
+        }
+        sendTask = task
+        await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
+        if uiGeneration == epoch { sendTask = nil }
+    }
+
+    private func performSend(_ text: String) async {
+        let epoch = uiGeneration
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard verified, !busy, !streaming, !text.isEmpty, text.count <= 6000,
               let client else { return }
         streaming = true
         errorMessage = nil
-        defer { streaming = false }
+        defer { if epoch == uiGeneration { streaming = false } }
         messages.append(ChatMessage(role: "user", content: text))
         // Four previous turns plus the new prompt; at most twenty messages on screen.
         if messages.count > 19 { messages.removeFirst(messages.count - 19) }
@@ -215,6 +336,12 @@ final class ChatModel: ObservableObject {
         let messageID = answer.id
         messages.append(answer)
         do {
+            if let account {
+                try await account.updateIdToken { [weak self] in
+                    guard let self else { throw DemoError.signedOut }
+                    return try await self.currentIDToken()
+                }
+            }
             guard let knowledgeURL = Bundle.main.url(forResource: "LatchwayKnowledge", withExtension: "md") else {
                 throw DemoError.missingKnowledge
             }
@@ -253,6 +380,7 @@ final class ChatModel: ObservableObject {
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
             let stream = try await client.transport(feature: DemoConfiguration.feature).bytes(for: request)
             defer { stream.cancel() }
+            guard epoch == uiGeneration else { throw CancellationError() }
             requestID = stream.response.value(forHTTPHeaderField: "X-Latchway-Request-ID")
             guard stream.response.statusCode == 200 else {
                 var problemData = Data()
@@ -268,6 +396,7 @@ final class ChatModel: ObservableObject {
             var totalBytes = 0
             var completed = false
             for try await byte in stream.bytes {
+                guard epoch == uiGeneration else { throw CancellationError() }
                 try Task.checkCancellation()
                 totalBytes += 1
                 guard totalBytes <= 1_048_576, line.count <= 262_144 else { throw DemoError.invalidStream }
@@ -287,10 +416,19 @@ final class ChatModel: ObservableObject {
             }
             guard completed, !answer.content.isEmpty, requestID != nil else { throw DemoError.invalidStream }
             stream.finish()
-            diagnostics = await client.diagnostics()
-            do { quota = try await client.quota(feature: DemoConfiguration.feature) }
-            catch { errorMessage = "Reply received. Usage refresh is temporarily unavailable." }
+            let currentDiagnostics = await client.diagnostics()
+            guard epoch == uiGeneration else { return }
+            diagnostics = currentDiagnostics
+            do {
+                let currentQuota = try await client.quota(feature: DemoConfiguration.feature)
+                guard epoch == uiGeneration else { return }
+                quota = currentQuota
+            } catch {
+                guard epoch == uiGeneration else { return }
+                errorMessage = "Reply received. Usage refresh is temporarily unavailable."
+            }
         } catch {
+            guard epoch == uiGeneration else { return }
             if let index = messages.firstIndex(where: { $0.id == messageID }), messages[index].content.isEmpty {
                 messages.remove(at: index)
             }
@@ -299,10 +437,11 @@ final class ChatModel: ObservableObject {
     }
 
     private func sendFoundationModels(_ text: String, client: LatchwayClient, instructions: String, messageID: UUID) async throws {
+        let epoch = uiGeneration
         if foundationSession == nil {
             let model = LatchwayLanguageModel(client: client, feature: DemoConfiguration.foundationModelsFeature, frameworkVersion: "27.0.0")
             let tool = WeatherCheckTool(budget: weatherBudget) { [weak self] lookup in
-                await self?.recordWeather(lookup)
+                await self?.recordWeather(lookup, generation: epoch)
             }
             foundationSession = LanguageModelSession(model: model, tools: [tool], instructions: instructions + """
 
@@ -332,6 +471,7 @@ final class ChatModel: ObservableObject {
             session.transcript.history.removeSubrange(history.startIndex ..< prompts[prompts.count - 4])
         }
         await weatherBudget.reset()
+        guard uiGeneration == epoch else { throw CancellationError() }
         let beforeInput = session.usage.input.totalTokenCount
         let beforeOutput = session.usage.output.totalTokenCount
         // This demo's hard total-token quota uses local text accounting.
@@ -342,6 +482,7 @@ final class ChatModel: ObservableObject {
             contextOptions: ContextOptions(reasoningLevel: .custom("none"))
         ) {
             try Task.checkCancellation()
+            guard uiGeneration == epoch else { throw CancellationError() }
             if let index = messages.firstIndex(where: { $0.id == messageID }) { messages[index].content = snapshot.content }
         }
         guard messages.last?.content.isEmpty == false else { throw DemoError.invalidStream }
@@ -355,17 +496,26 @@ final class ChatModel: ObservableObject {
                 break
             }
         }
-        diagnostics = await client.diagnostics()
-        quota = try await client.quota(feature: engine.feature)
+        let currentDiagnostics = await client.diagnostics()
+        let currentQuota = try await client.quota(feature: engine.feature)
+        guard uiGeneration == epoch else { throw CancellationError() }
+        diagnostics = currentDiagnostics
+        quota = currentQuota
     }
 
-    private func recordWeather(_ lookup: WeatherLookup) {
+    private func recordWeather(_ lookup: WeatherLookup, generation: UUID) {
+        guard uiGeneration == generation else { return }
         weatherLookups.append(lookup)
         if weatherLookups.count > 12 { weatherLookups.removeFirst(weatherLookups.count - 12) }
     }
 
     private func show(_ error: Error) {
-        if error is CancellationError {
+        if let lifecycle = error as? LatchwayLifecycleError {
+            verified = false
+            errorMessage = lifecycle == .cleanupRequired
+                ? "Account cleanup is incomplete. Retry sign out before using another account."
+                : "This account session is no longer active. Sign in again to create a new client."
+        } else if error is CancellationError {
             errorMessage = "Reply stopped. Partial output was not retried; the framework reverted the incomplete turn."
         } else if let error = error as? LatchwayFoundationModelsError {
             errorMessage = error.errorDescription

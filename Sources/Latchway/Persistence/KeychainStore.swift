@@ -8,6 +8,20 @@ protocol LatchwaySecureDataStoring: Sendable {
 }
 
 actor LatchwayKeychainStore: LatchwaySecureDataStoring {
+    private let records: LatchwayKeychainRecords
+
+    init(service: String, accessGroup: String) {
+        records = LatchwayKeychainRecords(service: service, accessGroup: accessGroup)
+    }
+
+    func read(account: String) throws -> Data? { try records.read(account: account) }
+    func write(_ data: Data, account: String) throws { try records.write(data, account: account) }
+    func delete(account: String) throws { try records.delete(account: account) }
+}
+
+/// Synchronous Security operations allow an owning actor to persist its logout
+/// fence and credentials without a suspension point between check and write.
+struct LatchwayKeychainRecords: Sendable {
     private let service: String
     private let accessGroup: String
 

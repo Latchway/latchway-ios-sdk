@@ -32,6 +32,9 @@ public actor LatchwayExtensionClient {
     private let directAttestationProvider: (any LatchwayAttestationProvider)?
     private let processCoordinator: LatchwayProcessScopeCoordinator<LatchwayComponentRuntimeSession>
     private let processConfigurationFingerprint: String
+    private nonisolated let sharedState: LatchwaySharedComponentState?
+    private nonisolated let legacyFence: LatchwayLegacyComponentFence?
+    private nonisolated let lease = LatchwayClientLease()
 
     private var session: LatchwayComponentRuntimeSession?
     private var sessionRevision: UInt64?
@@ -40,10 +43,21 @@ public actor LatchwayExtensionClient {
 
     public init(
         configuration: LatchwayConfiguration,
-        component: LatchwayComponentConfiguration
+        component: LatchwayComponentConfiguration,
+        account: LatchwayComponentAccount? = nil
     ) throws {
         try Self.validate(component)
-        let key = LatchwayComponentKeyManager(
+        var configuration = configuration
+        if let account { try account.validate(configuration); configuration.sharedComponentAccount = account }
+        let state = account.map { LatchwaySharedComponentState(account: $0, component: component) }
+        try state?.check()
+        sharedState = state
+        legacyFence = state == nil ? LatchwayLegacyComponentFence(configuration: configuration, component: component) : nil
+        try legacyFence?.check()
+        let key = state.map {
+            LatchwayComponentKeyManager(softwareFallbackPolicy: configuration.softwareKeyFallbackPolicy,
+                store: LatchwaySharedComponentKeyStorage(state: $0), preferSecureEnclave: true, allowCreation: false)
+        } ?? LatchwayComponentKeyManager(
             applicationID: configuration.applicationID,
             environment: configuration.environment,
             definitionID: component.definitionID,
@@ -51,12 +65,14 @@ public actor LatchwayExtensionClient {
             softwareFallbackPolicy: configuration.softwareKeyFallbackPolicy,
             allowCreation: false
         )
-        let storage = LatchwayKeychainComponentStorage(
+        let storage: any LatchwayComponentCredentialStorage
+        if let state { storage = LatchwaySharedComponentCredentialStorage(state: state) }
+        else { storage = LatchwayKeychainComponentStorage(
             applicationID: configuration.applicationID,
             environment: configuration.environment,
             definitionID: component.definitionID,
             accessGroup: component.keychainAccessGroup
-        )
+        ) }
         let network = LatchwayURLSessionTransport(session: LatchwayURLSessionFactory.make())
         let clock = LatchwaySystemClock()
         let proofFactory = LatchwayDPoPProofFactory(key: key, clock: clock)
@@ -110,7 +126,8 @@ public actor LatchwayExtensionClient {
         transport: any LatchwayHTTPTransport,
         clock: any LatchwayClock,
         directAttestationProvider: (any LatchwayAttestationProvider)? = nil,
-        processScopeNamespace: String = UUID().uuidString
+        processScopeNamespace: String = UUID().uuidString,
+        sharedState: LatchwaySharedComponentState? = nil
     ) throws {
         try Self.validate(component)
         let processConfigurationFingerprint = LatchwayProcessScopeIdentity.componentFingerprint(
@@ -118,6 +135,8 @@ public actor LatchwayExtensionClient {
             component: component
         )
         self.configuration = configuration
+        self.sharedState = sharedState
+        legacyFence = nil // Isolated in-memory contract fixtures never touch a user's Keychain.
         self.component = component
         self.key = key
         self.storage = storage
@@ -146,10 +165,16 @@ public actor LatchwayExtensionClient {
         feature: String,
         framework: LatchwayFrameworkMetadata? = nil
     ) -> LatchwayFeatureTransport {
-        LatchwayFeatureTransport(
+        let check: (@Sendable () throws -> Void)?
+        if let sharedState { check = { try sharedState.check() } }
+        else if let legacyFence { check = { try legacyFence.check() } }
+        else { check = nil }
+        return LatchwayFeatureTransport(
             feature: feature,
             framework: framework,
             baseURL: configuration.baseURL,
+            lease: lease,
+            persistentCheck: check,
             authorize: { [self] request in
                 try await authorizedRequest(request, feature: feature, framework: framework)
             },
@@ -174,7 +199,15 @@ public actor LatchwayExtensionClient {
 
     public func refresh() async throws {
         _ = try await refreshSession(force: true)
+        try lease.check()
+        try sharedState?.check()
+        try legacyFence?.check()
     }
+
+    /// Releases only this extension handle. It cannot log out the containing
+    /// application or another extension. Host account logout retires the shared
+    /// persistent marker even when this process is suspended.
+    public func close() async { await lease.close() }
 
     /// Fails closed because every runtime exposed by this package is an iOS
     /// application-extension runtime, where App Attest key generation is not
@@ -236,7 +269,7 @@ public actor LatchwayExtensionClient {
                 controlPlane: controlPlane,
                 storage: storage,
                 clock: clock,
-                expectedPlatform: configuration.clientRuntime.platformIdentifier,
+                expectedPlatform: configuration.installationPlatform,
                 processCoordinator: processCoordinator,
                 processConfigurationFingerprint: processConfigurationFingerprint
             )
@@ -343,7 +376,7 @@ public actor LatchwayExtensionClient {
                     for: component,
                     keyThumbprint: thumbprint,
                     now: now,
-                    expectedPlatform: configuration.clientRuntime.platformIdentifier
+                    expectedPlatform: configuration.installationPlatform
                 )
             }
         } ?? false
@@ -356,7 +389,7 @@ public actor LatchwayExtensionClient {
             keyAvailable: keyStorage != .unavailable,
             keyStorage: keyStorage,
             grantAvailable: usable,
-            sessionAvailable: session?.isUsable(at: now) == true,
+            sessionAvailable: usable && session?.isUsable(at: now) == true,
             trustSource: credential?.trustSource,
             trustExpiresAt: credential?.trustExpiresAt,
             containingAppActionRequired: !usable
@@ -369,6 +402,9 @@ public actor LatchwayExtensionClient {
         framework: LatchwayFrameworkMetadata?
     ) async throws -> URLRequest {
         guard !Task.isCancelled else { throw LatchwayError.cancelled }
+        try lease.check()
+        try sharedState?.check()
+        try legacyFence?.check()
         try Self.validateFeature(feature)
         var authorized = request
         try LatchwayComponentRequestSecurity.prepare(
@@ -395,6 +431,9 @@ public actor LatchwayExtensionClient {
             configuration: configuration,
             framework: framework
         )
+        try lease.check()
+        try sharedState?.check()
+        try legacyFence?.check()
         return authorized
     }
 
@@ -405,7 +444,10 @@ public actor LatchwayExtensionClient {
     ) async throws -> LatchwayHTTPResponse {
         guard !Task.isCancelled else { throw LatchwayError.cancelled }
         let first = try await authorizedRequest(request, feature: feature, framework: framework)
-        let firstResponse = try await transport.send(first)
+        let firstResponse = try await dispatchOwned(first)
+        try lease.check()
+        try sharedState?.check()
+        try legacyFence?.check()
         guard !Task.isCancelled else { throw LatchwayError.cancelled }
         guard !(300 ... 399).contains(firstResponse.statusCode) else {
             throw LatchwayError.invalidServerResponse
@@ -418,7 +460,10 @@ public actor LatchwayExtensionClient {
             feature: feature,
             framework: framework
         )
-        let response = try await transport.send(retry)
+        let response = try await dispatchOwned(retry)
+        try lease.check()
+        try sharedState?.check()
+        try legacyFence?.check()
         guard !Task.isCancelled else { throw LatchwayError.cancelled }
         guard !(300 ... 399).contains(response.statusCode) else {
             throw LatchwayError.invalidServerResponse
@@ -430,6 +475,22 @@ public actor LatchwayExtensionClient {
             throw Self.map(.server(problem))
         }
         return response
+    }
+
+    private func dispatchOwned(_ request: URLRequest) async throws -> LatchwayHTTPResponse {
+        let task = Task { [transport] in try await transport.send(request) }
+        let cancellation: UUID
+        do { cancellation = try await lease.register { task.cancel() } }
+        catch { task.cancel(); throw error }
+        do {
+            let response = try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
+            await lease.unregister(cancellation)
+            try lease.check()
+            return response
+        } catch {
+            await lease.unregister(cancellation)
+            throw error
+        }
     }
 
     private func authorizedRetryRequest(
@@ -693,6 +754,9 @@ public actor LatchwayExtensionClient {
 
     private func refreshSession(force: Bool) async throws -> LatchwayComponentRuntimeSession {
         guard !Task.isCancelled else { throw LatchwayError.cancelled }
+        try lease.check()
+        try sharedState?.check()
+        try legacyFence?.check()
         let processSnapshot = await processCoordinator.snapshot()
         if processSnapshot.terminal {
             session = nil
@@ -721,7 +785,7 @@ public actor LatchwayExtensionClient {
                 throw LatchwayError.cancelled
             }
         }
-        let expectedPlatform = configuration.clientRuntime.platformIdentifier
+        let expectedPlatform = configuration.installationPlatform
         let observedRevision = processSnapshot.revision
         let task = Task { [controlPlane, proofFactory, storage, component, clock, expectedPlatform, processCoordinator, processConfigurationFingerprint] in
             try await Self.performCoordinatedRefresh(
@@ -752,6 +816,8 @@ public actor LatchwayExtensionClient {
             }
             throw error
         } catch let error as LatchwayError {
+            throw error
+        } catch let error as LatchwayLifecycleError {
             throw error
         } catch is CancellationError {
             throw LatchwayError.cancelled
@@ -802,6 +868,8 @@ public actor LatchwayExtensionClient {
                 }
                 stored = value
             } catch let error as LatchwayComponentError {
+                throw error
+            } catch let error as LatchwayLifecycleError {
                 throw error
             } catch {
                 throw LatchwayComponentError.keychainAccessGroupUnavailable
@@ -854,6 +922,8 @@ public actor LatchwayExtensionClient {
             )
             do {
                 try await storage.save(accepted.credential)
+            } catch let error as LatchwayLifecycleError {
+                throw error
             } catch {
                 if stored.kind == .provisioningGrant {
                     try? await storage.clear()
