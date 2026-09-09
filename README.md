@@ -1,6 +1,7 @@
 # Latchway iOS SDK
 
-SDK **1.2.0** adds [developer-supplied identity and shared native/RN accounts](Documentation/SuppliedIdentity.md).
+SDK **1.3.0** adds `try await app.signOut()` for simple shared native/RN account
+cleanup, including an interrupted sign-in. See [developer-supplied identity and shared accounts](Documentation/SuppliedIdentity.md).
 Configure from either native or React Native first, supply an ID token, and use
 the shared account. No Firebase dependency, native auth bootstrap or permanent
 JavaScript token provider is required. This path requires a gateway advertising
@@ -54,7 +55,7 @@ version, then link `Latchway` and `LatchwayAppAttest` to the application target:
 ```swift
 .package(
     url: "https://github.com/Latchway/latchway-ios-sdk.git",
-    from: "1.2.0"
+    from: "1.3.0"
 )
 ```
 
@@ -65,10 +66,10 @@ Swift Package Manager is the canonical distribution. The production
 extension-safe surface used by Widget, Share, and Action targets:
 
 ```ruby
-pod 'Latchway/AppAttest', '1.2.0'
-pod 'Latchway/AppExtensions', '1.2.0'
+pod 'Latchway/AppAttest', '1.3.0'
+pod 'Latchway/AppExtensions', '1.3.0'
 # Optional; requires iOS 27 and Xcode 27:
-# pod 'Latchway/FoundationModels', '1.2.0'
+# pod 'Latchway/FoundationModels', '1.3.0'
 ```
 
 CocoaPods compiles selected subspecs into the `Latchway` module; SwiftPM keeps

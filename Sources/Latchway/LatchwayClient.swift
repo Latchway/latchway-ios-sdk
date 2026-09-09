@@ -98,7 +98,26 @@ public actor LatchwayClient {
 
     /// Releases this lease only. It cannot retire another native/RN consumer's
     /// session, refresh operation or transport.
-    public func close() async { disposed = true; session = nil; await lease.close() }
+    public func close() async {
+        disposed = true
+        session = nil
+        (identityTokenProvider as? LatchwayOneShotTokenProvider)?.clear()
+        await lease.close()
+    }
+
+    /// Generation-owned cleanup never calls back into app logout (which is
+    /// awaiting this operation). Fence tasks before clearing cached credentials.
+    func clearAccountCredentials() async {
+        establishmentTask?.cancel()
+        refreshTask?.cancel()
+        establishmentTask = nil
+        refreshTask = nil
+        session = nil
+        sessionRevision = nil
+        logoutCompleted = true
+        (identityTokenProvider as? LatchwayOneShotTokenProvider)?.clear()
+        await lease.close()
+    }
 
     private func checkAccount() async throws {
         guard !disposed else { throw LatchwayLifecycleError.disposed }

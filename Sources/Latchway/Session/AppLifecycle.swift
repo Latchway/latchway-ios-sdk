@@ -162,6 +162,10 @@ actor LatchwayAppSessionJournal {
 
     func beginIdentityOperation(_ id: UUID) { identityOperation = id }
     func cancelIdentityOperation(_ id: UUID) { if identityOperation == id { identityOperation = nil } }
+    func fenceSignOut() {
+        identityOperation = nil
+        blocked = true
+    }
 
     func activate(account: String, identityTicket: UUID? = nil) throws -> Entry {
         if let identityTicket, identityOperation != identityTicket { throw LatchwayLifecycleError.accountChanged }
@@ -175,9 +179,11 @@ actor LatchwayAppSessionJournal {
     func recordEmptyLogout() throws {
         if let entry = try entry() {
             guard entry.state == .loggedOut else { throw LatchwayLifecycleError.cleanupRequired }
+            blocked = false
             return
         }
         try persist(Entry(generation: UUID(), account: "", state: .loggedOut, session: nil))
+        blocked = false
     }
 
     func checkActivation(account: String) throws {
@@ -215,6 +221,7 @@ actor LatchwayAppSessionJournal {
         try retireComponents(generation)
         current.state = .loggedOut
         current.session = nil
+        current.components = nil
         try persist(current)
         blocked = false
     }
@@ -320,6 +327,11 @@ actor LatchwayAccountGeneration: LatchwayIdentityTokenProvider {
     private var logoutWaiters: [UUID: LogoutWaiter] = [:]
     private let cleanupTimeoutNanoseconds: UInt64
     private var cancellers: [UUID: @Sendable () -> Void] = [:]
+    private struct ClientCleanup {
+        weak var client: LatchwayClient?
+        let action: @Sendable () async -> Void
+    }
+    private var clientCleanups: [ClientCleanup] = []
 
     init(entry: LatchwayAppSessionJournal.Entry, scope: String, issuer: String, tenant: String?,
          authority: any LatchwayIdentityAuthority, journal: LatchwayAppSessionJournal,
@@ -341,12 +353,16 @@ actor LatchwayAccountGeneration: LatchwayIdentityTokenProvider {
     }
 
     func check() async throws {
+        try readFence.check()
         guard !retired else { throw LatchwayLifecycleError.loggedOut }
         try await journal.check(id)
+        try readFence.check()
         guard !retired else { throw LatchwayLifecycleError.loggedOut }
     }
 
     nonisolated func checkLive() throws { try readFence.check(); try freshnessFence?.check() }
+    /// App-level intent must fence buffered reads before its first actor hop.
+    nonisolated func fenceSignOut() { readFence.retire(.loggedOut) }
 
     func registerComponent(_ component: LatchwayComponentConfiguration, account: LatchwayComponentAccount) async throws {
         try await check()
@@ -402,6 +418,12 @@ actor LatchwayAccountGeneration: LatchwayIdentityTokenProvider {
     }
     func unregisterCancellation(_ key: UUID) { cancellers.removeValue(forKey: key) }
 
+    func registerClientCleanup(for client: LatchwayClient, _ cleanup: @escaping @Sendable () async -> Void) async throws {
+        try await check()
+        clientCleanups.removeAll { $0.client == nil }
+        clientCleanups.append(.init(client: client, action: cleanup))
+    }
+
     func logout() async throws {
         if completed { return }
         if logoutTask == nil {
@@ -411,10 +433,12 @@ actor LatchwayAccountGeneration: LatchwayIdentityTokenProvider {
             cancellers.removeAll()
             // Exactly one cleanup task outlives UI cancellation and deadline
             // expiry. A timed-out caller cannot open B while it is draining.
+            let clientCleanups = self.clientCleanups.filter { $0.client != nil }.map(\.action)
             logoutTask = Task { [journal, id, cleanup] in
                 let result: Result<Void, Error>
                 do {
                     try await journal.retire(id)
+                    for clearClient in clientCleanups { await clearClient() }
                     try await cleanup()
                     try await journal.finishRetirement(id)
                     result = .success(())
@@ -438,7 +462,7 @@ actor LatchwayAccountGeneration: LatchwayIdentityTokenProvider {
     }
 
     private func finishLogout(_ result: Result<Void, Error>) {
-        if case .success = result { completed = true }
+        if case .success = result { completed = true; clientCleanups.removeAll() }
         logoutTask = nil
         let waiters = logoutWaiters.values
         logoutWaiters.removeAll()

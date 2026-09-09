@@ -1,6 +1,7 @@
 import Foundation
 import XCTest
 @testable import Latchway
+import LatchwayTesting
 
 final class AppLifecycleTests: XCTestCase {
     func testUnknownPreRegistryComponentsRequireExplicitMigrationInventory() throws {
@@ -156,6 +157,45 @@ final class AppLifecycleTests: XCTestCase {
         _ = try await journal.activate(account: "B")
     }
 
+    func testClientCleanupObservesDurableRetirementAndClearsSuppliedToken() async throws {
+        let journal = LatchwayAppSessionJournal(records: LifecycleMemoryRecords())
+        let entry = try await journal.activate(account: "A")
+        let generation = LatchwayAccountGeneration(entry: entry, scope: "scope", issuer: "issuer", tenant: nil,
+            authority: LatchwayClosureIdentityAuthority { nil }, journal: journal, cleanup: {})
+        let token = LatchwayOneShotTokenProvider(token: "fixture-token")
+        let client = LatchwayClient(configuration: .init(baseURL: URL(string: "https://example.test")!,
+            applicationID: "app", environment: "dev", rootKeychainAccessGroup: "TEAM.app"), identityTokenProvider: token)
+        try await generation.registerClientCleanup(for: client) { [weak client] in
+            let persisted = try? await journal.entry()
+            XCTAssertEqual(persisted?.state, .retiring)
+            XCTAssertNil(persisted?.session)
+            await client?.clearAccountCredentials()
+        }
+        try await generation.logout()
+        XCTAssertThrowsError(try token.identityToken())
+    }
+
+    func testAppSignOutFencesPendingAuthorityActivationAndAllowsFreshActivation() async throws {
+        let gate = CleanupTestGate()
+        let registration = try LatchwayAppRegistration(.init(baseURL: URL(string: "https://example.test")!,
+            applicationID: UUID().uuidString, environment: "dev", rootKeychainAccessGroup: "TEAM.app",
+            identity: .init(name: "host", issuer: "issuer"))).effective()
+        let authority = PendingAuthority(gate: gate)
+        let app = try LatchwayApp(registration: registration, authority: authority,
+            attestationFactory: { _ in LatchwayFixedAttestationProvider(evidence: .init(provider: "app_attest", evidence: [:])) },
+            lifecycleRecords: LifecycleMemoryRecords(),
+            migration: {}, prepareAccount: { _ in })
+        let old = Task { try await app.activate() }
+        while await gate.calls == 0 { await Task.yield() }
+        try await app.signOut()
+        let next = try await app.activate()
+        await gate.release()
+        do { _ = try await old.value; XCTFail("Old authority activation resumed after sign-out") } catch {}
+        let current = await app.snapshot()
+        XCTAssertEqual(current.generationID, next)
+        XCTAssertEqual(current.state, .active)
+    }
+
     func testIdentityLossIsDurablyFencedBeforeReturningAndCannotRestoreA() async throws {
         let records = LifecycleMemoryRecords()
         let journal = LatchwayAppSessionJournal(records: records)
@@ -277,6 +317,20 @@ private actor CleanupTestGate {
         await withCheckedContinuation { continuation = $0 }
     }
     func release() { released = true; continuation?.resume(); continuation = nil }
+}
+
+private actor PendingAuthority: LatchwayIdentityAuthority {
+    let gate: CleanupTestGate
+    private var calls = 0
+    init(gate: CleanupTestGate) { self.gate = gate }
+    func identitySnapshot() async -> LatchwayIdentitySnapshot? {
+        calls += 1
+        if calls == 1 {
+            await gate.wait()
+            return .init(issuer: "issuer", subject: "A", token: "fixture-A")
+        }
+        return .init(issuer: "issuer", subject: "B", token: "fixture-B")
+    }
 }
 
 /// All mutable state is protected by the same lock; synchronous methods model

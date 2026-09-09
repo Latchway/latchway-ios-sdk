@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format follows Keep a Changelog, and releases will follow Semantic
 Versioning once package publication begins.
 
+## [1.3.0] — 2026-09-09
+
+### Added
+
+- `try await app.signOut()` retires the shared native/React Native account
+  without requiring a current account handle or generation snapshot. It also
+  works during first sign-in, after token expiry and after process restart.
+- Sign-out joins concurrent cleanup, fences late identity completions and old
+  client streams, clears account credentials and registered component sessions,
+  and persists logout intent even before the first account is activated.
+- Incomplete secure-storage cleanup stays fail-closed and can be retried with
+  the same app-level call. Explicit sign-in after success creates a fresh
+  generation for the same or a different user.
+
+### Compatibility
+
+- Existing account `logout()` and generation-targeted APIs remain available;
+  stale account callbacks cannot retire a later account. No wire or server
+  upgrade, Firebase dependency or authentication-provider sign-out is added.
+- Account-scoped installation/App Attest key identity and non-secret retirement
+  markers remain under the existing bounded key-retention policy. This is local
+  account sign-out, not remote installation revocation or unrelated Keychain
+  erasure. Unit tests do not constitute fresh physical-device attestation proof.
+
 ## [1.2.0] — 2026-09-08
 
 ### Added

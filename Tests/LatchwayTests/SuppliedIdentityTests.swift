@@ -79,6 +79,191 @@ final class SuppliedIdentityTests: XCTestCase {
         XCTAssertFalse(String(decoding: persisted, as: UTF8.self).contains(Self.token("B")))
     }
 
+    func testAppSignOutClearsSharedNativeAndReactNativeAccountAndAllowsFreshLogin() async throws {
+        let records = IdentityMemoryRecords()
+        let app = try app(records: records)
+        let old = try await app.signIn(idToken: Self.token("A"))
+        let native = try await old.makeClient(runtime: .iOS)
+        let reactNative = try await old.makeClient(runtime: .reactNativeIOS)
+        try await app.signOut()
+        await assertState(app, .loggedOut)
+        let current = try await app.currentAccount()
+        XCTAssertNil(current)
+        await expect(.loggedOut) { _ = try await old.makeClient() }
+        let entry = try JSONDecoder().decode(LatchwayAppSessionJournal.Entry.self, from: XCTUnwrap(records.read()))
+        XCTAssertNil(entry.session)
+        XCTAssertNil(entry.components)
+        let next = try await app.signIn(idToken: Self.token("B"))
+        XCTAssertNotEqual(next.generationID, old.generationID)
+        // Native/RN clients and opaque account handles retain only the old
+        // generation; their delayed logout must not affect the new account.
+        try await native.logout()
+        try await reactNative.logout()
+        try await old.logout()
+        await assertState(app, .active)
+        let active = try await app.currentAccount()
+        XCTAssertEqual(active?.generationID, next.generationID)
+        try await app.signOut()
+        let sameUser = try await app.signIn(idToken: Self.token("B"))
+        XCTAssertNotEqual(next.generationID, sameUser.generationID)
+    }
+
+    func testAppSignOutBeforeFirstActivationPersistsLogoutIntentAndIsIdempotent() async throws {
+        let records = IdentityMemoryRecords()
+        let app = try app(records: records)
+        try await app.signOut()
+        try await app.signOut()
+        await assertState(app, .loggedOut)
+        await expect(.loggedOut) { _ = try await app.restore(idToken: Self.token("A")) }
+        let restarted = try self.app(records: records)
+        await expect(.loggedOut) { _ = try await restarted.restore(idToken: Self.token("A")) }
+        _ = try await restarted.signIn(idToken: Self.token("A"))
+    }
+
+    func testAppSignOutFencesLateFirstTokenProducerWithoutAVisibleAccount() async throws {
+        let app = try app()
+        let gate = IdentityGate()
+        let pending = Task { try await app.signIn { await gate.wait(); return Self.token("A") } }
+        await gate.started()
+        let unpublished = try await app.currentAccount()
+        XCTAssertNil(unpublished)
+        try await app.signOut()
+        let next = try await app.signIn(idToken: Self.token("B"))
+        await gate.release()
+        do { _ = try await pending.value; XCTFail("Late producer restored old account") } catch {}
+        let current = try await app.currentAccount()
+        XCTAssertEqual(current?.generationID, next.generationID)
+        await assertState(app, .active)
+    }
+
+    func testAppSignOutFencesLateGatewayVerificationAndBridgeTicket() async throws {
+        let gate = IdentityGate()
+        let app = try app(verify: { token in
+            let result = try Self.verified(token)
+            if result.identity.subject == "A" { await gate.wait() }
+            return result
+        })
+        let ticket = try await app.beginIdentity(intent: .signIn)
+        let pending = Task { try await app.completeIdentity(ticketID: ticket, idToken: Self.token("A")) }
+        await gate.started()
+        try await app.signOut()
+        let next = try await app.signIn(idToken: Self.token("B"))
+        await gate.release()
+        do { _ = try await pending.value; XCTFail("Late verifier restored old account") } catch {}
+        try await app.cancelIdentity(ticketID: ticket)
+        let current = try await app.currentAccount()
+        XCTAssertEqual(current?.generationID, next.generationID)
+    }
+
+    func testAppSignOutRefreshRequiredAndFailedCleanupRetry() async throws {
+        let records = IdentityMemoryRecords()
+        let app = try app(records: records)
+        _ = try await app.signIn(idToken: Self.token("A", expires: Date().addingTimeInterval(0.12)))
+        try await Task.sleep(nanoseconds: 200_000_000)
+        await assertState(app, .refreshRequired)
+        records.setFailure(true)
+        await expect(.cleanupRequired) { try await app.signOut() }
+        await assertState(app, .retiring)
+        await expect(.cleanupRequired) { _ = try await app.signIn(idToken: Self.token("B")) }
+        records.setFailure(false)
+        try await app.signOut()
+        await assertState(app, .loggedOut)
+        _ = try await app.signIn(idToken: Self.token("B"))
+    }
+
+    func testAppSignOutRetriesFailedEmptyLogoutMarker() async throws {
+        let records = IdentityMemoryRecords()
+        let app = try app(records: records)
+        records.setFailure(true)
+        await expect(.cleanupRequired) { try await app.signOut() }
+        records.setFailure(false)
+        try await app.signOut()
+        _ = try await app.signIn(idToken: Self.token("A"))
+    }
+
+    func testAppSignOutRetiresColdPersistedAccountWithoutFetchingIdentity() async throws {
+        let records = IdentityMemoryRecords()
+        let registration = try registration()
+        let original = try app(records: records, registration: registration)
+        let old = try await original.signIn(idToken: Self.token("A"))
+        let journal = LatchwayAppSessionJournal(records: records)
+        try await journal.save(.init(refreshToken: "fixture-refresh", refreshExpiresAt: Date().addingTimeInterval(600),
+            installation: .init(id: "ins_fixture", platform: "ios", dpopJKT: "fixture", status: "active")), generation: old.generationID)
+        let restarted = try app(records: records, registration: registration,
+            verify: { _ in XCTFail("Sign-out fetched identity"); throw LatchwayLifecycleError.identityUnavailable })
+        await assertState(restarted, .inactive)
+        try await restarted.signOut()
+        let entry = try await journal.entry()
+        XCTAssertEqual(entry?.state, .loggedOut)
+        XCTAssertNil(entry?.session)
+        await expect(.loggedOut) { _ = try await restarted.restore(idToken: Self.token("A")) }
+    }
+
+    func testAppSignOutFinishesColdRetiringAccountAndAllowsSignIn() async throws {
+        let records = IdentityMemoryRecords()
+        let registration = try registration()
+        let original = try app(records: records, registration: registration)
+        let old = try await original.signIn(idToken: Self.token("A"))
+        let journal = LatchwayAppSessionJournal(records: records)
+        try await journal.retire(old.generationID)
+        let restarted = try app(records: records, registration: registration)
+        await assertState(restarted, .retiring)
+        records.setFailure(true)
+        await expect(.cleanupRequired) { try await restarted.signOut() }
+        records.setFailure(false)
+        try await restarted.signOut()
+        let next = try await restarted.signIn(idToken: Self.token("B"))
+        XCTAssertNotEqual(old.generationID, next.generationID)
+    }
+
+    func testAppSignOutRetriesAfterTimedOutBackgroundCleanupHasAlreadyFinished() async throws {
+        let records = IdentityMemoryRecords()
+        let registration = try registration()
+        let app = try app(records: records, registration: registration, cleanupTimeoutNanoseconds: 5_000_000)
+        let old = try await app.signIn(idToken: Self.token("A"))
+        let journal = LatchwayAppSessionJournal(records: records)
+        let persisted = try await journal.entry()
+        let entry = try XCTUnwrap(persisted)
+        let scope = LatchwayAppIdentity.digest([registration.scope, registration.rootGroup!, entry.account])
+        let fingerprint = LatchwayProcessScopeIdentity.sharedFingerprint(scope: scope, generation: old.generationID)
+        let coordinator = LatchwayProcessScopeCoordinatorPool.shared.root(
+            identity: LatchwayProcessScopeIdentity.sharedRoot(scope: scope, generation: old.generationID), configurationFingerprint: fingerprint)
+        let permit = try await coordinator.acquire(configurationFingerprint: fingerprint)
+        await expect(.cleanupRequired) { try await app.signOut() }
+        await assertState(app, .retiring)
+        await expect(.cleanupRequired) { _ = try await app.signIn(idToken: Self.token("B")) }
+        await coordinator.release(permit)
+        while try await journal.entry()?.state != .loggedOut { await Task.yield() }
+        // The generation task has finished; retry must clear the app's new
+        // journal fence rather than permanently blocking the next sign-in.
+        try await app.signOut()
+        _ = try await app.signIn(idToken: Self.token("B"))
+    }
+
+    func testConcurrentAppSignOutJoinsTheSameDrain() async throws {
+        let records = IdentityMemoryRecords()
+        let registration = try registration()
+        let app = try LatchwayApp(registration: registration, authority: LatchwaySuppliedIdentityAuthority(),
+            attestationFactory: { _ in LatchwayFixedAttestationProvider(evidence: .init(provider: "app_attest", evidence: [:])) },
+            lifecycleRecords: records, migration: {}, prepareAccount: { _ in }, verifyIdentity: { try Self.verified($0) })
+        let old = try await app.signIn(idToken: Self.token("A"))
+        let entry = try JSONDecoder().decode(LatchwayAppSessionJournal.Entry.self, from: XCTUnwrap(records.read()))
+        let scope = LatchwayAppIdentity.digest([registration.scope, registration.rootGroup!, entry.account])
+        let fingerprint = LatchwayProcessScopeIdentity.sharedFingerprint(scope: scope, generation: old.generationID)
+        let coordinator = LatchwayProcessScopeCoordinatorPool.shared.root(
+            identity: LatchwayProcessScopeIdentity.sharedRoot(scope: scope, generation: old.generationID), configurationFingerprint: fingerprint)
+        let permit = try await coordinator.acquire(configurationFingerprint: fingerprint)
+        let first = Task { try await app.signOut() }
+        while await app.snapshot().state != .retiring { await Task.yield() }
+        let second = Task { try await app.signOut() }
+        await expect(.cleanupRequired) { _ = try await app.signIn(idToken: Self.token("B")) }
+        await coordinator.release(permit)
+        try await first.value
+        try await second.value
+        await assertState(app, .loggedOut)
+        _ = try await app.signIn(idToken: Self.token("B"))
+    }
+
     func testUnverifiedReplacementCannotRestoreCachedAccess() async throws {
         let verifier = IdentityVerifier()
         let app = try app(verify: { try await verifier.verify($0) })
@@ -221,11 +406,13 @@ final class SuppliedIdentityTests: XCTestCase {
             environment: "development", rootKeychainAccessGroup: "TEAM.app", suppliedIdentity: Self.identity)).effective()
     }
 
-    private func app(records: IdentityMemoryRecords = IdentityMemoryRecords(),
+    private func app(records: IdentityMemoryRecords = IdentityMemoryRecords(), registration: LatchwayAppRegistration? = nil,
+                     cleanupTimeoutNanoseconds: UInt64 = 30_000_000_000,
                      verify: @escaping @Sendable (String) async throws -> LatchwayVerifiedIdentityWire = { try SuppliedIdentityTests.verified($0) }) throws -> LatchwayApp {
-        try LatchwayApp(registration: registration(), authority: LatchwaySuppliedIdentityAuthority(),
+        try LatchwayApp(registration: registration ?? self.registration(), authority: LatchwaySuppliedIdentityAuthority(),
             attestationFactory: { _ in LatchwayFixedAttestationProvider(evidence: .init(provider: "app_attest", evidence: [:])) },
-            lifecycleRecords: records, migration: {}, prepareAccount: { _ in }, verifyIdentity: verify)
+            lifecycleRecords: records, migration: {}, prepareAccount: { _ in }, verifyIdentity: verify,
+            cleanupTimeoutNanoseconds: cleanupTimeoutNanoseconds)
     }
 
     private static func token(_ subject: String, expires: Date = Date().addingTimeInterval(3600), suffix: String = "signature") -> String {
@@ -271,6 +458,13 @@ private actor IdentityGate {
 private final class IdentityMemoryRecords: LatchwayLifecycleRecords, @unchecked Sendable {
     private let lock = NSLock()
     private var value: Data?
+    private var failWrites = false
     func read() throws -> Data? { lock.withLock { value } }
-    func write(_ value: Data) throws { lock.withLock { self.value = value } }
+    func write(_ value: Data) throws {
+        try lock.withLock {
+            if failWrites { throw LatchwayLifecycleError.cleanupRequired }
+            self.value = value
+        }
+    }
+    func setFailure(_ value: Bool) { lock.withLock { failWrites = value } }
 }

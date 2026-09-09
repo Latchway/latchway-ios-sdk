@@ -1,4 +1,4 @@
-# Developer-supplied identity (1.2.0)
+# Developer-supplied identity (1.3.0)
 
 The application authenticates its user. Latchway accepts the resulting ID token,
 verifies it through the gateway, and owns device-bound shared native sessions.
@@ -24,7 +24,7 @@ let client = try await account.makeClient()
 try await account.updateIdToken { try await yourAuth.currentIDToken() }
 
 // Offline Latchway logout, shared by RN and native. External auth logout is yours.
-try await account.logout()
+try await app.signOut()
 ```
 
 Already have a current token? Use `app.signIn(idToken:)` and
@@ -63,10 +63,44 @@ require explicit migration inventory; do not supply an invented empty list.
   never undoes a persisted logout; a later accepted login calls `signIn` explicitly.
 - A new user requires `signIn`, which retires the previous account first. Old
   account handles cannot refresh or log out a later user, including A → B → A.
-- Closing a client releases that client only. `account.logout()` fences native
+- Closing a client releases that client only. `app.signOut()` fences native
   and RN requests and components without resetting server per-user quotas.
 - Serialize your provider's account mutations; Latchway does not call Firebase
   `signOut`, register hidden listeners, or control third-party auth changes.
+
+## Sign out and sign in again
+
+```swift
+try await app.signOut()
+// Your authentication provider manages its own sign-out/sign-in separately.
+let nextAccount = try await app.signIn { try await yourAuth.currentIDToken() }
+```
+
+No account lookup or generation snapshot is required. The app-level operation
+handles an active account, expired identity, an unfinished first sign-in,
+persisted account state after restart, and an already signed-out app. Native and
+React Native use the same registered app: signing out from either retires that
+shared account. Pending token producers are fenced; even a producer that ignores
+cancellation cannot publish its late result or erase a newer sign-in.
+
+Wait for successful completion before signing in again. Concurrent sign-outs
+join the same cleanup. A Keychain/cleanup failure throws `cleanupRequired` and
+keeps requests and new sign-in blocked; retry `try await app.signOut()` after the
+storage becomes available. A cleanup timeout leaves its drain running safely;
+the next call joins or completes that retirement. `restore` cannot undo a
+recorded logout; explicit `signIn` is required, including for the same user.
+
+Cleanup removes the SDK's account refresh credentials, cached client sessions,
+supplied identity token and registered component credentials, and fences active
+or buffered response streams. It does not call Firebase or another identity
+provider, reset per-user quotas, revoke the server installation, or erase
+unrelated Keychain entries. Non-secret generation/logout tombstones, hashed
+account/retention metadata and account-scoped installation/component/App Attest
+key identity remain under the existing bounded retention policy. In-flight
+caller-owned token strings cannot be erased by the SDK.
+
+Existing `account.logout()` remains useful for delayed callbacks that must
+target only their captured login; an old handle never signs out a newer account.
 
 ## Server requirements
 

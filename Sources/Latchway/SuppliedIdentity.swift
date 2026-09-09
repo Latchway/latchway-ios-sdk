@@ -134,9 +134,18 @@ final class LatchwayIdentityFreshnessFence: @unchecked Sendable {
     }
 }
 
-struct LatchwayOneShotTokenProvider: LatchwayIdentityTokenProvider {
-    let token: String
-    func identityToken() -> String { token }
+/// All mutable token state is protected by the same lock.
+final class LatchwayOneShotTokenProvider: LatchwayIdentityTokenProvider, @unchecked Sendable {
+    private let lock = NSLock()
+    private var token: String?
+    init(token: String) { self.token = token }
+    func identityToken() throws -> String {
+        try lock.withLock {
+            guard let token else { throw LatchwayLifecycleError.loggedOut }
+            return token
+        }
+    }
+    func clear() { lock.withLock { token = nil } }
 }
 
 /// An opaque lease on one accepted sign-in. Old handles cannot update or log

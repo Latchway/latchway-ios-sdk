@@ -52,7 +52,7 @@ class DocumentationBundleTests(unittest.TestCase):
             "Latchway/FirebaseAuth",
         ):
             self.assertIn(product, product_text)
-        self.assertIn("1.2.0", product_text)
+        self.assertIn("1.3.0", product_text)
 
     def test_bundle_is_reproducible_self_describing_and_checksum_bound(self) -> None:
         with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second:
@@ -62,7 +62,7 @@ class DocumentationBundleTests(unittest.TestCase):
                     sys.executable, str(ROOT / "scripts/build_docs_bundle.py"),
                     "--output-dir", output, "--source-date-epoch", "0",
                 ], cwd=ROOT, check=True, stdout=subprocess.PIPE, text=True)
-                archives.append(Path(output, "docs-bundle-1.2.0.tar.gz"))
+                archives.append(Path(output, "docs-bundle-1.3.0.tar.gz"))
             self.assertEqual(archives[0].read_bytes(), archives[1].read_bytes())
             with tarfile.open(archives[0], "r:gz") as archive:
                 members = archive.getmembers()
@@ -74,7 +74,7 @@ class DocumentationBundleTests(unittest.TestCase):
                 }
             manifest = json.loads(payloads["bundle-manifest.json"])
             self.assertEqual(manifest["schema_version"], MODULE.SCHEMA)
-            self.assertEqual(manifest["release"]["version"], "1.2.0")
+            self.assertEqual(manifest["release"]["version"], "1.3.0")
             foundation_models = payloads["frameworks/foundation-models.swift"].decode("utf-8")
             self.assertTrue(foundation_models.startswith(
                 "#if canImport(FoundationModels) && compiler(>=6.4)\n"
@@ -152,7 +152,7 @@ class DocumentationBundleTests(unittest.TestCase):
                         info.size = len(payload)
                         archive.addfile(info, io.BytesIO(payload))
             with self.assertRaises(MODULE.BundleError):
-                MODULE.verify_archive(malicious, "docs-bundle-1.2.0")
+                MODULE.verify_archive(malicious, "docs-bundle-1.3.0")
 
     def test_provenance_commit_must_equal_the_checked_out_source(self) -> None:
         with tempfile.TemporaryDirectory() as output:

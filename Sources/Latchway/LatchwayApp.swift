@@ -286,6 +286,7 @@ public actor LatchwayApp {
     private var state: LatchwayAppSnapshot.State = .inactive
     private var activationTask: Task<UUID, Error>?
     private var activationEpoch: UUID?
+    private var signOutTask: Task<Void, Error>?
     private var observers: [UUID: AsyncStream<LatchwayAppSnapshot>.Continuation] = [:]
     private struct IdentityOperation {
         let id: UUID
@@ -302,6 +303,7 @@ public actor LatchwayApp {
     private let migrationOverride: (@Sendable () async throws -> Void)?
     private let accountPreparationOverride: (@Sendable (String) async throws -> Void)?
     private let identityVerificationOverride: (@Sendable (String) async throws -> LatchwayVerifiedIdentityWire)?
+    private let cleanupTimeoutNanoseconds: UInt64
 
     public func signIn(idToken: String) async throws -> LatchwayAccount {
         try await signIn { idToken }
@@ -309,6 +311,62 @@ public actor LatchwayApp {
 
     public func signIn(getIdToken: @escaping @Sendable () async throws -> String) async throws -> LatchwayAccount {
         try await acquireIdentity(intent: .signIn, generationID: nil, getIdToken: getIdToken)
+    }
+
+    /// Signs out this shared app locally, including native and React Native
+    /// callers, without needing a current account handle. Concurrent calls join
+    /// one cleanup. A secure-storage failure leaves the app fenced; call again
+    /// to retry. Explicit signIn (or authority-mode activate) can then establish
+    /// a fresh generation. This does not sign out your authentication provider
+    /// or revoke the remote installation. Account-scoped installation keys and
+    /// non-secret logout/key-retention markers remain for safe reuse.
+    public func signOut() async throws {
+        if let signOutTask { return try await signOutTask.value }
+        // Establish intent synchronously, before any journal/cleanup actor hop.
+        identityIntentEpoch = UUID()
+        identityOperation = nil
+        activationEpoch = nil
+        activationTask?.cancel()
+        activationTask = nil
+        verificationTask?.cancel()
+        verificationTask = nil
+        identityExpiryTask?.cancel()
+        identityExpiryTask = nil
+        (authority as? LatchwaySuppliedIdentityAuthority)?.clear()
+        let target = generation
+        target?.fenceSignOut()
+        state = .retiring
+        changed()
+        let task = Task {
+            defer { self.signOutTask = nil }
+            try await self.finishSignOut(target: target)
+        }
+        signOutTask = task
+        try await task.value
+    }
+
+    private func finishSignOut(target: LatchwayAccountGeneration?) async throws {
+        await journal.fenceSignOut()
+        if let target {
+            // Generation cleanup cancels active operations before storage I/O.
+            // Its deadline never abandons the background drain; retries join it.
+            try await target.logout()
+            // A previous timed-out waiter may have completed cleanup in the
+            // background. Clear this retry's journal fence in that case too.
+            try await journal.finishRetirement(target.id)
+        } else if let entry = try await journal.entry() {
+            try await journal.retire(entry.generation)
+            try await journal.finishRetirement(entry.generation)
+        } else {
+            try await journal.recordEmptyLogout()
+        }
+        generation = nil
+        persistedGenerationID = nil
+        verifiedGenerationID = nil
+        installationKey = nil
+        attestation = nil
+        state = .loggedOut
+        changed()
     }
 
     /// Restores only an untouched app or an unretired matching account. A
@@ -366,7 +424,7 @@ public actor LatchwayApp {
                               bindingID: UUID? = nil) async throws -> UUID {
         guard let supplied = authority as? LatchwaySuppliedIdentityAuthority,
               registration.suppliedIdentity != nil else { throw LatchwayLifecycleError.configurationConflict }
-        guard state != .retiring else { throw LatchwayLifecycleError.cleanupRequired }
+        guard state != .retiring, signOutTask == nil else { throw LatchwayLifecycleError.cleanupRequired }
         guard bindingID == nil || bindingID == identityBindingID else { throw LatchwayLifecycleError.configurationConflict }
         let intentEpoch = UUID()
         identityIntentEpoch = intentEpoch
@@ -429,8 +487,10 @@ public actor LatchwayApp {
         guard let generation, let key = installationKey, let attestation else {
             throw LatchwayLifecycleError.identityUnavailable
         }
-        let client = buildClient(generation: generation, installationKey: key, attestation: attestation,
+        let client = try await buildClient(generation: generation, installationKey: key, attestation: attestation,
                                  runtime: runtime, sdkVersion: LatchwayVersion.sdk, recoveryToken: idToken)
+        do { try requireIdentityTicket(ticketID) }
+        catch { await client.close(); throw error }
         let verifier = identityVerificationOverride
         let task = Task {
             if let verifier { return try await verifier(idToken) }
@@ -465,13 +525,19 @@ public actor LatchwayApp {
         guard let operation = identityOperation, operation.id == ticketID else { return }
         let canResumePublishedAccount = operation.generationID != nil && operation.generationID == verifiedGenerationID
             && operation.generationID == generation?.id
+        let intentEpoch = identityIntentEpoch
         identityOperation = nil
-        if !canResumePublishedAccount { state = .retiring; changed() }
         activationEpoch = nil
         verificationTask?.cancel()
         verificationTask = nil
+        if !canResumePublishedAccount {
+            try await signOut()
+            return
+        }
         await journal.cancelIdentityOperation(ticketID)
-        let pendingEntry = try await journal.entry()
+        guard identityIntentEpoch == intentEpoch, identityOperation == nil,
+              state != .retiring, state != .loggedOut,
+              generation?.id == operation.generationID else { return }
         if canResumePublishedAccount {
             if let supplied = authority as? LatchwaySuppliedIdentityAuthority {
                 supplied.resume(operationID: ticketID)
@@ -483,13 +549,6 @@ public actor LatchwayApp {
                 }
                 changed()
             }
-        } else if let target = generation?.id ?? persistedGenerationID ?? pendingEntry?.generation {
-            try await logout(generationID: target)
-        } else {
-            (authority as? LatchwaySuppliedIdentityAuthority)?.clear()
-            try await journal.recordEmptyLogout()
-            state = .loggedOut
-            changed()
         }
     }
 
@@ -532,7 +591,8 @@ public actor LatchwayApp {
          lifecycleRecords: (any LatchwayLifecycleRecords)? = nil,
          migration: (@Sendable () async throws -> Void)? = nil,
          prepareAccount: (@Sendable (String) async throws -> Void)? = nil,
-         verifyIdentity: (@Sendable (String) async throws -> LatchwayVerifiedIdentityWire)? = nil) throws {
+         verifyIdentity: (@Sendable (String) async throws -> LatchwayVerifiedIdentityWire)? = nil,
+         cleanupTimeoutNanoseconds: UInt64 = 30_000_000_000) throws {
         self.authorityInstanceID = authorityInstanceID
         self.registration = registration
         self.authority = authority
@@ -540,6 +600,7 @@ public actor LatchwayApp {
         migrationOverride = migration
         accountPreparationOverride = prepareAccount
         identityVerificationOverride = verifyIdentity
+        self.cleanupTimeoutNanoseconds = cleanupTimeoutNanoseconds
         migrationRecords = LatchwayKeychainRecords(service: "dev.latchway.shared.v3.\(registration.scope)",
                                                    accessGroup: registration.rootGroup!)
         let componentKeyIndex = LatchwaySharedComponentKeyIndex(records: migrationRecords)
@@ -598,7 +659,7 @@ public actor LatchwayApp {
     @discardableResult
     public func activate() async throws -> UUID {
         guard registration.suppliedIdentity == nil else { throw LatchwayLifecycleError.identityAuthorityRequired }
-        guard !transferringAuthority else { throw LatchwayLifecycleError.cleanupRequired }
+        guard !transferringAuthority, state != .retiring, signOutTask == nil else { throw LatchwayLifecycleError.cleanupRequired }
         if let activationTask { return try await activationTask.value }
         let epoch = UUID()
         activationEpoch = epoch
@@ -610,6 +671,10 @@ public actor LatchwayApp {
 
     private func performActivation(_ epoch: UUID, suppliedSnapshot: LatchwayIdentitySnapshot? = nil) async throws -> UUID {
         guard state != .retiring else { throw LatchwayLifecycleError.cleanupRequired }
+        if suppliedSnapshot == nil {
+            await journal.beginIdentityOperation(epoch)
+            guard activationEpoch == epoch else { throw LatchwayLifecycleError.loggedOut }
+        }
         try await migrateLegacyRoots()
         guard activationEpoch == epoch else { throw LatchwayLifecycleError.loggedOut }
         guard let identity = registration.identity else { throw LatchwayLifecycleError.identityUnavailable }
@@ -631,7 +696,7 @@ public actor LatchwayApp {
         if let accountPreparationOverride { try await accountPreparationOverride(scope) }
         else { try await keyRetention.prepare(scope) }
         guard activationEpoch == epoch else { throw LatchwayLifecycleError.loggedOut }
-        let entry = try await journal.activate(account: accountScope, identityTicket: suppliedSnapshot == nil ? nil : epoch)
+        let entry = try await journal.activate(account: accountScope, identityTicket: epoch)
         guard activationEpoch == epoch else {
             if let current = try await journal.entry(), current.generation == entry.generation, current.state == .active {
                 try await journal.retire(entry.generation)
@@ -647,6 +712,7 @@ public actor LatchwayApp {
         generation = LatchwayAccountGeneration(entry: entry, scope: scope, issuer: identity.issuer,
                                                tenant: identity.tenant, authority: authority, journal: journal,
                                                accountBinding: binding,
+                                               cleanupTimeoutNanoseconds: cleanupTimeoutNanoseconds,
                                                onIdentityLoss: { [weak self] in
             try? await self?.logout(generationID: entry.generation)
         },
@@ -679,13 +745,18 @@ public actor LatchwayApp {
         guard self.generation?.id == generation.id, state == .active, identityOperation == nil else {
             throw LatchwayLifecycleError.identityRefreshRequired
         }
-        return buildClient(generation: generation, installationKey: installationKey, attestation: attestation,
+        let client = try await buildClient(generation: generation, installationKey: installationKey, attestation: attestation,
                            runtime: runtime, sdkVersion: sdkVersion)
+        guard self.generation?.id == generation.id, state == .active, identityOperation == nil else {
+            await client.close()
+            throw LatchwayLifecycleError.identityRefreshRequired
+        }
+        return client
     }
 
     private func buildClient(generation: LatchwayAccountGeneration, installationKey: any LatchwayInstallationKey,
                              attestation: any LatchwayAttestationProvider, runtime: LatchwayClientRuntime,
-                             sdkVersion: String, recoveryToken: String? = nil) -> LatchwayClient {
+                             sdkVersion: String, recoveryToken: String? = nil) async throws -> LatchwayClient {
         var configuration = LatchwayConfiguration(baseURL: registration.baseURL, applicationID: registration.applicationID,
             environment: registration.environment, rootKeychainAccessGroup: registration.rootGroup!,
             identityProvider: registration.identityProvider!, clientRuntime: runtime, clientSDKVersion: sdkVersion,
@@ -700,17 +771,21 @@ public actor LatchwayApp {
         let tokenProvider: any LatchwayIdentityTokenProvider
         if let recoveryToken { tokenProvider = LatchwayOneShotTokenProvider(token: recoveryToken) }
         else { tokenProvider = generation }
-        return LatchwayClient(configuration: configuration, identityTokenProvider: tokenProvider,
+        let client = LatchwayClient(configuration: configuration, identityTokenProvider: tokenProvider,
             attestationProvider: attestation, installationKey: installationKey,
             sessionStorage: LatchwayGenerationSessionStorage(journal: journal, generation: generation.id),
             transport: transport, clock: LatchwaySystemClock(), rootKeychainPreflight: {},
             processScopeNamespace: LatchwayProcessScopeIdentity.productionNamespace)
+        try await generation.registerClientCleanup(for: client) { [weak client] in await client?.clearAccountCredentials() }
+        return client
     }
 
     /// Explicitly targets a captured generation; a delayed sign-out callback
     /// cannot retire a subsequent account or a subsequent login of the same UID.
     public func logout(generationID: UUID) async throws {
-        try await retireGeneration(generationID, preservingIdentityOperation: false)
+        guard generationID == generation?.id ||
+                (generationID == persistedGenerationID && state != .loggedOut) else { return }
+        try await signOut()
     }
 
     private func retireGeneration(_ generationID: UUID, preservingIdentityOperation: Bool) async throws {
