@@ -16,6 +16,11 @@ struct FoundationModelsPublicAPITests {
             LatchwayFoundationModelsError.invalidTranscript.documentationURL.absoluteString
                 == "https://docs.latchway.dev/errors/foundation-models-invalid-transcript"
         )
+        let problem = LatchwayProblem(code: .requestInvalid, title: "Rejected", detail: "private-body-never-log",
+            status: 400, requestID: "request-safe-id", retryable: false)
+        let error = LatchwayFoundationModelsGatewayError(problem: problem)
+        #expect(!String(describing: error).contains(problem.detail))
+        #expect(error.description.contains(problem.requestID))
     }
 
     @Test func singleTurnGenerationUsesResponsesStreamingTransport() async throws {
@@ -349,7 +354,7 @@ struct FoundationModelsPublicAPITests {
                     "Content-Type": "application/problem+json",
                     "X-Latchway-Request-ID": "request-quota-12345678",
                 ],
-                body: Data()
+                body: try gatewayProblem(code: "quota_exceeded", status: 429, requestID: "request-quota-12345678")
             ),
             .response(
                 statusCode: 404,
@@ -372,6 +377,12 @@ struct FoundationModelsPublicAPITests {
                 context.metadata["request_id"] as? String
                     == "request-quota-12345678"
             )
+            let problem = try #require(context.metadata["latchway_problem"] as? LatchwayProblem)
+            #expect(problem.feature == "foundation-models-test")
+            #expect(problem.code == .quotaExceeded)
+            #expect(problem.errors?.first?.path == "max_output_tokens")
+            #expect(context.resetDate == problem.retryAfter)
+            #expect(context.resetDate != nil)
         }
 
         do {
@@ -385,6 +396,73 @@ struct FoundationModelsPublicAPITests {
             #expect(statusCode == 404)
             #expect(requestID == "request-feature-12345678")
         }
+    }
+
+    @Test func canonicalGatewayFailurePreservesProblemAndRejectsRawBodies() throws {
+        guard #available(iOS 27.0, macOS 27.0, visionOS 27.0, watchOS 27.0, *) else { return }
+        let response = try #require(HTTPURLResponse(url: URL(string: "https://gateway.example.test")!,
+            statusCode: 400, httpVersion: nil, headerFields: [
+                "Content-Type": "application/problem+json", "X-Latchway-Request-ID": "request-invalid-tools"]))
+        let error = LatchwayLanguageModelExecutor.gatewayError(from: response,
+            body: try gatewayProblem(code: "request_invalid", status: 400, requestID: "request-invalid-tools"))
+        guard let error = error as? LatchwayFoundationModelsGatewayError else {
+            Issue.record("Canonical problem was discarded")
+            return
+        }
+        let problem = error.problem
+        #expect(problem.code == .requestInvalid)
+        #expect(problem.errors?.first?.path == "max_output_tokens")
+        #expect(problem.requestID == "request-invalid-tools")
+        #expect(!problem.retryable)
+
+        for body in [Data("private provider response".utf8), Data(repeating: 32, count: 65_537)] {
+            let error = LatchwayLanguageModelExecutor.gatewayError(from: response, body: body)
+            guard case let LatchwayFoundationModelsError.gateway(status, requestID) = error else {
+                Issue.record("Invalid response did not retain safe HTTP diagnostics")
+                continue
+            }
+            #expect(status == 400)
+            #expect(requestID == "request-invalid-tools")
+            #expect(!String(describing: error).contains("private provider"))
+        }
+    }
+
+    @Test func failedAndTruncatedStreamsRetainCorrelationAndNeverRetry() async throws {
+        guard #available(iOS 27.0, macOS 27.0, visionOS 27.0, watchOS 27.0, *) else { return }
+        let delta = "data: {\"type\":\"response.output_text.delta\",\"delta\":\"Partial\"}\n\n"
+        for suffix in ["", "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"message\":\"private upstream response\"}}}\n\n",
+                       "data: {\"type\":\"response.incomplete\"}\n\n", "data: [DONE]\n\n"] {
+            FoundationModelsURLProtocol.reset(stubs: [.response(statusCode: 200,
+                headers: ["Content-Type": "text/event-stream", "X-Latchway-Request-ID": "request-partial-stream"],
+                body: Data((delta + suffix).utf8))])
+            let fixture = makeTransport()
+            let model = LatchwayLanguageModel(configuration: .init(transport: fixture.transport))
+            do {
+                _ = try await LanguageModelSession(model: model).respond(to: "test")
+                Issue.record("Incomplete response reported success")
+            } catch let error as LatchwayFoundationModelsStreamError {
+                #expect(error.requestID == "request-partial-stream")
+                #expect(UUID(uuidString: error.generationID) != nil)
+                #expect(!(error.errorDescription ?? "").contains("private upstream"))
+            }
+            #expect(await fixture.recorder.requests.count == 1)
+        }
+    }
+
+    @Test func permanentQuotaRejectionDoesNotSuggestRetrying() throws {
+        guard #available(iOS 27.0, macOS 27.0, visionOS 27.0, watchOS 27.0, *) else { return }
+        let response = try #require(HTTPURLResponse(url: URL(string: "https://gateway.example.test")!,
+            statusCode: 429, httpVersion: nil, headerFields: [
+                "Content-Type": "application/problem+json", "X-Latchway-Request-ID": "request-impossible-quota"]))
+        let error = LatchwayLanguageModelExecutor.gatewayError(from: response,
+            body: try gatewayProblem(code: "quota_exceeded", status: 429, requestID: "request-impossible-quota", retryable: false))
+        guard let error = error as? LatchwayFoundationModelsGatewayError else {
+            Issue.record("A permanent request bound was exposed as a transient rate limit")
+            return
+        }
+        let problem = error.problem
+        #expect(!problem.retryable)
+        #expect(problem.code == .quotaExceeded)
     }
 
     @Test func cancellationStopsTheNativeStream() async throws {
@@ -581,6 +659,19 @@ private func sessionExpiredProblem(requestID: String) throws -> Data {
         "request_id": requestID,
         "retryable": true,
     ], options: [.sortedKeys])
+}
+
+private func gatewayProblem(code: String, status: Int, requestID: String, retryable: Bool? = nil) throws -> Data {
+    let document: [String: Any] = [
+        "type": "https://docs.latchway.dev/errors/\(code.replacingOccurrences(of: "_", with: "-"))",
+        "documentation_url": "https://docs.latchway.dev/errors/\(code.replacingOccurrences(of: "_", with: "-"))",
+        "title": "Gateway rejected request", "status": status,
+        "detail": "The request exceeds its configured allowance.", "code": code,
+        "request_id": requestID, "retryable": retryable ?? (status == 429),
+        "retry_after": "2026-09-11T12:00:00Z", "feature": "foundation-models-test",
+        "errors": [["path": "max_output_tokens", "message": "The requested allowance is unavailable."]],
+    ]
+    return try JSONSerialization.data(withJSONObject: document)
 }
 
 private func requestJSONObject(_ request: URLRequest) throws -> [String: Any] {

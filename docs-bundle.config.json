@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "repository": "https://github.com/Latchway/latchway-ios-sdk",
-  "release": "v2.0.0",
-  "version": "2.0.0",
+  "release": "v2.0.1",
+  "version": "2.0.1",
   "package": "Latchway",
   "documents": [
     {
@@ -82,7 +82,7 @@
   "supported_versions": [
     {
       "name": "Latchway",
-      "version": "2.0.0",
+      "version": "2.0.1",
       "source": {
         "file": "Latchway.podspec",
         "start_line": 1,
@@ -91,7 +91,7 @@
     },
     {
       "name": "SwiftPM product Latchway",
-      "version": "2.0.0",
+      "version": "2.0.1",
       "source": {
         "file": "README.md",
         "start_line": 1
@@ -99,7 +99,7 @@
     },
     {
       "name": "SwiftPM product LatchwayAppAttest",
-      "version": "2.0.0",
+      "version": "2.0.1",
       "source": {
         "file": "README.md",
         "start_line": 1
@@ -107,7 +107,7 @@
     },
     {
       "name": "SwiftPM product LatchwayAppExtensions",
-      "version": "2.0.0",
+      "version": "2.0.1",
       "source": {
         "file": "README.md",
         "start_line": 1
@@ -115,7 +115,7 @@
     },
     {
       "name": "SwiftPM product LatchwayFirebaseAuth",
-      "version": "2.0.0",
+      "version": "2.0.1",
       "source": {
         "file": "README.md",
         "start_line": 1
@@ -123,7 +123,7 @@
     },
     {
       "name": "SwiftPM product LatchwaySwiftOpenAI",
-      "version": "2.0.0",
+      "version": "2.0.1",
       "source": {
         "file": "README.md",
         "start_line": 1
@@ -131,7 +131,7 @@
     },
     {
       "name": "SwiftPM product LatchwayFoundationModels",
-      "version": "2.0.0",
+      "version": "2.0.1",
       "source": {
         "file": "README.md",
         "start_line": 1
@@ -139,7 +139,7 @@
     },
     {
       "name": "SwiftPM product LatchwayTesting",
-      "version": "2.0.0",
+      "version": "2.0.1",
       "source": {
         "file": "README.md",
         "start_line": 1
@@ -147,7 +147,7 @@
     },
     {
       "name": "CocoaPods Latchway/Core",
-      "version": "2.0.0",
+      "version": "2.0.1",
       "source": {
         "file": "README.md",
         "start_line": 1
@@ -155,7 +155,7 @@
     },
     {
       "name": "CocoaPods Latchway/AppAttest",
-      "version": "2.0.0",
+      "version": "2.0.1",
       "source": {
         "file": "README.md",
         "start_line": 1
@@ -163,7 +163,7 @@
     },
     {
       "name": "CocoaPods Latchway/AppExtensions",
-      "version": "2.0.0",
+      "version": "2.0.1",
       "source": {
         "file": "README.md",
         "start_line": 1
@@ -171,7 +171,7 @@
     },
     {
       "name": "CocoaPods Latchway/FirebaseAuth",
-      "version": "2.0.0",
+      "version": "2.0.1",
       "source": {
         "file": "README.md",
         "start_line": 1
@@ -332,8 +332,8 @@
     },
     {
       "file": "Sources/Latchway/LatchwayError.swift",
-      "start_line": 178,
-      "end_line": 190,
+      "start_line": 240,
+      "end_line": 251,
       "pattern": "(?m)^[ \\t]*case (?P<name>[a-z][A-Za-z0-9_]*)"
     },
     {

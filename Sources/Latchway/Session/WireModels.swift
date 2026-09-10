@@ -337,6 +337,10 @@ struct ProblemWire: Decodable {
     let retryAfter: Date?
     let operationID: String?
     private let operationIDMemberPresent: Bool
+    let feature: String?
+    let errors: [LatchwayProblem.FieldError]?
+    let supportedProtocolVersions: [Int]?
+    let instance: String?
 
     enum CodingKeys: String, CodingKey {
         case type, title, status, detail, code, retryable
@@ -344,11 +348,19 @@ struct ProblemWire: Decodable {
         case requestID = "request_id"
         case retryAfter = "retry_after"
         case operationID = "operation_id"
+        case feature, errors, instance
+        case supportedProtocolVersions = "supported_protocol_versions"
     }
 
     init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         type = try container.decode(String.self, forKey: .type)
+        for key in [CodingKeys.retryAfter, .operationID, .feature, .errors, .supportedProtocolVersions, .instance] {
+            if container.contains(key), try container.decodeNil(forKey: key) {
+                throw DecodingError.valueNotFound(String.self,
+                    .init(codingPath: container.codingPath + [key], debugDescription: "Optional Problem members must be omitted, not null."))
+            }
+        }
         documentationURL = try container.decode(String.self, forKey: .documentationURL)
         title = try container.decode(String.self, forKey: .title)
         status = try container.decode(Int.self, forKey: .status)
@@ -359,6 +371,10 @@ struct ProblemWire: Decodable {
         retryAfter = try container.decodeIfPresent(Date.self, forKey: .retryAfter)
         operationID = try container.decodeIfPresent(String.self, forKey: .operationID)
         operationIDMemberPresent = container.contains(.operationID)
+        feature = try container.decodeIfPresent(String.self, forKey: .feature)
+        errors = try container.decodeIfPresent([LatchwayProblem.FieldError].self, forKey: .errors)
+        supportedProtocolVersions = try container.decodeIfPresent([Int].self, forKey: .supportedProtocolVersions)
+        instance = try container.decodeIfPresent(String.self, forKey: .instance)
     }
 
     var problem: LatchwayProblem {
@@ -370,7 +386,11 @@ struct ProblemWire: Decodable {
             requestID: requestID,
             retryable: retryable,
             retryAfter: retryAfter,
-            operationID: operationID
+            operationID: operationID,
+            feature: feature,
+            errors: errors,
+            supportedProtocolVersions: supportedProtocolVersions,
+            instance: instance
         )
     }
 
@@ -382,8 +402,12 @@ struct ProblemWire: Decodable {
         return (1 ... 256).contains(title.utf8.count)
             && (400 ... 599).contains(status)
             && (1 ... 2_048).contains(detail.utf8.count)
-            && (8 ... 128).contains(requestID.utf8.count)
+            && LatchwayProblem.safeRequestID(requestID) != nil
             && code.range(of: "^[a-z][a-z0-9_]{0,62}$", options: .regularExpression) != nil
+            && (feature.map { $0.range(of: "^[a-z][a-z0-9_-]{0,62}$", options: .regularExpression) != nil } ?? true)
+            && (errors.map { $0.count <= 100 && $0.allSatisfy { $0.path.utf8.count <= 512 && $0.message.utf8.count <= 1_024 } } ?? true)
+            && (supportedProtocolVersions.map { $0.allSatisfy { $0 >= 1 } && Set($0).count == $0.count } ?? true)
+            && (instance.map { $0.utf8.count <= 2_048 && !$0.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) } ?? true)
             && Self.hasValidOperationContract(
                 code: LatchwayErrorCode(rawValue: code),
                 status: status,

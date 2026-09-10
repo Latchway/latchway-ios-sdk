@@ -99,7 +99,6 @@ struct LatchwayControlPlane: Sendable {
 
     func requireSuppliedIdentitySupport() async throws {
         let response = try await sendAuthorized(method: "GET", path: ".well-known/latchway", accessToken: nil, body: nil)
-        guard response.statusCode == 200 else { throw LatchwayLifecycleError.identityVerificationUnsupported }
         let discovery = try decode(response, expectedStatus: 200, as: LatchwaySuppliedIdentityDiscovery.self)
         guard discovery.capabilities?.contains("supplied_identity_v1") == true,
               discovery.identityVerificationEndpoint == "/client/v1/sessions/identity" else {
@@ -333,21 +332,7 @@ struct LatchwayControlPlane: Sendable {
     }
 
     private func decodeProblem(_ response: LatchwayHTTPResponse) throws -> LatchwayProblem {
-        guard response.body.count <= 65_536,
-              Self.mediaType(response.header("Content-Type")) == "application/problem+json"
-        else { throw LatchwayError.invalidServerResponse }
-        do {
-            try StrictJSON.validate(response.body)
-            let wire = try decoder.decode(ProblemWire.self, from: response.body)
-            guard wire.isValid,
-                  response.header("X-Latchway-Request-ID") == nil
-                      || response.header("X-Latchway-Request-ID") == wire.requestID
-            else { throw LatchwayError.invalidServerResponse }
-            let problem = wire.problem
-            guard problem.status == response.statusCode else { throw LatchwayError.invalidServerResponse }
-            return problem
-        } catch let error as LatchwayError { throw error }
-        catch { throw LatchwayError.invalidServerResponse }
+        try LatchwayProblem.decode(from: response)
     }
 
     private func endpoint(_ path: String) throws -> URL {
@@ -417,7 +402,7 @@ struct LatchwayControlPlane: Sendable {
     }
 }
 
-private extension JSONDecoder.DateDecodingStrategy {
+extension JSONDecoder.DateDecodingStrategy {
     static var latchwayISO8601: JSONDecoder.DateDecodingStrategy {
         .custom { decoder in
             let value = try decoder.singleValueContainer().decode(String.self)

@@ -68,13 +68,32 @@ struct FoundationModelsStream {
         request: LanguageModelExecutorGenerationRequest,
         channel: LanguageModelExecutorGenerationChannel
     ) async throws {
+        do {
+            try await consumeValidated(stream, request: request, channel: channel)
+        } catch is CancellationError { throw CancellationError() }
+        catch let error as LatchwayLifecycleError { throw error }
+        catch let error as LanguageModelError { throw error }
+        catch {
+            if Task.isCancelled { throw CancellationError() }
+            // Never expose raw upstream error frames or replay partial output.
+            throw LatchwayFoundationModelsStreamError(
+                requestID: LatchwayLanguageModelExecutor.requestID(from: stream.response),
+                generationID: request.id.uuidString)
+        }
+    }
+
+    private static func consumeValidated(
+        _ stream: LatchwayStreamingResponse,
+        request: LanguageModelExecutorGenerationRequest,
+        channel: LanguageModelExecutorGenerationChannel
+    ) async throws {
         let contentType = stream.response.value(forHTTPHeaderField: "Content-Type") ?? ""
         guard contentType.lowercased().hasPrefix("text/event-stream") else { throw invalid }
         var parser = Self(
             enabled: request.generationOptions.toolCallingMode?.kind == .disallowed
                 ? [] : Set(request.enabledToolDefinitions.map(\.name)),
             generationID: request.id.uuidString,
-            correlationID: stream.response.value(forHTTPHeaderField: "X-Latchway-Request-ID"),
+            correlationID: LatchwayLanguageModelExecutor.requestID(from: stream.response),
             channel: channel
         )
         var line = Data()

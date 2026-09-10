@@ -1,7 +1,7 @@
 # Foundation Models through Latchway
 
 Use Apple's `LanguageModelSession` with a remote, server-selected model while
-Latchway retains ownership of Firebase identity, App Attest, Keychain sessions,
+Latchway uses developer-supplied identity and owns App Attest, Keychain sessions,
 and Secure Enclave DPoP. This does **not** use Apple's on-device model, and it
 requires a network connection.
 
@@ -15,8 +15,9 @@ requires a network connection.
 - A feature using `openai_responses`, a compatible physical model, and the
   gateway version **1.0.2** or newer. Server 1.0.1 is insufficient.
 
-Version **1.1.0** adds this expanded adapter. Install the `v1.1.0` Swift Package
-release or CocoaPods `Latchway/FoundationModels`, version `1.1.0`.
+Version **1.1.0** introduced this expanded adapter. For current shared-account
+integration and error diagnostics, use Swift Package `2.0.1` or CocoaPods
+`Latchway/FoundationModels`, version `2.0.1`.
 
 ## Start a session
 
@@ -44,6 +45,30 @@ Reuse the session for multi-turn context. Do not start simultaneous generations
 on the same session. Cancel the consuming task to stop streaming. The adapter
 does not retry after receiving response bytes. If trimming history, remove
 whole prompt/response/tool-call/tool-result turns; never orphan a tool result.
+
+## Error details and recovery
+
+The adapter reads at most 64 KiB of a non-success response and validates the
+canonical gateway Problem. `LatchwayFoundationModelsGatewayError.problem`
+preserves the safe detail, code, status, request ID, retryability/timing, feature,
+field errors and supported protocol versions. Retryable HTTP 429 remains Apple's
+`LanguageModelError.rateLimited`; `context.resetDate` uses the gateway reset time
+and `context.metadata["latchway_problem"] as? LatchwayProblem` contains the full
+typed diagnostics. A missing reset is not a promise to retry immediately.
+Nonretryable quota rejections remain `LatchwayFoundationModelsGatewayError`; retrying the same
+oversized request cannot repair a permanent request bound.
+
+Invalid/non-JSON error bodies expose only HTTP status and a safe header request
+ID through `.gateway`. Failed, incomplete or truncated streams throw
+`LatchwayFoundationModelsStreamError(requestID:generationID:)`. Do not accept partial text as a
+completed answer or retry it automatically. Tool calls are emitted only after
+validated completion. Account-retirement and cancellation errors remain intact.
+
+The generic error description intentionally omits body details to keep logs
+redaction-safe. For your trusted gateway's user-facing error UI, explicitly
+select `problem.detail`, the relevant `problem.errors`, and `problem.requestID`.
+Never log raw bodies, tokens, proofs or provider responses. See the updated
+[LatchwayChat formatter](../Examples/LatchwayChat/LatchwayChat/LatchwayChat/ChatModel.swift).
 
 ## Guided generation
 

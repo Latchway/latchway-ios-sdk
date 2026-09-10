@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format follows Keep a Changelog, and releases will follow Semantic
 Versioning once package publication begins.
 
+## [2.0.1] — 2026-09-10
+
+### Fixed
+
+- Preserve gateway Problem detail, retry timing, feature, field errors, supported
+  protocol versions and diagnostic references across native request paths.
+  Expose one bounded canonical `LatchwayProblem.decode` helper for custom transports;
+  unknown optional extensions are ignored while known fields remain validated.
+- Keep temporary discovery failures as gateway errors, not unsupported identity
+  capabilities. Invalid HTTP error bodies retain status and safe request correlation,
+  without exposing raw proxy/provider text.
+- Read bounded Foundation Models HTTP error bodies. Rate-limit contexts retain the
+  typed Problem and real reset date; other canonical errors retain their full Problem.
+  Failed/truncated Responses streams retain request/generation IDs, never replay
+  partial output, and never invoke tools from incomplete responses.
+- Update LatchwayChat to display actionable validated details and request IDs.
+  Generic error descriptions remain redaction-safe. No wire protocol, storage,
+  authentication-provider dependency, or attestation-policy change is introduced.
+
 ## [2.0.0] — 2026-09-10
 
 ### Attestation development

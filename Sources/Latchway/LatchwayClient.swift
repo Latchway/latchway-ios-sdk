@@ -403,7 +403,7 @@ public actor LatchwayClient {
         }
         if (400 ... 599).contains(secondResponse.statusCode) {
             guard let problem = Self.problem(from: secondResponse) else {
-                let error = LatchwayError.invalidServerResponse
+                let error = Self.invalidHTTPResponse(from: secondResponse)
                 await record(error)
                 throw error
             }
@@ -423,7 +423,7 @@ public actor LatchwayClient {
         allowManagedPlaceholder: Bool
     ) async throws -> URLRequest {
         guard let firstProblem = Self.problem(from: response) else {
-            let error = LatchwayError.invalidServerResponse
+            let error = Self.invalidHTTPResponse(from: response)
             await record(error)
             throw error
         }
@@ -516,6 +516,9 @@ public actor LatchwayClient {
                 )
             }
             return try validatedQuota(snapshot, feature: feature)
+        } catch let error as LatchwayHTTPResponseError {
+            await record(error)
+            throw error
         } catch let error as LatchwayError {
             await record(error)
             throw error
@@ -535,6 +538,9 @@ public actor LatchwayClient {
                 let refreshed = try await refreshSession(force: true)
                 try await controlPlane.revoke(accessToken: refreshed.accessToken)
             }
+        } catch let error as LatchwayHTTPResponseError {
+            await record(error)
+            throw error
         } catch let error as LatchwayError {
             await record(error)
             throw error
@@ -563,6 +569,9 @@ public actor LatchwayClient {
                 let refreshed = try await refreshSession(force: true)
                 try await controlPlane.revokeFamily(accessToken: refreshed.accessToken)
             }
+        } catch let error as LatchwayHTTPResponseError {
+            await record(error)
+            firstError = error
         } catch let error as LatchwayError {
             await record(error)
             firstError = error
@@ -1180,6 +1189,9 @@ public actor LatchwayClient {
             session = nil
             state = .absent
             throw error
+        } catch let error as LatchwayHTTPResponseError {
+            await record(error)
+            throw error
         } catch let error as LatchwayError {
             await record(error)
             throw error
@@ -1698,58 +1710,12 @@ public actor LatchwayClient {
     }
 
     static func problem(from response: LatchwayHTTPResponse) -> LatchwayProblem? {
-        guard (400 ... 599).contains(response.statusCode),
-              response.body.count <= 65_536,
-              Self.mediaType(response.header("Content-Type")) == "application/problem+json",
-              (try? StrictJSON.validate(response.body)) != nil,
-              let object = try? JSONSerialization.jsonObject(with: response.body) as? [String: Any],
-              let type = object["type"] as? String,
-              let documentationURL = object["documentation_url"] as? String,
-              let title = object["title"] as? String,
-              (1 ... 256).contains(title.utf8.count),
-              let status = object["status"] as? Int,
-              status == response.statusCode,
-              let detail = object["detail"] as? String,
-              (1 ... 2_048).contains(detail.utf8.count),
-              let code = object["code"] as? String,
-              code.range(of: "^[a-z][a-z0-9_]{0,62}$", options: .regularExpression) != nil,
-              let requestID = object["request_id"] as? String,
-              (8 ... 128).contains(requestID.utf8.count),
-              response.header("X-Latchway-Request-ID") == nil
-                  || response.header("X-Latchway-Request-ID") == requestID,
-              let retryable = object["retryable"] as? Bool
-        else { return nil }
-        let errorCode = LatchwayErrorCode(rawValue: code)
-        let canonicalDocumentationURL = errorCode.documentationURL.absoluteString
-        guard type == canonicalDocumentationURL,
-              documentationURL == canonicalDocumentationURL
-        else { return nil }
-        let operationIDMemberPresent = object.keys.contains("operation_id")
-        let operationID = object["operation_id"] as? String
-        guard ProblemWire.hasValidOperationContract(
-            code: errorCode,
-            status: status,
-            retryable: retryable,
-            operationID: operationID,
-            operationIDMemberPresent: operationIDMemberPresent
-        ) else { return nil }
-        let retryAfter = (object["retry_after"] as? String).flatMap { value -> Date? in
-            let formatter = ISO8601DateFormatter()
-            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-            if let date = formatter.date(from: value) { return date }
-            formatter.formatOptions = [.withInternetDateTime]
-            return formatter.date(from: value)
-        }
-        return LatchwayProblem(
-            code: errorCode,
-            title: title,
-            detail: detail,
-            status: status,
-            requestID: requestID,
-            retryable: retryable,
-            retryAfter: retryAfter,
-            operationID: operationID
-        )
+        try? LatchwayProblem.decode(from: response)
+    }
+
+    static func invalidHTTPResponse(from response: LatchwayHTTPResponse) -> LatchwayHTTPResponseError {
+        .init(statusCode: response.statusCode,
+            requestID: LatchwayProblem.safeRequestID(response.header("X-Latchway-Request-ID")))
     }
 
     private func validateConfiguration() throws {
@@ -1928,6 +1894,12 @@ public actor LatchwayClient {
         default:
             lastErrorCode = error.stableLocalCode
         }
+    }
+
+    private func record(_ error: LatchwayHTTPResponseError) async {
+        state = .failed
+        lastErrorCode = error.code
+        lastRequestID = error.requestID
     }
 }
 

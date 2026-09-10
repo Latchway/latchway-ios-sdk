@@ -384,12 +384,14 @@ final class ChatModel: ObservableObject {
             guard stream.response.statusCode == 200 else {
                 var problemData = Data()
                 for try await byte in stream.bytes {
-                    guard problemData.count < 16384 else { break }
+                    guard problemData.count < 65_536 else {
+                        throw DemoError.gateway(stream.response.statusCode, requestID, "server_response_invalid")
+                    }
                     problemData.append(byte)
                 }
-                let problem = (try? JSONSerialization.jsonObject(with: problemData)) as? [String: Any]
-                requestID = problem?["request_id"] as? String ?? requestID
-                throw DemoError.gateway(stream.response.statusCode, requestID, problem?["code"] as? String)
+                let problem = try LatchwayProblem.decode(from: problemData, response: stream.response)
+                requestID = problem.requestID
+                throw LatchwayError.server(problem)
             }
             var line = Data()
             var totalBytes = 0
@@ -516,12 +518,22 @@ final class ChatModel: ObservableObject {
                 : "This account session is no longer active. Sign in again to create a new client."
         } else if error is CancellationError {
             errorMessage = "Reply stopped. Partial output was not retried; the framework reverted the incomplete turn."
+        } else if let error = error as? LatchwayFoundationModelsGatewayError {
+            show(error.problem)
+        } else if let error = error as? LatchwayFoundationModelsStreamError {
+            errorMessage = error.description
+        } else if let error = error as? LatchwayHTTPResponseError {
+            errorMessage = error.description
         } else if let error = error as? LatchwayFoundationModelsError {
             errorMessage = error.errorDescription
+        } else if case let LanguageModelError.rateLimited(context) = error,
+                  let problem = context.metadata["latchway_problem"] as? LatchwayProblem {
+            show(problem)
         } else if error is LanguageModelError {
             errorMessage = "The Foundation Models request could not complete. The upstream model may not support the requested capability."
         } else if let error = error as? LatchwayError {
-            errorMessage = error.description
+            if case let .server(problem) = error { show(problem) }
+            else { errorMessage = error.description }
         } else if case let DemoError.gateway(status, id, code) = error {
             errorMessage = "Gateway returned HTTP \(status) (\(code ?? "request_failed")). Request: \(id ?? "unavailable")."
         } else if case DemoError.unverifiedDevice = error {
@@ -543,6 +555,18 @@ final class ChatModel: ObservableObject {
             errorMessage = authMessages[error.code] ?? "Could not complete this step (\(error.domain), \(error.code))."
         }
         if !verified { connectionStatus = "Device verification has not completed" }
+    }
+
+    private func show(_ problem: LatchwayProblem) {
+        requestID = problem.requestID
+        var parts = [problem.detail, "Code: \(problem.code). Request: \(problem.requestID)."]
+        if let field = problem.errors?.first { parts.append("\(field.path): \(field.message)") }
+        if problem.retryable, let reset = problem.retryAfter {
+            parts.append("Retry after \(reset.formatted(date: .abbreviated, time: .standard)).")
+        } else if !problem.retryable {
+            parts.append("Resolve this error before trying the same request again.")
+        }
+        errorMessage = parts.joined(separator: "\n")
     }
 
     #if DEBUG

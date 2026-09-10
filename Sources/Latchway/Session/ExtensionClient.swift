@@ -288,6 +288,8 @@ public actor LatchwayExtensionClient {
         } catch let error as LatchwayError {
             if error == .keyStorageFailure { session = nil }
             throw Self.map(error)
+        } catch let error as LatchwayHTTPResponseError {
+            throw error
         } catch {
             throw LatchwayError.transportFailure
         }
@@ -470,7 +472,7 @@ public actor LatchwayExtensionClient {
         }
         if (400 ... 599).contains(response.statusCode) {
             guard let problem = LatchwayClient.problem(from: response) else {
-                throw LatchwayError.invalidServerResponse
+                throw LatchwayClient.invalidHTTPResponse(from: response)
             }
             throw Self.map(.server(problem))
         }
@@ -501,7 +503,7 @@ public actor LatchwayExtensionClient {
         framework: LatchwayFrameworkMetadata?
     ) async throws -> URLRequest {
         guard let problem = LatchwayClient.problem(from: response) else {
-            throw LatchwayError.invalidServerResponse
+            throw LatchwayClient.invalidHTTPResponse(from: response)
         }
         guard request.httpBodyStream == nil,
               let directive = SafeRetryDirective.parse(
@@ -821,6 +823,8 @@ public actor LatchwayExtensionClient {
             throw error
         } catch is CancellationError {
             throw LatchwayError.cancelled
+        } catch let error as LatchwayHTTPResponseError {
+            throw error
         } catch {
             throw LatchwayError.transportFailure
         }

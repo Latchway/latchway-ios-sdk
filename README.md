@@ -1,19 +1,19 @@
 # Latchway iOS SDK
 
-SDK **2.0.0** uses the fresh supplied-identity shared-account API. Configure
+SDK **2.0.1** uses the fresh supplied-identity shared-account API. Configure
 from either native or React Native first, provide your application's ID token,
 and reuse the same native account/session. No Firebase dependency or native auth
 bootstrap is required. App-level `try await app.signOut()` keeps the published
 sign-out safeguards, including interrupted sign-in and cleanup retry.
 
-This is a source-breaking release: old constructors, callback authorities and
+The 2.0 line is source-breaking: old constructors, callback authorities and
 automatic credential-adoption/migration APIs are removed. Older storage is not
 imported or silently erased. Current account/session boundaries, signed private
 Keychain validation and delegated-only extension restrictions remain.
 
 Requires server 1.1.1+ with `supplied_identity_v1` and shared-native policy;
 App Attest `any` acceptance requires server 1.1.3. See
-[release notes](docs/release/v2.0.0.md) and
+[latest patch notes](docs/release/v2.0.1.md), [2.0 upgrade notes](docs/release/v2.0.0.md), and
 [identity setup](Documentation/SuppliedIdentity.md).
 
 The SDK lets an iOS application call a self-hosted AI gateway without embedding
@@ -55,6 +55,23 @@ do {
     throw error
 }
 ```
+
+### Error diagnostics
+
+For native buffered calls, catch `LatchwayError.server(let problem)` and use
+`problem.code`, `detail`, `requestID`, `retryable`, `retryAfter`, `feature`,
+`errors`, `supportedProtocolVersions` and `operationID`. The optional `instance`
+is an opaque reference, not a URL the SDK follows. General error descriptions
+omit body text to keep logs safe; explicitly select validated details for your
+trusted gateway's error UI.
+
+Streaming transports expose the HTTP head before the body. On non-success,
+read at most 64 KiB and use `LatchwayProblem.decode(from: data, response: head)`;
+do not discard the error body or render arbitrary non-JSON proxy/provider text.
+Invalid Problems throw `LatchwayHTTPResponseError(statusCode:requestID:)`.
+Unknown optional fields are ignored and cannot authorize retries. Retryability
+does not prove an AI request was never dispatched: never replay partial output,
+and require your protocol's completion marker before accepting stream success.
 
 Use the actual resolved first Keychain group in the signed root application.
 App ID prefixes can differ from Team IDs. Do not pass a build-setting expression
@@ -104,8 +121,8 @@ CocoaPods compiles them into module `Latchway`;
 SwiftPM keeps separate modules. The Foundation Models executor requires OS 27
 and its matching Xcode toolchain.
 
-Use SwiftPM version 2.0.0 or CocoaPods `pod 'Latchway/AppAttest', '2.0.0'`.
-Pair embedded integrations with React Native 2.0.0. Keep one native implementation in
+Use SwiftPM version 2.0.1 or CocoaPods `pod 'Latchway/AppAttest', '2.0.1'`.
+Pair embedded integrations with React Native 2.0.1. Keep one native implementation in
 an embedded RN app; adding an independent SPM copy beside the RN pod creates
 separate registries and is not supported shared-session setup.
 

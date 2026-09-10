@@ -140,6 +140,16 @@ public enum LatchwayErrorCode: Sendable, Equatable, Hashable, CustomStringConver
 }
 
 public struct LatchwayProblem: Sendable, Equatable, Error {
+    public struct FieldError: Sendable, Equatable, Decodable {
+        public let path: String
+        public let message: String
+
+        public init(path: String, message: String) {
+            self.path = path
+            self.message = message
+        }
+    }
+
     public let code: LatchwayErrorCode
     public let title: String
     public let detail: String
@@ -150,6 +160,11 @@ public struct LatchwayProblem: Sendable, Equatable, Error {
     /// The canonical audit correlation identifier required for an
     /// indeterminate operation outcome.
     public let operationID: String?
+    public let feature: String?
+    public let errors: [FieldError]?
+    public let supportedProtocolVersions: [Int]?
+    /// An opaque diagnostic reference. The SDK never follows this URI.
+    public let instance: String?
 
     public init(
         code: LatchwayErrorCode,
@@ -159,7 +174,11 @@ public struct LatchwayProblem: Sendable, Equatable, Error {
         requestID: String,
         retryable: Bool,
         retryAfter: Date? = nil,
-        operationID: String? = nil
+        operationID: String? = nil,
+        feature: String? = nil,
+        errors: [FieldError]? = nil,
+        supportedProtocolVersions: [Int]? = nil,
+        instance: String? = nil
     ) {
         self.code = code
         self.title = title
@@ -169,10 +188,53 @@ public struct LatchwayProblem: Sendable, Equatable, Error {
         self.retryable = retryable
         self.retryAfter = retryAfter
         self.operationID = operationID
+        self.feature = feature
+        self.errors = errors
+        self.supportedProtocolVersions = supportedProtocolVersions
+        self.instance = instance
     }
 
     /// Stable remediation documentation for ``code``.
     public var documentationURL: URL { code.documentationURL }
+
+    /// Decode a bounded, canonical gateway Problem response for a custom transport.
+    /// Unknown optional members are ignored, not copied into diagnostics. Invalid
+    /// bodies never become displayable provider text or retry instructions.
+    public static func decode(from data: Data, response: HTTPURLResponse) throws -> Self {
+        let headers = response.allHeaderFields.reduce(into: [String: String]()) { result, entry in
+            guard let name = entry.key as? String, let value = entry.value as? String else { return }
+            result[name] = value
+        }
+        return try decode(from: LatchwayHTTPResponse(statusCode: response.statusCode, headers: headers, body: data))
+    }
+
+    public static func decode(from response: LatchwayHTTPResponse) throws -> Self {
+        do {
+            guard (400 ... 599).contains(response.statusCode), response.body.count <= 65_536,
+                  response.header("Content-Type")?.split(separator: ";", maxSplits: 1).first?
+                    .trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "application/problem+json"
+            else { throw LatchwayError.invalidServerResponse }
+            try StrictJSON.validate(response.body)
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .latchwayISO8601
+            let wire = try decoder.decode(ProblemWire.self, from: response.body)
+            guard wire.isValid, wire.status == response.statusCode,
+                  response.header("X-Latchway-Request-ID") == nil
+                    || response.header("X-Latchway-Request-ID") == wire.requestID
+            else { throw LatchwayError.invalidServerResponse }
+            return wire.problem
+        } catch {
+            throw LatchwayHTTPResponseError(
+                statusCode: response.statusCode,
+                requestID: safeRequestID(response.header("X-Latchway-Request-ID"))
+            )
+        }
+    }
+
+    static func safeRequestID(_ value: String?) -> String? {
+        guard let value, value.range(of: "^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$", options: .regularExpression) != nil else { return nil }
+        return value
+    }
 }
 
 public enum LatchwayError: Error, Sendable, Equatable, CustomStringConvertible, LocalizedError {
@@ -231,4 +293,23 @@ public enum LatchwayError: Error, Sendable, Equatable, CustomStringConvertible, 
         )!
         return URL(string: "https://docs.latchway.dev/errors/\(segment)")!
     }
+}
+
+/// Safe HTTP diagnostics for a malformed gateway error body. Kept separate from
+/// `LatchwayError` so existing exhaustive switches remain source-compatible.
+public struct LatchwayHTTPResponseError: Error, Sendable, Equatable, CustomStringConvertible, LocalizedError {
+    public let statusCode: Int
+    public let requestID: String?
+
+    public init(statusCode: Int, requestID: String?) {
+        self.statusCode = statusCode
+        self.requestID = LatchwayProblem.safeRequestID(requestID)
+    }
+
+    public var code: String { "server_response_invalid" }
+    public var documentationURL: URL { LatchwayError.invalidServerResponse.documentationURL }
+    public var description: String {
+        "Latchway returned an invalid HTTP \(statusCode) response\(requestID.map { " (request \($0))" } ?? "")."
+    }
+    public var errorDescription: String? { description }
 }

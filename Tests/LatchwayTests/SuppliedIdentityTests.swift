@@ -389,6 +389,32 @@ final class SuppliedIdentityTests: XCTestCase {
         }
     }
 
+    func testDiscoveryOutagePreservesGatewayProblemInsteadOfUnsupportedCapability() async throws {
+        let plane = try controlPlane(LatchwayScriptedTransport { _, _ in
+            .init(statusCode: 503, headers: ["Content-Type": "application/problem+json", "X-Latchway-Request-ID": "request-discovery-outage"],
+                  body: Data(#"{"type":"https://docs.latchway.dev/errors/server-not-ready","documentation_url":"https://docs.latchway.dev/errors/server-not-ready","title":"Server not ready","status":503,"detail":"The gateway is temporarily unavailable.","code":"server_not_ready","request_id":"request-discovery-outage","retryable":true}"#.utf8))
+        })
+        do { try await plane.requireSuppliedIdentitySupport(); XCTFail("Discovery outage accepted") }
+        catch let LatchwayError.server(problem) {
+            XCTAssertEqual(problem.code, .serverNotReady)
+            XCTAssertTrue(problem.retryable)
+            XCTAssertEqual(problem.status, 503)
+            XCTAssertEqual(problem.requestID, "request-discovery-outage")
+        }
+    }
+
+    func testNonJSONDiscoveryOutageKeepsOnlySafeHTTPDiagnostics() async throws {
+        let plane = try controlPlane(LatchwayScriptedTransport { _, _ in
+            .init(statusCode: 503, headers: ["Content-Type": "text/html", "X-Latchway-Request-ID": "request-discovery-outage"],
+                  body: Data("<html>private proxy details</html>".utf8))
+        })
+        do { try await plane.requireSuppliedIdentitySupport(); XCTFail("Discovery outage accepted") }
+        catch let error as LatchwayHTTPResponseError {
+            XCTAssertEqual(error, .init(statusCode: 503, requestID: "request-discovery-outage"))
+            XCTAssertFalse(error.description.contains("private proxy"))
+        }
+    }
+
     private func controlPlane(_ transport: any LatchwayHTTPTransport) throws -> LatchwayControlPlane {
         let key = try LatchwayDeterministicInstallationKey(rawPrivateKey:
             Base64URL.decode("2ZFd1bc5bCB8zu8OEf5l7O9x_SxbsQNQMNn0si4NxxI"))

@@ -1091,8 +1091,8 @@ final class ClientSessionTests: XCTestCase {
             do {
                 _ = try await fixture.client.send(request, feature: "habit-assistant")
                 XCTFail("Invalid operation_id semantics must fail closed")
-            } catch let error as LatchwayError {
-                XCTAssertEqual(error, .invalidServerResponse)
+            } catch let error as LatchwayHTTPResponseError {
+                XCTAssertEqual(error.statusCode, 503)
                 if let operationID = testCase.operationID {
                     XCTAssertFalse(error.description.contains(operationID))
                 }
@@ -1107,8 +1107,8 @@ final class ClientSessionTests: XCTestCase {
         do {
             _ = try await fixture.client.send(request, feature: "habit-assistant")
             XCTFail("A malformed gateway error must fail closed")
-        } catch let error as LatchwayError {
-            XCTAssertEqual(error, .invalidServerResponse)
+        } catch let error as LatchwayHTTPResponseError {
+            XCTAssertEqual(error.statusCode, 500)
         }
         let counts = await fixture.server.counts()
         XCTAssertEqual(counts.dataPlane, 1)
