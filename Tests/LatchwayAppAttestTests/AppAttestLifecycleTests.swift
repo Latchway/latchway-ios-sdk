@@ -5,20 +5,10 @@ import Security
 import XCTest
 
 final class AppAttestLifecycleTests: XCTestCase {
-    func testPublicRootInitializersAcceptConcreteAndLegacyGroups() {
-        let root = "ABCDE12345.com.example.latchway"
-        let legacy = ["ABCDE12345.com.example.latchway.appintents"]
+    func testPublicInitializerUsesExplicitAccountNamespace() {
         _ = LatchwayAppAttestProvider(
-            applicationID: "app_01J00000000000000000000000",
-            environment: "production",
-            rootKeychainAccessGroup: root,
-            legacySharedKeychainAccessGroups: legacy
-        )
-        _ = LatchwayAppAttestProvider(
-            rootKeychainAccessGroup: root,
-            legacySharedKeychainAccessGroups: legacy,
-            storageNamespace: "custom"
-        )
+            rootKeychainAccessGroup: "ABCDE12345.com.example.latchway",
+            storageNamespace: "account-scope")
     }
 
     func testEveryAppAttestKeychainIdentityCarriesExplicitAccessGroup() {
@@ -32,44 +22,12 @@ final class AppAttestLifecycleTests: XCTestCase {
         XCTAssertEqual(identity[kSecAttrAccessGroup] as? String, group)
     }
 
-    func testCustomNamespaceLegacySharedStateBlocksBeforeDeviceCheck() async {
-        let service = FakeService()
-        let legacy = MemoryStateStore(
-            initial: .init(keyID: "legacy-key", acceptedByLatchway: true)
-        )
-        let provider = LatchwayAppAttestProvider(
-            service: service,
-            stateStore: MemoryStateStore(),
-            legacyStateStores: [legacy],
-            rootKeychainAccessGroup: "ABCDE12345.com.example.latchway",
-            legacySharedKeychainAccessGroups: [
-                "ABCDE12345.com.example.latchway.appintents",
-            ],
-            rootKeychainPreflight: {}
-        )
-
-        do {
-            _ = try await provider.evidence(for: fixtureChallenge())
-            XCTFail("Expected legacy shared App Attest state to block")
-        } catch let error as LatchwayError {
-            XCTAssertEqual(error, .rootKeychainMigrationRequired)
-        } catch {
-            XCTFail("Unexpected error: \(error)")
-        }
-        let counts = await service.counts()
-        XCTAssertEqual(counts.generateKey, 0)
-        XCTAssertEqual(counts.attestation, 0)
-        XCTAssertEqual(counts.assertion, 0)
-    }
-
-    func testSentinelMismatchWithoutLegacyStateIsInvalidBeforeDeviceCheck() async {
+    func testSentinelMismatchIsInvalidBeforeDeviceCheck() async {
         let service = FakeService()
         let provider = LatchwayAppAttestProvider(
             service: service,
             stateStore: MemoryStateStore(),
-            legacyStateStores: [],
             rootKeychainAccessGroup: "ABCDE12345.com.example.latchway",
-            legacySharedKeychainAccessGroups: [],
             rootKeychainPreflight: {
                 throw LatchwayError.invalidConfiguration("not the signed default group")
             }
@@ -96,40 +54,13 @@ final class AppAttestLifecycleTests: XCTestCase {
         let provider = LatchwayAppAttestProvider(
             service: FakeService(),
             stateStore: MemoryStateStore(),
-            legacyStateStores: [],
             rootKeychainAccessGroup: "ABCDE12345.com.example.latchway",
-            legacySharedKeychainAccessGroups: [],
             rootKeychainPreflight: { counter.increment() }
         )
 
         _ = await provider.status()
         _ = await provider.status()
         XCTAssertEqual(counter.value, 1)
-    }
-
-    func testComponentStorageNamespacesDoNotReuseRootOrSiblingMarkers() {
-        let first = LatchwayAppAttestProvider.componentStorageNamespace(
-            applicationID: "app_01J00000000000000000000000",
-            environment: "production",
-            clientRuntime: .iOS,
-            componentDefinitionID: "action_extension"
-        )
-        let sibling = LatchwayAppAttestProvider.componentStorageNamespace(
-            applicationID: "app_01J00000000000000000000000",
-            environment: "production",
-            clientRuntime: .iOS,
-            componentDefinitionID: "sso_extension"
-        )
-
-        XCTAssertEqual(
-            first,
-            "ios.app_01J00000000000000000000000.production.component.action_extension"
-        )
-        XCTAssertNotEqual(first, sibling)
-        XCTAssertNotEqual(
-            first,
-            "ios.app_01J00000000000000000000000.production"
-        )
     }
 
     func testRegistrationThenAssertion() async throws {
@@ -232,6 +163,55 @@ final class AppAttestLifecycleTests: XCTestCase {
         let status = await provider.status()
         XCTAssertEqual(counts.generateKey, 1)
         XCTAssertEqual(status.lastOperation, "attestation")
+    }
+
+    func testAcceptedKeyUnavailableAfterBuildChannelSwitchRegistersThenPersistsReplacement() async throws {
+        // Model Apple's invalidKey response after replacing a local build with
+        // a different App Attest environment. The SDK must not infer that
+        // environment from DEBUG, a receipt, or the Latchway environment name.
+        let service = FakeService(assertionFailures: [.invalidKey])
+        let store = MemoryStateStore(initial: .init(keyID: "previous-channel-key", acceptedByLatchway: true))
+        let provider = LatchwayAppAttestProvider(service: service, stateStore: store)
+
+        let registration = try await provider.evidence(for: fixtureChallenge())
+        XCTAssertEqual(registration.evidence["key_id"], .string("generated-key-1"))
+        XCTAssertEqual(Set(registration.evidence.keys), ["key_id", "attestation_object", "client_data_hash"])
+        let pendingState = try await store.load()
+        XCTAssertEqual(pendingState, .init(keyID: "generated-key-1", acceptedByLatchway: false))
+
+        await provider.didAccept(registration)
+        let reloaded = LatchwayAppAttestProvider(service: service, stateStore: store)
+        let assertion = try await reloaded.evidence(for: fixtureChallenge())
+        XCTAssertEqual(assertion.evidence["key_id"], .string("generated-key-1"))
+        XCTAssertEqual(Set(assertion.evidence.keys), ["key_id", "assertion_object", "client_data_hash"])
+        let acceptedState = try await store.load()
+        XCTAssertEqual(acceptedState, .init(keyID: "generated-key-1", acceptedByLatchway: true))
+        let counts = await service.counts()
+        XCTAssertEqual(counts.generateKey, 1)
+        XCTAssertEqual(counts.attestation, 1)
+        XCTAssertEqual(counts.assertion, 2)
+    }
+
+    func testUnacknowledgedAssertionDoesNotRotateAcceptedKey() async throws {
+        let service = FakeService()
+        let original = LatchwayAppAttestProvider.State(keyID: "accepted", acceptedByLatchway: true)
+        let store = MemoryStateStore(initial: original)
+        let provider = LatchwayAppAttestProvider(service: service, stateStore: store)
+
+        _ = try await provider.evidence(for: fixtureChallenge())
+        // A policy rejection during exchange supplies no didAccept callback.
+        // It is not an Apple invalidKey signal and must not erase valid state.
+        let reloaded = LatchwayAppAttestProvider(service: service, stateStore: store)
+        let evidence = try await reloaded.evidence(for: fixtureChallenge())
+
+        XCTAssertEqual(evidence.evidence["key_id"], .string("accepted"))
+        XCTAssertNotNil(evidence.evidence["assertion_object"])
+        let persisted = try await store.load()
+        XCTAssertEqual(persisted, original)
+        let counts = await service.counts()
+        XCTAssertEqual(counts.generateKey, 0)
+        XCTAssertEqual(counts.attestation, 0)
+        XCTAssertEqual(counts.assertion, 2)
     }
 
     func testServerRejectedAttestationRotatesOnNextInvalidInput() async throws {

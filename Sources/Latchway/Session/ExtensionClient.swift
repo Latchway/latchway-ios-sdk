@@ -42,37 +42,37 @@ public actor LatchwayExtensionClient {
     private var directAttestationTask: Task<CoordinatedComponentSession, Error>?
 
     public init(
+        baseURL: URL, applicationID: String, environment: String,
+        component: LatchwayComponentConfiguration, account: LatchwayComponentAccount,
+        runtime: LatchwayClientRuntime = .iOS, sdkVersion: String = LatchwayVersion.sdk
+    ) throws {
+        let configuration = LatchwayConfiguration(
+            baseURL: baseURL, applicationID: applicationID, environment: environment,
+            rootKeychainAccessGroup: "unused.extension-only",
+            clientRuntime: runtime, clientSDKVersion: sdkVersion)
+        try self.init(configuration: configuration, component: component, account: account)
+    }
+
+    public init(
         configuration: LatchwayConfiguration,
         component: LatchwayComponentConfiguration,
-        account: LatchwayComponentAccount? = nil
+        account: LatchwayComponentAccount
     ) throws {
         try Self.validate(component)
         var configuration = configuration
-        if let account { try account.validate(configuration); configuration.sharedComponentAccount = account }
-        let state = account.map { LatchwaySharedComponentState(account: $0, component: component) }
-        try state?.check()
+        try account.validate(configuration)
+        configuration.sharedComponentAccount = account
+        let state = LatchwaySharedComponentState(account: account, component: component)
+        try state.check()
         sharedState = state
-        legacyFence = state == nil ? LatchwayLegacyComponentFence(configuration: configuration, component: component) : nil
+        legacyFence = LatchwayLegacyComponentFence(configuration: configuration, component: component)
         try legacyFence?.check()
-        let key = state.map {
-            LatchwayComponentKeyManager(softwareFallbackPolicy: configuration.softwareKeyFallbackPolicy,
-                store: LatchwaySharedComponentKeyStorage(state: $0), preferSecureEnclave: true, allowCreation: false)
-        } ?? LatchwayComponentKeyManager(
-            applicationID: configuration.applicationID,
-            environment: configuration.environment,
-            definitionID: component.definitionID,
-            keychainAccessGroup: component.keychainAccessGroup,
+        let key = LatchwayComponentKeyManager(
             softwareFallbackPolicy: configuration.softwareKeyFallbackPolicy,
+            store: LatchwaySharedComponentKeyStorage(state: state), preferSecureEnclave: true,
             allowCreation: false
         )
-        let storage: any LatchwayComponentCredentialStorage
-        if let state { storage = LatchwaySharedComponentCredentialStorage(state: state) }
-        else { storage = LatchwayKeychainComponentStorage(
-            applicationID: configuration.applicationID,
-            environment: configuration.environment,
-            definitionID: component.definitionID,
-            accessGroup: component.keychainAccessGroup
-        ) }
+        let storage = LatchwaySharedComponentCredentialStorage(state: state)
         let network = LatchwayURLSessionTransport(session: LatchwayURLSessionFactory.make())
         let clock = LatchwaySystemClock()
         let proofFactory = LatchwayDPoPProofFactory(key: key, clock: clock)

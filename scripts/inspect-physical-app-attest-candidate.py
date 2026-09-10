@@ -348,6 +348,8 @@ def main() -> int:
     )
     environment = required("LATCHWAY_ENVIRONMENT", DEFINITION_ID)
     identity_provider = required("LATCHWAY_IDENTITY_PROVIDER", DEFINITION_ID)
+    identity_issuer = required("LATCHWAY_IDENTITY_ISSUER")
+    identity_audience = required("LATCHWAY_IDENTITY_AUDIENCE")
     gateway_origin = required(
         "LATCHWAY_GATEWAY_ORIGIN",
         re.compile(r"^https://[^/?#\s]+(?:/[A-Za-z0-9_~.-]+)*$"),
@@ -360,6 +362,8 @@ def main() -> int:
         "LatchwayApplicationID": application_id,
         "LatchwayEnvironment": environment,
         "LatchwayIdentityProvider": identity_provider,
+        "LatchwayIdentityIssuer": identity_issuer,
+        "LatchwayIdentityAudience": identity_audience,
         "LatchwayRootKeychainAccessGroup": access_groups["host"],
         "LatchwayGatewayURL": gateway_origin,
         "LatchwayHostComponentDefinitionID": definitions["host"],
@@ -462,6 +466,8 @@ def main() -> int:
         "LATCHWAY_BASE_URL": gateway_origin,
         "LATCHWAY_ENVIRONMENT": environment,
         "LATCHWAY_IDENTITY_PROVIDER": identity_provider,
+        "LATCHWAY_IDENTITY_ISSUER": identity_issuer,
+        "LATCHWAY_IDENTITY_AUDIENCE": identity_audience,
         "LATCHWAY_GATEWAY_ORIGIN": gateway_origin,
         "LATCHWAY_HOST_COMPONENT_DEFINITION_ID": definitions["host"],
         "LATCHWAY_IOS_ACTION_BINARY_SHA256": artifacts["action"]["binary_sha256"],

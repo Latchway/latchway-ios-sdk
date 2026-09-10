@@ -1,4 +1,7 @@
-# Developer-supplied identity (1.3.0)
+# Developer-supplied identity (2.0.0)
+
+Version 2.0.0 uses the fresh-account model. Removed compatibility APIs are a
+source-breaking change; older device storage is not automatically migrated.
 
 The application authenticates its user. Latchway accepts the resulting ID token,
 verifies it through the gateway, and owns device-bound shared native sessions.
@@ -45,10 +48,11 @@ JWT metadata, root Keychain group and platform policy. No owner transfer or
 native-team Latchway bootstrap is needed. A second surface joins with
 `try await app.makeClient()` or `try await app.currentAccount()` without signing in.
 
-The App Attest module supplies the default attestation factory through the
-two-argument `configure` overload. Apps still enable App Attest and provide the
-actual signed root Keychain group. Unknown legacy extension/custom stores still
-require explicit migration inventory; do not supply an invented empty list.
+The App Attest module supplies the default attestation factory through its
+`configure` overload. Apps still enable App Attest and provide the actual signed
+root Keychain group. Current component groups are an explicit provisioning
+allowlist. No previous-store inventory or cleanup callback is required; current
+source starts with account-scoped storage and does not adopt older sessions.
 
 ## Account and token lifetime
 
@@ -112,5 +116,8 @@ of its refresh grant and the installation's DPoP key and verify the new token;
 they do not rotate keys, change users or reset quotas. Refresh credentials that
 have expired require attested re-establishment without reviving a retired login.
 
-The legacy authority APIs remain available, but are a separate mode. A live
-custom/JS-owned registration is never silently replaced by supplied identity.
+Root clients are obtained from the app/account registry, not a direct public
+initializer or registered identity authority. Current persistent retirement,
+cleanup-retry journals, root-private storage and extension isolation remain
+enforced. Read [shared apps and extensions](SharedNativeApps.md) for those
+boundaries and the explicit non-secret component handoff.

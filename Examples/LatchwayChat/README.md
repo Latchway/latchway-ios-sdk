@@ -4,14 +4,15 @@ A disposable native SwiftUI chat app demonstrating Firebase email/password
 sign-up and login, real Apple App Attest, Secure Enclave DPoP, streamed chat,
 and server-settled token quota against a deployed Latchway server.
 
-## Unreleased shared-account update
+## Current source: fresh shared accounts
 
-The current source uses the new native `LatchwayApp` registry, atomic Firebase
-identity authority, explicit activation and offline account logout. It requires
-the draft contract 1.1.0 / protocol 3 server and explicit iOS
-`sharedNativeCallers` policy; it does **not** silently fall back on server 1.0.x.
-No production gateway configuration was changed for this example update.
-The older receipts below are historical, not verification of the new lifecycle.
+The current source uses `LatchwayApp.configure`, application-owned ID tokens,
+opaque account handles and offline logout. The removal of older setup/storage
+paths is source-breaking and unreleased; existing artifacts remain unchanged.
+It requires server 1.1.1+, released contract 1.1.0 / wire 3,
+`supplied_identity_v1` and explicit iOS `sharedNativeCallers` policy. It does not
+import an earlier SDK session or require a native auth coordinator. The receipts
+below are historical, not verification of this new source cleanup.
 
 ## Current setup
 
@@ -63,8 +64,8 @@ or sign out. Sign-out cancels chat/tools, fences UI callbacks, awaits captured
 generation logout, closes the old client, then signs out Firebase. It does not
 revoke the hardware installation or reset quota. Failed local cleanup leaves AI
 disabled and the same sign-out action retries cleanup without needing an ID token.
-One Firebase observer handles externally initiated account changes; the app
-cleans A before explicitly activating B and creates a fresh framework session.
+The application-owned Firebase observer handles external auth changes; the app
+retires A before explicitly signing B in and creates a fresh framework session.
 Screen disposal is not sign-out. A persisted Latchway logout does not silently
 reactivate on launch just because Firebase still has the same user; choose
 Reconnect or a new sign-in explicitly.
@@ -114,7 +115,7 @@ The gateway stores redacted usage/request metadata; OpenRouter processes the
 conversation according to its own policies. Each reply requests at most 1,024
 output tokens. The gateway, not the client, enforces quotas and determines usage.
 
-## Historical physical verification — legacy path
+## Historical physical verification — previous releases
 
 Verified on a connected iPhone 16 Pro running iOS 27 on 2026-09-05:
 

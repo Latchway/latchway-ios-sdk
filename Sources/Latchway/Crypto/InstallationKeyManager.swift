@@ -14,33 +14,6 @@ public actor LatchwayInstallationKeyManager: LatchwayInstallationKey {
     private var key: Key?
     private var rootKeychainPreflightComplete = false
 
-    public init(
-        applicationID: String,
-        environment: String,
-        rootKeychainAccessGroup: String,
-        legacySharedKeychainAccessGroups: [String] = [],
-        clientRuntime: LatchwayClientRuntime = .iOS,
-        softwareFallbackPolicy: LatchwaySoftwareKeyFallbackPolicy
-    ) {
-        self.policy = softwareFallbackPolicy
-        let service = LatchwayKeychainNamespace.service(
-            applicationID: applicationID,
-            environment: environment,
-            clientRuntime: clientRuntime
-        )
-        self.store = LatchwayKeychainStore(
-            service: service,
-            accessGroup: rootKeychainAccessGroup
-        )
-        self.preferSecureEnclave = true
-        self.rootKeychainPreflight = LatchwayRootKeychainPreflight.verifier(
-            rootKeychainAccessGroup: rootKeychainAccessGroup,
-            legacySharedKeychainAccessGroups: legacySharedKeychainAccessGroups,
-            service: service,
-            accounts: ["installation-key", "installation-key-kind"]
-        )
-    }
-
     init(
         softwareFallbackPolicy: LatchwaySoftwareKeyFallbackPolicy,
         store: any LatchwaySecureDataStoring,

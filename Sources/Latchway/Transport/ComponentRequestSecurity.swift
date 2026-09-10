@@ -28,7 +28,7 @@ enum LatchwayComponentRequestSecurity {
         configuration: LatchwayConfiguration,
         framework: LatchwayFrameworkMetadata?
     ) {
-        request.setValue(configuration.sharedNative ? configuration.clientRuntime.sdkIdentifier : nil,
+        request.setValue(configuration.clientRuntime.sdkIdentifier,
                          forHTTPHeaderField: "X-Latchway-Caller")
         request.setValue(configuration.sdkIdentifier, forHTTPHeaderField: "X-Latchway-SDK")
         request.setValue(configuration.clientSDKVersion, forHTTPHeaderField: "X-Latchway-SDK-Version")

@@ -1,5 +1,9 @@
 # Installation Families and iOS app extensions
 
+This guide describes the current source's fresh account-scoped integration.
+The source-breaking cleanup is unreleased; existing release receipts are not
+automatically evidence for this implementation.
+
 Latchway models one signed-in app installation as an Installation Family. The
 main app is the attested root Client Component; every widget, share extension,
 App Intent extension, or notification service that uses Latchway is a separate
@@ -40,16 +44,11 @@ must already be fully resolved, for example
 `ABCDE12345.com.example.myapp.weekly-widget`. Passing the literal build-setting
 token fails closed. Do not use one broad group for every extension.
 
-Pass the resolved private group to `LatchwayConfiguration` and every root
-`LatchwayAppAttestProvider`. Also pass every extension-shared group in
-`legacySharedKeychainAccessGroups`. The SDK proves the private group is the
-signed default and inspects each explicit shared group only at known root
-record coordinates. This catches state accidentally created when a shared
-group was previously first without enumerating or exposing component records.
-If such state exists, `rootKeychainMigrationRequired` is returned and the SDK
-does not migrate or delete it. For a disposable pre-release device, reset its
-Keychain or use a new test bundle identifier, correct the entitlement order,
-and reinstall.
+Pass the resolved private group and current `componentKeychainAccessGroups`
+allowlist to `LatchwayApp.configure`. The SDK proves the private group is the
+signed default and uses separate account-scoped component storage. The default
+App Attest factory shares that private-root boundary. No prior-store inventory
+or cleanup callback is required; the SDK does not import previous sessions.
 
 Define the descriptor identically in both processes:
 
@@ -67,8 +66,8 @@ can request less authority but cannot expand server policy.
 
 ## Containing-app provisioning
 
-After the root client has authenticated and attested, prepare the complete
-component set:
+After application-owned `app.signIn` and `account.makeClient`, prepare the
+approved component set with that account's root client:
 
 ```swift
 let diagnostics = try await rootClient.prepareComponents([weeklyWidget])
@@ -90,13 +89,18 @@ or exporting either private key.
 
 ## Extension use
 
-The extension creates its own actor from the same descriptor and public
-Latchway configuration. It has no identity-provider or root-attestation API:
+The host obtains `try await rootClient.componentAccount()` and encodes that
+non-secret descriptor for the extension's authorized container. It contains no
+identity token, root key or session credential. The extension requires that
+explicit handoff, the same component and public gateway coordinates:
 
 ```swift
 let componentClient = try LatchwayExtensionClient(
-    configuration: configuration,
-    component: weeklyWidget
+    baseURL: gateway,
+    applicationID: applicationID,
+    environment: environment,
+    component: weeklyWidget,
+    account: accountHandoff
 )
 let transport = componentClient.transport(feature: "weekly-summary")
 
@@ -136,13 +140,10 @@ exporting credentials.
 
 ## Direct component attestation protocol and iOS limitation
 
-The wire protocol retains a dormant, platform-generic direct
-component-attestation exchange for contract compatibility. The public iOS and
-React Native iOS extension client does not expose an eligible producer: its
-legacy `establishDirectAttestation()` surface fails closed before refresh,
-challenge acquisition, or grant use, and the component-namespaced
-`LatchwayAppAttestProvider` initializer is unavailable. Package-internal tests
-exercise the generic wire exchange without making it an iOS runtime claim.
+The public iOS and React Native iOS extension client has no direct component-
+attestation operation. A platform-generic protocol vocabulary entry does not
+provide an eligible iOS producer. Component processes construct no root App
+Attest provider and receive no root-private group or identity callback.
 
 That exchange cannot run from an iOS application extension: the installed
 Apple SDK documents that
@@ -169,12 +170,16 @@ siblings active:
 try await rootClient.revokeComponent(weeklyWidget)
 ```
 
-For sign-out, the no-argument API retires every component prepared by this SDK,
-including components prepared by an earlier process launch:
+Normal sign-out uses the captured account and is offline-capable:
 
 ```swift
-try await rootClient.revokeCurrentInstallationFamily()
+try await account.logout()
 ```
+
+It retires current account/component credentials and fences native/RN work,
+without resetting quota or calling external auth sign-out. Explicit family
+revocation is a distinct security action through
+`rootClient.revokeCurrentInstallationFamily()`.
 
 The containing app stores a bounded registry of validated, non-secret component
 descriptors in its private root Keychain group. Credentials and private keys
@@ -193,16 +198,7 @@ Keychain access-group isolation; it does not turn the containing app and an app
 extension into one process or expose either process's access token to the
 other.
 
-The explicit overload remains compatible and can retire legacy state created
-before the durable registry was introduced:
-
-```swift
-try await rootClient.revokeCurrentInstallationFamily(
-    retiring: [weeklyWidget, shareExtension]
-)
-```
-
-The SDK attempts server revocation, every registered or supplied component
+The SDK attempts explicit server revocation, every registered component
 cleanup, and root cleanup even if an earlier step fails. It returns the first
 error after the remaining erasures have been attempted. A successful component
 cleanup removes its registry entry immediately; a failed one keeps the safe
@@ -246,6 +242,6 @@ Simulator tests and unsigned builds do not prove entitlement isolation or
 Secure Enclave behavior. Release evidence must run a signed containing app and
 at least two extension access groups on physical hardware and prove intended
 retrieval, sibling denial, replacement, family/component revocation, deletion,
-locked/background access, reinstall migration, and uninstall cleanup. The
+locked/background access, process restart and retained-key cleanup. The
 compile-oriented project in `Examples/AppExtensionComponents` is the source
 scaffold; it is not itself release evidence.

@@ -94,7 +94,7 @@ final class ChatModel: ObservableObject {
         }
         #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("--renew-demo-grant") {
-            // Explicit development-only migration after adding a feature to
+            // Explicit development-only grant renewal after adding a feature to
             // the disposable app. Preserve Firebase; retire only this app's
             // old device credentials. Relaunch to establish a fresh grant.
             email = Auth.auth().currentUser?.email
@@ -218,8 +218,7 @@ final class ChatModel: ObservableObject {
             applicationID: DemoConfiguration.applicationID, environment: DemoConfiguration.environment,
             rootKeychainAccessGroup: DemoConfiguration.keychainGroup,
             suppliedIdentity: try .firebaseProject(projectID: project),
-            softwareKeyFallbackPolicy: .disallow, exposeToReactNative: true,
-            legacyComponents: []), // This disposable native chat never provisioned extension grants.
+            softwareKeyFallbackPolicy: .disallow, exposeToReactNative: true),
             name: "latchwaychat-development")
         app = created
         return created

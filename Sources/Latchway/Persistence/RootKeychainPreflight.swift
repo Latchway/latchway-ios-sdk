@@ -8,7 +8,7 @@ public enum LatchwayRootKeychainPreflight {
     /// group. Build-setting expressions and wildcard groups are rejected.
     public static func validateAccessGroups(
         rootKeychainAccessGroup: String,
-        legacySharedKeychainAccessGroups: [String] = []
+        componentKeychainAccessGroups: [String] = []
     ) throws {
         try validateConcreteAccessGroup(
             rootKeychainAccessGroup,
@@ -16,19 +16,19 @@ public enum LatchwayRootKeychainPreflight {
         )
 
         var seen = Set<String>()
-        for group in legacySharedKeychainAccessGroups {
+        for group in componentKeychainAccessGroups {
             try validateConcreteAccessGroup(
                 group,
-                label: "legacySharedKeychainAccessGroups"
+                label: "componentKeychainAccessGroups"
             )
             guard group != rootKeychainAccessGroup else {
                 throw LatchwayError.invalidConfiguration(
-                    "legacySharedKeychainAccessGroups must not contain rootKeychainAccessGroup"
+                    "componentKeychainAccessGroups must not contain rootKeychainAccessGroup"
                 )
             }
             guard seen.insert(group).inserted else {
                 throw LatchwayError.invalidConfiguration(
-                    "legacySharedKeychainAccessGroups must not contain duplicates"
+                    "componentKeychainAccessGroups must not contain duplicates"
                 )
             }
         }
@@ -39,119 +39,22 @@ public enum LatchwayRootKeychainPreflight {
     /// reading that sentinel only through the explicit group. The sentinel is
     /// always removed and no Latchway root record is queried without a group.
     public static func verifySignedDefaultAccessGroup(
-        _ rootKeychainAccessGroup: String,
-        legacySharedKeychainAccessGroups: [String] = []
+        _ rootKeychainAccessGroup: String
     ) throws {
-        try verify(
-            rootKeychainAccessGroup: rootKeychainAccessGroup,
-            legacySharedKeychainAccessGroups: legacySharedKeychainAccessGroups,
-            legacyRecordCoordinates: [],
-            probe: LatchwaySystemRootKeychainProbe()
-        )
+        try verify(rootKeychainAccessGroup: rootKeychainAccessGroup, probe: LatchwaySystemRootKeychainProbe())
     }
 
-    static func verifier(
-        rootKeychainAccessGroup: String,
-        legacySharedKeychainAccessGroups: [String],
-        applicationID: String,
-        environment: String,
-        clientRuntime: LatchwayClientRuntime
-    ) -> @Sendable () throws -> Void {
-        let records = standardRootRecordCoordinates(
-            applicationID: applicationID,
-            environment: environment,
-            clientRuntime: clientRuntime
-        )
-        return {
-            try verify(
-                rootKeychainAccessGroup: rootKeychainAccessGroup,
-                legacySharedKeychainAccessGroups: legacySharedKeychainAccessGroups,
-                legacyRecordCoordinates: records,
-                probe: LatchwaySystemRootKeychainProbe()
-            )
-        }
+    static func verifier(rootKeychainAccessGroup: String) -> @Sendable () throws -> Void {
+        { try verifySignedDefaultAccessGroup(rootKeychainAccessGroup) }
     }
 
-    static func verifier(
-        rootKeychainAccessGroup: String,
-        legacySharedKeychainAccessGroups: [String],
-        service: String,
-        accounts: [String]
-    ) -> @Sendable () throws -> Void {
-        let records = accounts.map {
-            LatchwayRootKeychainRecordCoordinate(service: service, account: $0)
-        }
-        return {
-            try verify(
-                rootKeychainAccessGroup: rootKeychainAccessGroup,
-                legacySharedKeychainAccessGroups: legacySharedKeychainAccessGroups,
-                legacyRecordCoordinates: records,
-                probe: LatchwaySystemRootKeychainProbe()
-            )
-        }
-    }
-
-    static func verify(
-        rootKeychainAccessGroup: String,
-        legacySharedKeychainAccessGroups: [String],
-        legacyRecordCoordinates: [LatchwayRootKeychainRecordCoordinate],
-        probe: any LatchwayRootKeychainProbing
-    ) throws {
-        try validateAccessGroups(
-            rootKeychainAccessGroup: rootKeychainAccessGroup,
-            legacySharedKeychainAccessGroups: legacySharedKeychainAccessGroups
-        )
-
-        let isSignedDefault = try probe.signedDefaultMatches(
-            accessGroup: rootKeychainAccessGroup
-        )
-        let groupsToScan = isSignedDefault
-            ? legacySharedKeychainAccessGroups
-            : [rootKeychainAccessGroup] + legacySharedKeychainAccessGroups
-
-        for group in groupsToScan {
-            for coordinate in legacyRecordCoordinates {
-                if try probe.containsRecord(coordinate, accessGroup: group) {
-                    throw LatchwayError.rootKeychainMigrationRequired
-                }
-            }
-        }
-
-        guard isSignedDefault else {
+    static func verify(rootKeychainAccessGroup: String, probe: any LatchwayRootKeychainProbing) throws {
+        try validateAccessGroups(rootKeychainAccessGroup: rootKeychainAccessGroup)
+        guard try probe.signedDefaultMatches(accessGroup: rootKeychainAccessGroup) else {
             throw LatchwayError.invalidConfiguration(
                 "rootKeychainAccessGroup must be the first keychain-access-groups value in the signed application entitlements"
             )
         }
-    }
-
-    static func standardRootRecordCoordinates(
-        applicationID: String,
-        environment: String,
-        clientRuntime: LatchwayClientRuntime
-    ) -> [LatchwayRootKeychainRecordCoordinate] {
-        let rootService = LatchwayKeychainNamespace.service(
-            applicationID: applicationID,
-            environment: environment,
-            clientRuntime: clientRuntime
-        )
-        let appAttestNamespace = "\(clientRuntime.platformIdentifier).\(applicationID).\(environment)"
-        return [
-            LatchwayRootKeychainRecordCoordinate(service: rootService, account: "installation-key"),
-            LatchwayRootKeychainRecordCoordinate(service: rootService, account: "installation-key-kind"),
-            LatchwayRootKeychainRecordCoordinate(service: rootService, account: "session"),
-            LatchwayRootKeychainRecordCoordinate(
-                service: rootService,
-                account: LatchwayKeychainComponentRegistry.account
-            ),
-            LatchwayRootKeychainRecordCoordinate(
-                service: "dev.latchway.sdk.app-attest.\(appAttestNamespace)",
-                account: "app-attest-state"
-            ),
-            LatchwayRootKeychainRecordCoordinate(
-                service: "dev.latchway.sdk.app-attest.default",
-                account: "app-attest-state"
-            ),
-        ]
     }
 
     private static func validateConcreteAccessGroup(
@@ -170,17 +73,8 @@ public enum LatchwayRootKeychainPreflight {
     }
 }
 
-struct LatchwayRootKeychainRecordCoordinate: Sendable, Hashable {
-    let service: String
-    let account: String
-}
-
 protocol LatchwayRootKeychainProbing: Sendable {
     func signedDefaultMatches(accessGroup: String) throws -> Bool
-    func containsRecord(
-        _ coordinate: LatchwayRootKeychainRecordCoordinate,
-        accessGroup: String
-    ) throws -> Bool
 }
 
 private struct LatchwaySystemRootKeychainProbe: LatchwayRootKeychainProbing {
@@ -229,24 +123,6 @@ private struct LatchwaySystemRootKeychainProbe: LatchwayRootKeychainProbing {
         guard let data = result as? Data, data == sentinel else {
             throw LatchwayError.keyStorageFailure
         }
-        return true
-    }
-
-    func containsRecord(
-        _ coordinate: LatchwayRootKeychainRecordCoordinate,
-        accessGroup: String
-    ) throws -> Bool {
-        let query: [CFString: Any] = [
-            kSecClass: kSecClassGenericPassword,
-            kSecAttrService: coordinate.service,
-            kSecAttrAccount: coordinate.account,
-            kSecAttrAccessGroup: accessGroup,
-            kSecAttrSynchronizable: kSecAttrSynchronizableAny,
-            kSecMatchLimit: kSecMatchLimitOne,
-        ]
-        let status = SecItemCopyMatching(query as CFDictionary, nil)
-        if status == errSecItemNotFound { return false }
-        guard status == errSecSuccess else { throw Self.error(for: status) }
         return true
     }
 

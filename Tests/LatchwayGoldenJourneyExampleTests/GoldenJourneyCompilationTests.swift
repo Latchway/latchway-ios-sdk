@@ -9,6 +9,7 @@ final class GoldenJourneyCompilationTests: XCTestCase {
             applicationID: "app_01J00000000000000000000000",
             environment: "production",
             rootKeychainAccessGroup: "ABCDE12345.com.example.app",
+            firebaseProjectID: "test-project",
             feature: "assistant-responses",
             model: "assistant-default",
             appVersion: "1.0.0"

@@ -51,6 +51,10 @@ enum PhysicalComponentProducer {
     ) async throws {
         let configurations = try ComponentExampleConfiguration.delegatedComponents()
         let diagnostics = try await client.prepareComponents(configurations)
+        let account = try await client.componentAccount()
+        for configuration in configurations {
+            try ComponentExampleConfiguration.saveAccount(account, for: configuration)
+        }
         guard diagnostics.count == configurations.count else {
             throw ProducerError.componentPreparationFailed
         }

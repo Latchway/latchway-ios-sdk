@@ -17,47 +17,6 @@ public actor LatchwayComponentKeyManager: LatchwayInstallationKey {
     private let preferSecureEnclave: Bool
     private let allowCreation: Bool
 
-    public init(
-        applicationID: String,
-        environment: String,
-        definitionID: String,
-        keychainAccessGroup: String,
-        softwareFallbackPolicy: LatchwaySoftwareKeyFallbackPolicy = .disallow
-    ) {
-        policy = softwareFallbackPolicy
-        store = LatchwayKeychainStore(
-            service: LatchwayKeychainNamespace.componentService(
-                applicationID: applicationID,
-                environment: environment,
-                definitionID: definitionID
-            ),
-            accessGroup: keychainAccessGroup
-        )
-        preferSecureEnclave = true
-        allowCreation = true
-    }
-
-    init(
-        applicationID: String,
-        environment: String,
-        definitionID: String,
-        keychainAccessGroup: String,
-        softwareFallbackPolicy: LatchwaySoftwareKeyFallbackPolicy,
-        allowCreation: Bool
-    ) {
-        policy = softwareFallbackPolicy
-        store = LatchwayKeychainStore(
-            service: LatchwayKeychainNamespace.componentService(
-                applicationID: applicationID,
-                environment: environment,
-                definitionID: definitionID
-            ),
-            accessGroup: keychainAccessGroup
-        )
-        preferSecureEnclave = true
-        self.allowCreation = allowCreation
-    }
-
     init(
         softwareFallbackPolicy: LatchwaySoftwareKeyFallbackPolicy,
         store: any LatchwaySecureDataStoring,

@@ -1,6 +1,6 @@
 Pod::Spec.new do |spec|
   spec.name = 'Latchway'
-  spec.version = '1.3.0'
+  spec.version = '2.0.0'
   spec.summary = 'Device-bound access to a self-hosted Latchway gateway.'
   spec.description = <<-DESC
     Latchway authorizes iOS and React Native requests without embedding

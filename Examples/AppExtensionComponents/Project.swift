@@ -15,6 +15,7 @@ let applicationID = Environment.latchwayApplicationID.getString(
 )
 let environment = Environment.latchwayEnvironment.getString(default: "development")
 let identityProvider = Environment.latchwayIdentityProvider.getString(default: "firebase")
+let firebaseProjectID = Environment.latchwayFirebaseProjectID.getString(default: "")
 let rootAccessGroup = "$(AppIdentifierPrefix)\(hostBundleID)"
 let accessGroup = "$(AppIdentifierPrefix)\(componentGroupSuffix)"
 
@@ -31,6 +32,7 @@ let commonInfo: [String: Plist.Value] = [
     "LatchwayApplicationID": .string(applicationID),
     "LatchwayEnvironment": .string(environment),
     "LatchwayIdentityProvider": .string(identityProvider),
+    "LatchwayFirebaseProjectID": .string(firebaseProjectID),
     "LatchwayGatewayURL": .string(gatewayURL),
     "LatchwayRootKeychainAccessGroup": .string(rootAccessGroup),
     "LatchwayHostComponentDefinitionID": "host_app",

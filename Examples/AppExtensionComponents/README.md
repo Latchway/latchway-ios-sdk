@@ -29,6 +29,7 @@ TUIST_LATCHWAY_DEVELOPMENT_TEAM=YOURTEAMID \
 TUIST_LATCHWAY_GATEWAY_URL=https://gateway.example.com \
 TUIST_LATCHWAY_APPLICATION_ID=app_YOUR_CANONICAL_ID \
 TUIST_LATCHWAY_ENVIRONMENT=development \
+TUIST_LATCHWAY_FIREBASE_PROJECT_ID=your-firebase-project \
 tuist generate --path Examples/AppExtensionComponents --no-open
 ```
 
@@ -41,12 +42,14 @@ widget carries only the shared group. Both runtime strings come from the
 signed, expanded Info.plist and must look like
 `TEAMID.com.example.latchway.components` and
 `TEAMID.com.example.latchway.components.widget`; the SDK rejects the literal
-`$(AppIdentifierPrefix)` token. The shared group is also supplied as an exact
-legacy-scan boundary so a stale shared-first root record blocks without being
-migrated or deleted.
+`$(AppIdentifierPrefix)` token. The shared group belongs to the configured
+app's current `componentKeychainAccessGroups` allowlist. No old-store inventory
+or storage scan is part of this fresh account setup.
 
-The “Revoke family” action supplies the complete component descriptor list so
-the server revokes the family and the host erases each root/component Keychain
-record. A protected release claim additionally requires sibling-denial,
+The host configures the app, supplies identity and provisions components through
+an account-bound client. It passes the non-secret `componentAccount()` handoff
+to the extension, which opens only that account generation with its own key and
+session. Normal logout uses `account.logout`; explicit family revocation is a
+separate terminal conformance action. A protected release claim requires sibling-denial,
 replacement, deletion, locked/background access, and uninstall checks on a
 physical device. A successful local launch is not that evidence.

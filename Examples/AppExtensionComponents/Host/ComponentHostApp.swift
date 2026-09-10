@@ -36,9 +36,10 @@ private final class ComponentHostModel: ObservableObject {
 
     func prepareWidget() async {
         do {
-            let client = try makeClient()
+            let client = try await makeClient()
             let component = try ComponentExampleConfiguration.widget()
             let result = try await client.prepareComponents([component])
+            try ComponentExampleConfiguration.saveAccount(try await client.componentAccount(), for: component)
             let prepared = result.first?.containingAppActionRequired == false
             status = prepared ? "Widget key and one-time grant are prepared." : "Preparation needs attention."
             self.client = client
@@ -49,9 +50,10 @@ private final class ComponentHostModel: ObservableObject {
 
     func replaceWidget() async {
         do {
-            let client = try makeClient()
+            let client = try await makeClient()
             let component = try ComponentExampleConfiguration.widget()
             _ = try await client.replaceComponent(component)
+            try ComponentExampleConfiguration.saveAccount(try await client.componentAccount(), for: component)
             status = "The old component session is revoked and a new key is prepared."
             self.client = client
         } catch {
@@ -61,9 +63,10 @@ private final class ComponentHostModel: ObservableObject {
 
     func revokeFamily() async {
         do {
-            let client = try client ?? makeClient()
-            let component = try ComponentExampleConfiguration.widget()
-            try await client.revokeCurrentInstallationFamily(retiring: [component])
+            let client: LatchwayClient
+            if let existing = self.client { client = existing }
+            else { client = try await makeClient() }
+            try await client.revokeCurrentInstallationFamily()
             status = "The family is revoked and root/component Keychain material was erased."
             self.client = nil
         } catch {
@@ -71,21 +74,18 @@ private final class ComponentHostModel: ObservableObject {
         }
     }
 
-    private func makeClient() throws -> LatchwayClient {
+    private func makeClient() async throws -> LatchwayClient {
         let applicationID = try requiredInfo("LatchwayApplicationID")
         let environment = try requiredInfo("LatchwayEnvironment")
-        let attestation = LatchwayAppAttestProvider(
-            applicationID: applicationID,
-            environment: environment,
-            rootKeychainAccessGroup: try ComponentExampleConfiguration.rootKeychainAccessGroup(),
-            legacySharedKeychainAccessGroups: ComponentExampleConfiguration.legacySharedKeychainAccessGroups()
-        )
-        return LatchwayClient(
-            configuration: try ComponentExampleConfiguration.latchway(
-                attestationProvider: attestation
-            ),
-            identityTokenProvider: LaunchEnvironmentIdentityProvider()
-        )
+        let configuration = try ComponentExampleConfiguration.latchway()
+        let app = try await LatchwayApp.configure(.init(
+            baseURL: configuration.baseURL, applicationID: applicationID,
+            environment: environment, rootKeychainAccessGroup: configuration.rootKeychainAccessGroup,
+            suppliedIdentity: try .firebaseProject(projectID: ComponentExampleConfiguration.firebaseProjectID()),
+            componentKeychainAccessGroups: ComponentExampleConfiguration.componentKeychainAccessGroups()
+        ))
+        let account = try await app.signIn { try await LaunchEnvironmentIdentityProvider().identityToken() }
+        return try await account.makeClient()
     }
 
     private func requiredInfo(_ key: String) throws -> String {
@@ -103,7 +103,7 @@ private final class ComponentHostModel: ObservableObject {
     }
 }
 
-private struct LaunchEnvironmentIdentityProvider: LatchwayIdentityTokenProvider {
+private struct LaunchEnvironmentIdentityProvider {
     func identityToken() async throws -> String {
         guard let token = ProcessInfo.processInfo.environment["LATCHWAY_IDENTITY_TOKEN"],
               (16 ... 65_536).contains(token.utf8.count)

@@ -63,7 +63,7 @@ let package = Package(
         ),
         .target(
             name: "LatchwayGoldenJourneyExample",
-            dependencies: ["Latchway", "LatchwayAppAttest", "LatchwayFirebaseAuth"],
+            dependencies: ["Latchway", "LatchwayAppAttest"],
             path: "Examples/BasicURLSession",
             exclude: ["README.md"],
             swiftSettings: [.swiftLanguageMode(.v6)]

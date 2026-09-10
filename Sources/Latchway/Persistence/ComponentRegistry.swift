@@ -24,34 +24,6 @@ actor LatchwayKeychainComponentRegistry: LatchwayComponentRegistry {
     private var rootKeychainPreflightComplete = false
 
     init(
-        applicationID: String,
-        environment: String,
-        rootKeychainAccessGroup: String,
-        legacySharedKeychainAccessGroups: [String],
-        clientRuntime: LatchwayClientRuntime
-    ) {
-        let service = LatchwayKeychainNamespace.service(
-            applicationID: applicationID,
-            environment: environment,
-            clientRuntime: clientRuntime
-        )
-        self.store = LatchwayKeychainStore(
-            service: service,
-            accessGroup: rootKeychainAccessGroup
-        )
-        self.mutex = LatchwayComponentRegistryLockPool.shared.mutex(
-            for: "\(service)|\(rootKeychainAccessGroup)"
-        )
-        self.rootKeychainPreflight = LatchwayRootKeychainPreflight.verifier(
-            rootKeychainAccessGroup: rootKeychainAccessGroup,
-            legacySharedKeychainAccessGroups: legacySharedKeychainAccessGroups,
-            service: service,
-            accounts: [Self.account]
-        )
-        encoder.outputFormatting = [.sortedKeys]
-    }
-
-    init(
         store: any LatchwaySecureDataStoring,
         rootKeychainPreflight: @escaping @Sendable () throws -> Void = {},
         lockIdentity: String = UUID().uuidString
@@ -268,14 +240,13 @@ extension LatchwayComponentConfiguration {
     }
 }
 
-/// Executes best-effort cleanup for every durable and caller-supplied
+/// Executes best-effort cleanup for every durably registered
 /// descriptor. A durable entry is removed only after its component credential
 /// and key have both been retired, so a transient Keychain failure remains
 /// retryable on a later launch.
 enum LatchwayComponentFamilyRetirement {
     static func retireAll(
         registry: any LatchwayComponentRegistry,
-        including explicitComponents: [LatchwayComponentConfiguration],
         retire: @escaping @Sendable (LatchwayComponentConfiguration) async throws -> Void
     ) async throws {
         var firstError: (any Error)?
@@ -295,28 +266,6 @@ enum LatchwayComponentFamilyRetirement {
             }
         }
 
-        let registeredCoordinates = Set(registered.map(StorageCoordinate.init))
-        for component in explicitComponents
-        where !registeredCoordinates.contains(StorageCoordinate(component)) {
-            do {
-                try await retire(component)
-            } catch {
-                firstError = firstError ?? error
-            }
-        }
-
         if let firstError { throw firstError }
-    }
-
-    private struct StorageCoordinate: Hashable {
-        let definitionID: String
-        let kind: String
-        let keychainAccessGroup: String
-
-        init(_ component: LatchwayComponentConfiguration) {
-            definitionID = component.definitionID
-            kind = component.kind
-            keychainAccessGroup = component.keychainAccessGroup
-        }
     }
 }

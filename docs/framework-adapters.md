@@ -5,6 +5,11 @@ abstractions. `LatchwayFeatureTransport` is the normative seam: it binds one
 server-owned feature and optionally attaches an audited framework ID/version,
 while the native client keeps every key and credential private.
 
+Obtain that client from `account.makeClient()` after supplied-identity setup;
+adapters do not configure identity or own login. Close/replace framework state
+when its captured account retires. The fresh-account source cleanup is
+unreleased; historical test counts below do not verify the new lifecycle.
+
 ## SwiftOpenAI 4.6.0
 
 The `LatchwaySwiftOpenAI` product contains a real conformance to SwiftOpenAI's
@@ -68,24 +73,26 @@ if #available(iOS 27.0, *) {
 }
 ```
 
-The current translation is deliberately narrow and fail-closed:
+The current executor preserves supported framework behavior and fails explicitly
+when the configured gateway/model cannot honor it:
 
 - text instructions, prompts, and responses are supported;
 - streaming text deltas and terminal token usage are forwarded;
-- generation schemas, structured output, tools, reasoning transcript entries,
-  attachments, and sampling modes fail explicitly instead of being silently
-  approximated;
+- generation schemas, structured output, tool definitions/calls and supported
+  sampling/reasoning options use the Responses translation documented in
+  [Foundation Models](../Documentation/FoundationModels.md); unsupported content
+  and backend capabilities are rejected rather than silently approximated;
 - availability begins with the Apple OS 27 SDK custom-executor API;
-- the Xcode 27.0 / iOS 27.0 simulator suite passes all nine public-API cases:
+- the earlier Xcode 27.0 / iOS 27.0 narrow simulator suite recorded nine cases:
   safe errors, single- and multi-turn transcripts, incremental text and usage,
   fail-closed schemas/tools, quota and feature errors, cancellation, safe
   session-refresh retry, and the public app-extension initializer boundary;
 - simulator conformance does not establish physical app-extension/native-key
   behavior, a deployed production gateway, or exact release-image evidence.
 
-The simulator result replaces the earlier compile-only evidence. Until the
-remaining hosted, release-image, and physical gates pass, the canonical
-compatibility registry remains the authority for its support state.
+That historical simulator result is not a fresh-account cleanup receipt. The
+canonical compatibility registry and exact release evidence remain the source
+for published support claims.
 
 The app-extension initializer accepts an already provisioned delegated
 `LatchwayExtensionClient`. It does not enable direct App Attest in an ordinary

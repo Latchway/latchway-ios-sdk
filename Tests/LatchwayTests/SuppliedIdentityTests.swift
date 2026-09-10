@@ -16,12 +16,9 @@ final class SuppliedIdentityTests: XCTestCase {
         let value = try registration()
         var options = LatchwayAppOptions(baseURL: value.baseURL, applicationID: value.applicationID,
             environment: value.environment)
-        try value.compare(LatchwayAppRegistration(options), hasAuthority: false, fromReactNative: true)
-        options.identity = Self.identity.reference
-        XCTAssertThrowsError(try value.compare(LatchwayAppRegistration(options), hasAuthority: true, fromReactNative: true))
-        options.identity = nil
+        try value.compare(LatchwayAppRegistration(options), fromReactNative: true)
         options.suppliedIdentity = .init(providerID: "custom_jwt", issuer: "https://issuer.test", audience: "other")
-        XCTAssertThrowsError(try value.compare(LatchwayAppRegistration(options), hasAuthority: false, fromReactNative: true))
+        XCTAssertThrowsError(try value.compare(LatchwayAppRegistration(options), fromReactNative: true))
     }
 
     func testJWTParsingRejectsWrongIssuerAudienceTenantMalformedAndExpired() throws {
@@ -40,7 +37,7 @@ final class SuppliedIdentityTests: XCTestCase {
     }
 
     func testMemoryStoreRequiresVerificationAndFencesStaleCommit() async throws {
-        let store = LatchwaySuppliedIdentityAuthority()
+        let store = LatchwaySuppliedIdentityState()
         let a = UUID(), b = UUID()
         let value = try LatchwaySuppliedToken(Self.token("A"), configuration: Self.identity)
         store.suspend(operationID: a)
@@ -243,9 +240,9 @@ final class SuppliedIdentityTests: XCTestCase {
     func testConcurrentAppSignOutJoinsTheSameDrain() async throws {
         let records = IdentityMemoryRecords()
         let registration = try registration()
-        let app = try LatchwayApp(registration: registration, authority: LatchwaySuppliedIdentityAuthority(),
+        let app = try LatchwayApp(registration: registration,
             attestationFactory: { _ in LatchwayFixedAttestationProvider(evidence: .init(provider: "app_attest", evidence: [:])) },
-            lifecycleRecords: records, migration: {}, prepareAccount: { _ in }, verifyIdentity: { try Self.verified($0) })
+            lifecycleRecords: records, prepareAccount: { _ in }, verifyIdentity: { try Self.verified($0) })
         let old = try await app.signIn(idToken: Self.token("A"))
         let entry = try JSONDecoder().decode(LatchwayAppSessionJournal.Entry.self, from: XCTUnwrap(records.read()))
         let scope = LatchwayAppIdentity.digest([registration.scope, registration.rootGroup!, entry.account])
@@ -409,9 +406,9 @@ final class SuppliedIdentityTests: XCTestCase {
     private func app(records: IdentityMemoryRecords = IdentityMemoryRecords(), registration: LatchwayAppRegistration? = nil,
                      cleanupTimeoutNanoseconds: UInt64 = 30_000_000_000,
                      verify: @escaping @Sendable (String) async throws -> LatchwayVerifiedIdentityWire = { try SuppliedIdentityTests.verified($0) }) throws -> LatchwayApp {
-        try LatchwayApp(registration: registration ?? self.registration(), authority: LatchwaySuppliedIdentityAuthority(),
+        try LatchwayApp(registration: registration ?? self.registration(),
             attestationFactory: { _ in LatchwayFixedAttestationProvider(evidence: .init(provider: "app_attest", evidence: [:])) },
-            lifecycleRecords: records, migration: {}, prepareAccount: { _ in }, verifyIdentity: verify,
+            lifecycleRecords: records, prepareAccount: { _ in }, verifyIdentity: verify,
             cleanupTimeoutNanoseconds: cleanupTimeoutNanoseconds)
     }
 

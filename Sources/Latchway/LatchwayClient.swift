@@ -14,8 +14,8 @@ public actor LatchwayClient {
     private let attestationProvider: any LatchwayAttestationProvider
     private let installationKey: any LatchwayInstallationKey
     private let sessionStorage: any LatchwaySessionStorage
-    private let componentRegistry: any LatchwayComponentRegistry
-    private let componentStateRetirer: any LatchwayComponentStateRetiring
+    private let componentRegistry: (any LatchwayComponentRegistry)?
+    private let componentStateRetirer: (any LatchwayComponentStateRetiring)?
     private let componentStorageOverride: (@Sendable (
         LatchwayComponentConfiguration
     ) -> any LatchwayComponentCredentialStorage)?
@@ -125,134 +125,7 @@ public actor LatchwayClient {
             if suppliedIdentityRecovery { try await generation.check() }
             else { _ = try await generation.identityToken() }
         }
-        else { try await LatchwayAppRegistry.shared.requireLegacyScopeUnregistered(configuration) }
         guard !disposed else { throw LatchwayLifecycleError.disposed }
-    }
-
-    public init(
-        configuration: LatchwayConfiguration,
-        identityTokenProvider: any LatchwayIdentityTokenProvider
-    ) {
-        let key = LatchwayInstallationKeyManager(
-            applicationID: configuration.applicationID,
-            environment: configuration.environment,
-            rootKeychainAccessGroup: configuration.rootKeychainAccessGroup,
-            legacySharedKeychainAccessGroups: configuration.legacySharedKeychainAccessGroups,
-            clientRuntime: configuration.clientRuntime,
-            softwareFallbackPolicy: configuration.softwareKeyFallbackPolicy
-        )
-        let storage = LatchwayKeychainSessionStorage(
-            applicationID: configuration.applicationID,
-            environment: configuration.environment,
-            rootKeychainAccessGroup: configuration.rootKeychainAccessGroup,
-            legacySharedKeychainAccessGroups: configuration.legacySharedKeychainAccessGroups,
-            clientRuntime: configuration.clientRuntime
-        )
-        let transport = LatchwayURLSessionTransport(session: LatchwayURLSessionFactory.make())
-        let clock = LatchwaySystemClock()
-        let attestation = configuration.attestationProvider ?? LatchwayUnavailableAttestationProvider()
-        let proofFactory = LatchwayDPoPProofFactory(key: key, clock: clock)
-        let componentRegistry = LatchwayKeychainComponentRegistry(
-            applicationID: configuration.applicationID,
-            environment: configuration.environment,
-            rootKeychainAccessGroup: configuration.rootKeychainAccessGroup,
-            legacySharedKeychainAccessGroups: configuration.legacySharedKeychainAccessGroups,
-            clientRuntime: configuration.clientRuntime
-        )
-        let processScopeNamespace = LatchwayProcessScopeIdentity.productionNamespace
-        let processConfigurationFingerprint = LatchwayProcessScopeIdentity.rootFingerprint(
-            configuration: configuration
-        )
-
-        self.configuration = configuration
-        self.identityTokenProvider = identityTokenProvider
-        self.attestationProvider = attestation
-        self.installationKey = key
-        self.sessionStorage = storage
-        self.componentRegistry = componentRegistry
-        self.componentStateRetirer = LatchwayKeychainComponentStateRetirer(configuration: configuration)
-        self.componentStorageOverride = nil
-        self.transport = transport
-        self.clock = clock
-        self.proofFactory = proofFactory
-        self.processScopeNamespace = processScopeNamespace
-        self.processConfigurationFingerprint = processConfigurationFingerprint
-        self.processCoordinator = LatchwayProcessScopeCoordinatorPool.shared.root(
-            identity: LatchwayProcessScopeIdentity.root(
-                configuration: configuration,
-                namespace: processScopeNamespace
-            ),
-            configurationFingerprint: processConfigurationFingerprint
-        )
-        self.rootKeychainPreflight = LatchwayRootKeychainPreflight.verifier(
-            rootKeychainAccessGroup: configuration.rootKeychainAccessGroup,
-            legacySharedKeychainAccessGroups: configuration.legacySharedKeychainAccessGroups,
-            applicationID: configuration.applicationID,
-            environment: configuration.environment,
-            clientRuntime: configuration.clientRuntime
-        )
-        self.controlPlane = LatchwayControlPlane(
-            configuration: configuration,
-            transport: transport,
-            proofFactory: proofFactory,
-            clock: clock
-        )
-    }
-
-    public init(
-        configuration: LatchwayConfiguration,
-        identityTokenProvider: any LatchwayIdentityTokenProvider,
-        attestationProvider: any LatchwayAttestationProvider,
-        installationKey: any LatchwayInstallationKey,
-        sessionStorage: any LatchwaySessionStorage,
-        transport: any LatchwayHTTPTransport,
-        clock: any LatchwayClock = LatchwaySystemClock()
-    ) {
-        let proofFactory = LatchwayDPoPProofFactory(key: installationKey, clock: clock)
-        let componentRegistry = LatchwayKeychainComponentRegistry(
-            applicationID: configuration.applicationID,
-            environment: configuration.environment,
-            rootKeychainAccessGroup: configuration.rootKeychainAccessGroup,
-            legacySharedKeychainAccessGroups: configuration.legacySharedKeychainAccessGroups,
-            clientRuntime: configuration.clientRuntime
-        )
-        let processScopeNamespace = LatchwayProcessScopeIdentity.productionNamespace
-        let processConfigurationFingerprint = LatchwayProcessScopeIdentity.rootFingerprint(
-            configuration: configuration
-        )
-        self.configuration = configuration
-        self.identityTokenProvider = identityTokenProvider
-        self.attestationProvider = attestationProvider
-        self.installationKey = installationKey
-        self.sessionStorage = sessionStorage
-        self.componentRegistry = componentRegistry
-        self.componentStateRetirer = LatchwayKeychainComponentStateRetirer(configuration: configuration)
-        self.componentStorageOverride = nil
-        self.transport = transport
-        self.clock = clock
-        self.proofFactory = proofFactory
-        self.processScopeNamespace = processScopeNamespace
-        self.processConfigurationFingerprint = processConfigurationFingerprint
-        self.processCoordinator = LatchwayProcessScopeCoordinatorPool.shared.root(
-            identity: LatchwayProcessScopeIdentity.root(
-                configuration: configuration,
-                namespace: processScopeNamespace
-            ),
-            configurationFingerprint: processConfigurationFingerprint
-        )
-        self.rootKeychainPreflight = LatchwayRootKeychainPreflight.verifier(
-            rootKeychainAccessGroup: configuration.rootKeychainAccessGroup,
-            legacySharedKeychainAccessGroups: configuration.legacySharedKeychainAccessGroups,
-            applicationID: configuration.applicationID,
-            environment: configuration.environment,
-            clientRuntime: configuration.clientRuntime
-        )
-        self.controlPlane = LatchwayControlPlane(
-            configuration: configuration,
-            transport: transport,
-            proofFactory: proofFactory,
-            clock: clock
-        )
     }
 
     init(
@@ -262,8 +135,8 @@ public actor LatchwayClient {
         installationKey: any LatchwayInstallationKey,
         sessionStorage: any LatchwaySessionStorage,
         transport: any LatchwayHTTPTransport,
-        clock: any LatchwayClock,
-        rootKeychainPreflight: @escaping @Sendable () throws -> Void,
+        clock: any LatchwayClock = LatchwaySystemClock(),
+        rootKeychainPreflight: @escaping @Sendable () throws -> Void = {},
         componentRegistry: (any LatchwayComponentRegistry)? = nil,
         componentStateRetirer: (any LatchwayComponentStateRetiring)? = nil,
         componentStorageOverride: (@Sendable (
@@ -271,8 +144,6 @@ public actor LatchwayClient {
         ) -> any LatchwayComponentCredentialStorage)? = nil,
         processScopeNamespace: String = UUID().uuidString
     ) {
-        var configuration = configuration
-        configuration.checksPersistentLegacyFence = processScopeNamespace == LatchwayProcessScopeIdentity.productionNamespace
         let proofFactory = LatchwayDPoPProofFactory(key: installationKey, clock: clock)
         let processConfigurationFingerprint = LatchwayProcessScopeIdentity.rootFingerprint(
             configuration: configuration
@@ -282,15 +153,8 @@ public actor LatchwayClient {
         self.attestationProvider = attestationProvider
         self.installationKey = installationKey
         self.sessionStorage = sessionStorage
-        self.componentRegistry = componentRegistry ?? LatchwayKeychainComponentRegistry(
-            applicationID: configuration.applicationID,
-            environment: configuration.environment,
-            rootKeychainAccessGroup: configuration.rootKeychainAccessGroup,
-            legacySharedKeychainAccessGroups: configuration.legacySharedKeychainAccessGroups,
-            clientRuntime: configuration.clientRuntime
-        )
+        self.componentRegistry = componentRegistry
         self.componentStateRetirer = componentStateRetirer
-            ?? LatchwayKeychainComponentStateRetirer(configuration: configuration)
         self.componentStorageOverride = componentStorageOverride
         self.transport = transport
         self.clock = clock
@@ -690,24 +554,6 @@ public actor LatchwayClient {
     /// descriptors in the root application's private Keychain group. Failed
     /// component erasures remain registered so a later launch can retry them.
     public func revokeCurrentInstallationFamily() async throws {
-        try await revokeCurrentInstallationFamily(retiring: [])
-    }
-
-    /// Revokes the complete installation family, including every registered or
-    /// explicitly supplied delegated component, then erases local key material.
-    ///
-    /// The descriptor overload remains available for compatibility and for
-    /// retiring legacy component state that predates the durable registry.
-    public func revokeCurrentInstallationFamily(
-        retiring components: [LatchwayComponentConfiguration]
-    ) async throws {
-        let definitions = components.map(\.definitionID)
-        guard Set(definitions).count == definitions.count else {
-            throw LatchwayComponentError.invalidConfiguration(
-                "component definition IDs must be unique in one retirement call"
-            )
-        }
-        try components.forEach(validateComponentConfiguration)
         var firstError: (any Error)?
         do {
             let active = try await activeSession()
@@ -729,11 +575,10 @@ public actor LatchwayClient {
         do {
             if let generation = configuration.accountGeneration {
                 let registered = try await generation.registeredComponents()
-                for component in Set(registered + components) { try await retireComponentState(component) }
-            } else {
+                for component in Set(registered) { try await retireComponentState(component) }
+            } else if let componentRegistry {
                 try await LatchwayComponentFamilyRetirement.retireAll(
                     registry: componentRegistry,
-                    including: components,
                     retire: { [self] component in try await retireComponentState(component) }
                 )
             }
@@ -817,7 +662,7 @@ public actor LatchwayClient {
         }
         do {
             try await retireComponentStateUncoordinated(component)
-            if configuration.sharedComponentAccount == nil { try await componentRegistry.unregister(component) }
+            if let componentRegistry { try await componentRegistry.unregister(component) }
             _ = await coordinator.invalidate(terminal: true, for: permit)
             await coordinator.release(permit)
         } catch {
@@ -1353,7 +1198,6 @@ public actor LatchwayClient {
         configuration: LatchwayConfiguration
     ) async throws -> RuntimeSession {
         if let generation = configuration.accountGeneration { try await generation.check() }
-        else { try await LatchwayAppRegistry.shared.requireLegacyScopeUnregistered(configuration) }
         guard grant.tokenType == "DPoP",
               (60 ... 3_600).contains(grant.expiresIn),
               (300 ... 31_536_000).contains(grant.refreshExpiresIn),
@@ -1410,7 +1254,7 @@ public actor LatchwayClient {
             // would only retry work that belongs to logout's cleanup journal.
             throw error
         } catch {
-            // A failed write after legacy root refresh must not leave the
+            // A failed write after root refresh must not leave the
             // previously rotated token available for accidental reuse.
             try? await storage.clear()
             throw LatchwayError.keyStorageFailure
@@ -1479,6 +1323,7 @@ public actor LatchwayClient {
         if let generation = configuration.accountGeneration, let account = configuration.sharedComponentAccount {
             try await generation.registerComponent(component, account: account)
         } else {
+            guard let componentRegistry else { throw LatchwayLifecycleError.configurationConflict }
             try await componentRegistry.register(component)
         }
         let coordinator = componentProcessCoordinator(for: component)
@@ -1580,13 +1425,8 @@ public actor LatchwayClient {
                 store: LatchwaySharedComponentKeyStorage(state: .init(account: account, component: component)),
                 preferSecureEnclave: true)
         }
-        return LatchwayComponentKeyManager(
-            applicationID: configuration.applicationID,
-            environment: configuration.environment,
-            definitionID: component.definitionID,
-            keychainAccessGroup: component.keychainAccessGroup,
-            softwareFallbackPolicy: configuration.softwareKeyFallbackPolicy
-        )
+        return LatchwayComponentKeyManager(softwareFallbackPolicy: configuration.softwareKeyFallbackPolicy,
+            store: LatchwayUnconfiguredComponentStorage(), preferSecureEnclave: true)
     }
 
     private func componentStorage(
@@ -1598,12 +1438,7 @@ public actor LatchwayClient {
         if let account = configuration.sharedComponentAccount {
             return LatchwaySharedComponentCredentialStorage(state: .init(account: account, component: component))
         }
-        return LatchwayKeychainComponentStorage(
-            applicationID: configuration.applicationID,
-            environment: configuration.environment,
-            definitionID: component.definitionID,
-            accessGroup: component.keychainAccessGroup
-        )
+        return LatchwayUnconfiguredComponentStorage()
     }
 
     private func componentProcessCoordinator(
@@ -1652,6 +1487,7 @@ public actor LatchwayClient {
             // ordinary logout. Revoked component keys must not be resurrected.
             try state.evictRetiredKeys()
         } else {
+            guard let componentStateRetirer else { throw LatchwayLifecycleError.configurationConflict }
             try await componentStateRetirer.retire(component)
         }
     }
@@ -1919,7 +1755,6 @@ public actor LatchwayClient {
     private func validateConfiguration() throws {
         try LatchwayRootKeychainPreflight.validateAccessGroups(
             rootKeychainAccessGroup: configuration.rootKeychainAccessGroup,
-            legacySharedKeychainAccessGroups: configuration.legacySharedKeychainAccessGroups
         )
         guard configuration.applicationID.range(
             of: "^app_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
@@ -2005,15 +1840,13 @@ public actor LatchwayClient {
             && (1 ... 128).contains(remote.serverVersion.utf8.count)
     }
 
-    /// Validates optional component-aware root metadata without making it a
-    /// requirement for legacy wire-1 grants. Partial metadata fails closed.
+    /// Protocol 3 root grants must carry installation-family provenance.
     private static func validRootBinding(
         family: LatchwayInstallationFamilySummary?,
         component: LatchwayClientComponentSummary?,
         expectedThumbprint: String?,
         platform: String
     ) -> Bool {
-        if family == nil, component == nil { return true }
         guard let family, let component, let expectedThumbprint else { return false }
         return family.id.range(
             of: "^fam_[A-Za-z0-9_-]{16,128}$",
@@ -2058,10 +1891,7 @@ public actor LatchwayClient {
               trust.delegationID == nil
         else { return false }
 
-        guard let source = trust.source else {
-            // Legacy wire-1 grants carried no family/component provenance.
-            return family == nil && component == nil
-        }
+        guard let source = trust.source else { return false }
         guard let source = LatchwayComponentTrustSource(rawValue: source) else { return false }
         return switch source {
         case .directAttested:

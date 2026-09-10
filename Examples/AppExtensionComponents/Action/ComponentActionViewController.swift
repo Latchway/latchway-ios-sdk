@@ -37,8 +37,9 @@ final class ComponentActionViewController: UIViewController {
             let component = try ComponentExampleConfiguration.action()
             let feature = try ComponentExampleConfiguration.feature(for: component)
             let client = try LatchwayExtensionClient(
-                configuration: configuration,
-                component: component
+                baseURL: configuration.baseURL, applicationID: configuration.applicationID,
+                environment: configuration.environment, component: component,
+                account: try ComponentExampleConfiguration.account(for: component)
             )
 
             // iOS App Attest key generation is unavailable to application

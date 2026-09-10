@@ -15,7 +15,6 @@ final class PublicAPITests: XCTestCase {
         XCTAssertEqual(configuration.applicationID, "app_01J00000000000000000000000")
         XCTAssertEqual(configuration.environment, "production")
         XCTAssertEqual(configuration.rootKeychainAccessGroup, "ABCDE12345.com.example.latchway")
-        XCTAssertEqual(configuration.legacySharedKeychainAccessGroups, [])
         XCTAssertEqual(configuration.clientRuntime, .iOS)
         XCTAssertEqual(configuration.clientSDKVersion, LatchwayVersion.sdk)
         XCTAssertEqual(configuration.softwareKeyFallbackPolicy, .disallow)
@@ -57,29 +56,15 @@ final class PublicAPITests: XCTestCase {
         XCTAssertEqual(LatchwayError.invalidServerResponse.code, "server_response_invalid")
     }
 
-    func testRootStorageInitializersRequireConcreteGroupAndExposeLegacyScanList() {
-        let root = "ABCDE12345.com.example.latchway"
-        let legacy = ["ABCDE12345.com.example.latchway.appintents"]
-        _ = LatchwayInstallationKeyManager(
-            applicationID: "app_01J00000000000000000000000",
-            environment: "production",
-            rootKeychainAccessGroup: root,
-            legacySharedKeychainAccessGroups: legacy,
-            softwareFallbackPolicy: .disallow
-        )
-        _ = LatchwayKeychainSessionStorage(
-            applicationID: "app_01J00000000000000000000000",
-            environment: "production",
-            rootKeychainAccessGroup: root,
-            legacySharedKeychainAccessGroups: legacy
-        )
-        let verify: (String, [String]) throws -> Void = {
-            try LatchwayRootKeychainPreflight.verifySignedDefaultAccessGroup(
-                $0,
-                legacySharedKeychainAccessGroups: $1
-            )
-        }
-        _ = verify
+    func testCurrentAppOptionsRequireNoMigrationInventory() throws {
+        let identity = try LatchwaySuppliedIdentityConfiguration.firebaseProject(projectID: "test-project")
+        let options = LatchwayAppOptions(
+            baseURL: URL(string: "https://gateway.example.test")!,
+            applicationID: "app", environment: "production", rootKeychainAccessGroup: "TEAM.app",
+            suppliedIdentity: identity)
+        XCTAssertEqual(options.suppliedIdentity, identity)
+        XCTAssertEqual(LatchwayVersion.protocolVersion, 2)
+        XCTAssertEqual(LatchwayVersion.supportedProtocolVersions, [1, 2, 3])
     }
 
     func testIndeterminateOperationPreservesActionableIDWhileDescriptionRedactsDetail() {
@@ -108,20 +93,13 @@ final class PublicAPITests: XCTestCase {
         XCTAssertEqual(try JSONDecoder().decode(LatchwayJSONValue.self, from: JSONEncoder().encode(value)), value)
     }
 
-    func testKeychainNamespacesSeparateNativeAndReactNativeInstallations() {
-        let native = LatchwayKeychainNamespace.service(
-            applicationID: "app_01J00000000000000000000000",
-            environment: "production",
-            clientRuntime: .iOS
-        )
-        let reactNative = LatchwayKeychainNamespace.service(
-            applicationID: "app_01J00000000000000000000000",
-            environment: "production",
-            clientRuntime: .reactNativeIOS
-        )
-        XCTAssertNotEqual(native, reactNative)
-        XCTAssertTrue(native.contains(".ios."))
-        XCTAssertTrue(reactNative.contains(".react_native_ios."))
+    func testCurrentAccountScopeIsSharedAcrossCallersAndIsolatedAcrossGenerations() {
+        let first = UUID(), second = UUID()
+        let native = LatchwayProcessScopeIdentity.sharedRoot(scope: "same-account", generation: first)
+        let reactNative = LatchwayProcessScopeIdentity.sharedRoot(scope: "same-account", generation: first)
+        XCTAssertEqual(native, reactNative)
+        XCTAssertNotEqual(native, LatchwayProcessScopeIdentity.sharedRoot(scope: "same-account", generation: second))
+        XCTAssertNotEqual(native, LatchwayProcessScopeIdentity.sharedRoot(scope: "other-account", generation: first))
     }
 
     func testRootKeychainIdentityAlwaysCarriesExplicitAccessGroup() {

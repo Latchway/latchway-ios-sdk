@@ -1,192 +1,150 @@
-# Shared native apps and account logout — advanced compatibility API
+# Shared native apps and account logout
 
-New integrations should use [developer-supplied identity](SuppliedIdentity.md):
-one-call configure, opaque account handles and no native auth bootstrap.
-The authority-based API below remains for explicit custom/legacy ownership.
-Shared mode requires released contract 1.1.0 / protocol 3 and an explicit
-`sharedNativeCallers` policy. Legacy server 1.0.x does not provide this combination.
+Current source uses supplied identity only. See
+[configure and token lifetime](SuppliedIdentity.md) for the minimal API.
+This source-breaking cleanup ships as version 2.0.0; older tags and receipts remain
+unchanged. Server 1.1.1+, contract 1.1.0 / wire 3 and required host-policy
+`sharedNativeCallers` are prerequisites.
 
-## Configure once, activate explicitly
+## Configure in either order
 
-The native process owns `LatchwayAppRegistry.shared`. Matching `configure`
-returns the same backend and never fetches identity or signs in. Omitted
-optional options inherit the first registration. Another name for the same
-gateway/app/environment aliases it; conflicting security or identity settings
-fail with `LatchwayLifecycleError.configurationConflict`.
+`LatchwayAppRegistry.shared` owns the process-wide app. Matching configure
+returns the existing backend without signing in or fetching identity.
+Omitted optional settings inherit the first registration; conflicting explicit
+identity/security settings fail with `configurationConflict`.
 
 ```swift
-let app = try await LatchwayApp.configure(
-    .init(baseURL: gateway, applicationID: applicationID,
-          environment: environment, rootKeychainAccessGroup: rootGroup,
-          identity: .init(name: "host-firebase", issuer: issuer),
-          exposeToReactNative: true),
-    name: "production",
-    authority: authority,
-    attestationFactory: { accountScope in
-        LatchwayAppAttestProvider(rootKeychainAccessGroup: rootGroup,
-                                 storageNamespace: accountScope)
-    }
-)
-// The application's accepted sign-in/restoration transition owns activation.
-let generation = try await app.activate()
-let client = try await app.makeClient()
+import Latchway
+import LatchwayAppAttest
+
+let app = try await LatchwayApp.configure(.init(
+    baseURL: gateway,
+    applicationID: applicationID,
+    environment: environment,
+    rootKeychainAccessGroup: rootGroup,
+    suppliedIdentity: try .firebaseProject(projectID: projectID)
+), name: "production")
+let account = try await app.signIn { try await yourAuth.currentIDToken() }
+let client = try await account.makeClient()
 ```
 
-Use one selected Firebase Auth instance with the optional
-`FirebaseLatchwayIdentityAuthority` adapter, or implement `LatchwayIdentityAuthority`.
-Its snapshot must contain consistent issuer, tenant, subject and current token;
-return nil when signed out. The server, not this local binding, authenticates
-the principal. Firebase remains outside the SDK core dependency graph.
+RN may configure first using equivalent public metadata. Native and RN share
+one account, signer and refresh coordinator, while each request has a distinct
+DPoP proof. No registration callback, startup coordinator or owner transfer is
+required. Obtain another client without signing in again. Use one native SDK
+implementation, not independent CocoaPods and SPM copies in the same host.
 
-The attestation factory must create account-scoped state; never return one global
-provider for all users. A custom factory needs a stable `attestationPolicyID`.
-Default hardware requirements remain in force.
+The App Attest module provides account-scoped defaults. A custom attestation
+factory must retain its immutable policy identity and create state for the
+provided account scope; never reuse one global provider for every user.
 
-## Logout and disposal
+## Captured account lifetime
 
-Stop app-owned tools/requests and fence UI callbacks first. Then:
+Stop application-owned tools and fence UI callbacks before logout:
 
 ```swift
-try await app.logout(generationID: generation) // works without a live client
+try await account.logout()
 await client.close()
-// Now sign out the selected Firebase Auth instance in application code.
+// Application code signs out its external auth provider separately.
 ```
 
-`try await client.logout()` is the captured-generation convenience. It requires
-an app-owned client; a legacy token-only client cannot claim account-aware
-logout. Call logout before close. A first logout on a closed handle fails;
-a completed logout remains idempotent. Old clients cannot follow a later login,
-even for the same Firebase UID. Explicitly activate and obtain fresh clients.
+Logout is offline-capable, persists retirement and invalidates that account's
+native/RN clients. Old handles cannot follow a later login, including the same
+user signing in again. Failed storage cleanup remains blocked and retryable.
+Cleanup survives cancellation; a bounded wait can still require another call.
 
-Logout does not fetch identity, require network, reset quota, sign out Firebase
-or revoke the server installation. Already dispatched work can still be billed
-to its original user. Storage failure leaves the generation blocked and returns
-`cleanupRequired`; retry the captured logout before activating another account.
-Cleanup survives caller cancellation, and its bounded wait may require a retry.
+Client close cancels only that client's work. Closing an RN screen must not
+log out the host or cancel another surface. Buffered SDK response bytes are
+also fenced after logout/close. Independently owned URLSession work and UI/tool
+results remain the application's responsibility.
 
-`close()` cancels only that client's work. Closing an RN screen must not log out
-the host or cancel its sibling native client. Buffered SDK response bytes are
-also fenced after close/logout. Independently owned URLSession work is the
-application's responsibility.
+Observe `app.snapshots()` for atomic initial state and ordered safe updates.
+The descriptor's `appInstanceID`, generation and revision identify lifecycle
+state, not an authenticated subject. A delayed old-user callback must use its
+captured account, never discover and retire a newer one.
 
-Observe `app.snapshots()` for an atomic initial snapshot and ordered redacted
-changes. External Firebase sign-out/account changes must retire the captured old
-generation and clear chat/model state before activation. Never resolve the
-current generation from a delayed old-user callback.
+Same-account `updateIdToken` is gateway-verified and preserves generation.
+Expiry suspends protected work until refreshed; it is not logout.
+`restore` cannot undo a persisted logout. Tokens stay in native memory only,
+so the application must restore identity again after process restart.
 
-## Embedded React Native
+## Delegated extension handoff
 
-Register the native authority before RN starts. RN uses `Latchway.getApp(name)`
-or equivalent configure; it supplies no second Firebase provider. Native/RN
-clients share the actual session, refresh chain and account signer, while every
-request has a distinct DPoP proof.
+The containing application declares its current approved groups using
+`componentKeychainAccessGroups` at first configuration. A component group must
+differ from the private root group and be allowed by the signed entitlements.
+Later equivalent configuration inherits the immutable allowlist.
 
-Use a single native SDK implementation. A host's separate SPM build and RN's
-CocoaPods build are not a proven shared registry; align on the RN pod dependency
-before claiming embedded support. Explicit `transferIdentityAuthority` retires
-the old generation before replacing the provider and never activates it. Swift
-rejects transfer during pending activation; finish/retire that operation and retry.
-
-## Delegated extension handoff and local logout
-
-The containing application provisions its approved iOS component, then supplies
-only an opaque, non-secret account/generation descriptor to the extension:
+Provision the component, then send only the non-secret account descriptor:
 
 ```swift
 let widget = LatchwayComponentConfiguration.widget(
-    definitionID: "home_widget", keychainAccessGroup: widgetGroup,
-    requestedFeatures: ["weekly-summary"])
-// First native app registration must include:
-// componentKeychainAccessGroups: [widgetGroup]
+    definitionID: "home_widget",
+    keychainAccessGroup: widgetGroup,
+    requestedFeatures: ["weekly-summary"]
+)
 try await client.prepareComponents([widget])
 let handoff = try await client.componentAccount()
 let handoffData = try JSONEncoder().encode(handoff)
-// Store handoffData in the authorized app-group container for this extension.
-// Never copy identity tokens, root sessions, refresh tokens or root keys there.
+// Store this descriptor in the authorized container for this extension.
+// Never copy ID tokens, root sessions, refresh tokens or keys into it.
 
-// In the extension process, after reading the host's explicit handoff:
-let account = try JSONDecoder().decode(LatchwayComponentAccount.self, from: handoffData)
+// In the independently executing extension:
+let account = try JSONDecoder().decode(
+    LatchwayComponentAccount.self, from: handoffData)
 let extensionClient = try LatchwayExtensionClient(
-    configuration: extensionConfiguration, component: widget, account: account)
+    baseURL: gateway,
+    applicationID: applicationID,
+    environment: environment,
+    component: widget,
+    account: account
+)
 let transport = extensionClient.transport(feature: "weekly-summary")
 ```
 
-The extension uses its own component Keychain group, signer, grant and session,
-never the private root group. Configuration must identify the same gateway,
-application and environment as the handoff. Wire 3 declares `native` with the
-actual iOS/RN caller; required host policy and existing component grants still
-apply. No watchOS or legacy RN component platform is implicitly converted.
-The native owner explicitly approves component groups in immutable
-`componentKeychainAccessGroups`; omission on first registration means none.
-Matching native/RN registration inherits those groups. A group cannot equal the
-private root group, and actual signed entitlement access is enforced by Keychain.
+The extension initializer takes no root-private group or identity provider.
+The explicit descriptor identifies the same gateway/application/environment and
+account generation; opening it checks the current persistent fence. An old
+handoff cannot open a new login, even for the same user.
 
-The root journal records each component before any provisioning/local mutation.
-In its authorized group, one Keychain envelope contains the generation marker,
-component key reference and rotating component credential. Revision-matched
-updates prevent a delayed writer from overwriting retirement or a newer rotating
-credential. This uses Apple's documented attribute-matching
-[SecItemUpdate behavior](https://developer.apple.com/documentation/security/secitemupdate(_:_:)).
-Revision conflicts have bounded retries; missing, corrupt or unavailable markers
-fail closed. Authorization, refresh, response completion and buffered streaming
-bytes check the persistent fence, including after another process retires it.
-An extension resumes from suspension into that fence; it never needs JS to run.
+The extension owns a component key, grant and rotating session in only its
+approved group. iOS application extensions are delegated-only; the host does
+not attest on their behalf. Wire 3 preserves the actual native/RN caller and
+the gateway's component policy. WatchOS support is not inferred.
 
-Logout erases delegated credentials but retains inactive account-scoped component
-keys. The same eight-account eviction journal removes these retained keys using
-a root-private, non-secret coordinate index. Explicit component/family revocation
-also erases the revoked component's keys. A failed component-store retirement
-keeps the root `retiring`, blocks another account and is retried after restart.
-An old handoff cannot open the new login, even when the Firebase UID is unchanged.
+## Persistent component and root fences
 
-`await extensionClient.close()` releases that extension handle only. Already
-exported requests and work dispatched before logout are not remotely revoked.
-The SDK does not promise to terminate a suspended process or reverse billing.
+The root journal records each component before provisioning or local mutation.
+A component-group Keychain envelope includes its generation marker, key
+reference and credential. Revision-matched writes prevent delayed writers from
+overwriting retirement or a later rotated credential. Conflicts have bounded
+retries; missing, corrupt or unavailable state fails closed.
 
-## Legacy migration inventory
+Authorization, refresh, response completion and buffered bytes check the
+persistent fence, including after a different process retires the account.
+A suspended extension checks that fence when it resumes; JS need not run.
 
-Activation first drains legacy native and RN root owners and clears their exact
-session/key coordinates. Permanent root/component markers stop updated legacy
-constructors across restart. Never downgrade to an older binary after migration;
-older SDKs do not implement these markers. No old refresh chain is imported.
+Logout removes delegated credentials while retaining permitted inactive
+account-scoped keys. The bounded account-key eviction journal deletes exact
+inactive coordinates; interrupted cleanup is retried before another account
+can become active. Explicit component/family revocation also erases those
+component keys. A failed component retirement leaves the root retiring and
+blocks a new account until cleanup succeeds.
 
-For a legacy application, register the complete inventory in native bootstrap:
+`await extensionClient.close()` releases that handle only. These are local
+lifecycle guarantees, not a promise to terminate a suspended process, retract
+an already exported request, reverse billing or revoke another device.
 
-```swift
-options.legacySharedKeychainAccessGroups = [oldSharedRootGroup]
-options.legacyComponents = [oldWidget, oldShareExtension]
-options.legacyAttestationNamespaces = ["my-explicit-old-namespace"]
-options.legacyMigration = LatchwayLegacyMigration(id: "old-custom-store-v1") {
-    try await eraseMyOldSDKCredentialStore() // idempotent, offline, throws on failure
-}
-```
+## Fresh storage and verification scope
 
-Use `legacyComponents: []` explicitly if the old app never provisioned components.
-A pre-registry root with no declared inventory fails with
-`rootKeychainMigrationRequired`; an omitted inventory is not evidence of none.
-Default/custom App Attest namespaces are cleared only when exactly inventoried;
-the SDK does not indiscriminately erase a global `default` namespace that another
-app might own. Arbitrary custom stores cannot be discovered automatically: the
-native cleanup callback owns their inventory and must not report success early.
+There is no prior-store inventory, automatic session adoption or application
+migration callback. Fresh account storage still requires real signed private
+root/component groups, explicit allowlists and persistent retirement journals.
+Uninstalling an application is not proof that Keychain data was erased.
+Previous releases remain unchanged and are not rewritten by this source cleanup.
 
-Inventory settings are immutable registration policy. Omitted options inherit
-the owner; correcting an already registered inventory requires app restart.
-The durable migration marker includes the inventory fingerprint, so adding
-explicit coordinates on a later launch reruns cleanup safely. Partial erasure
-retains pending state; it is not an instruction to adopt whatever legacy state
-survives. The callback must not call Latchway authorization or depend on Firebase.
-
-## Acceptance limits
-
-The root account implementation retains at most eight inactive/current key
-scopes, journaling eviction before deleting exact inactive local keys. Interrupted
-cleanup is retried before activation. This is not remote key revocation.
-
-Unit tests exercise independent transactional-store coordinators, stale refresh
-responses, cached authorization/bytes, incomplete cleanup and restart recovery.
-They are not signed Keychain, App Attest or physical extension-process evidence.
-Real entitlement/access-group, two-account App Attest and retained-key eviction
-acceptance must be recorded on a supported device before production enablement.
-Published dependency pins and release-contract locks are separate release work.
-The native LatchwayChat now uses this lifecycle; its older device receipts remain
-historical legacy evidence and do not prove this new mode.
+Test configure order, token acquisition cancellation, A → B → A, expiry,
+offline logout, restart, failed cleanup and component revision races. Deterministic
+tests are not signed Keychain or physical extension evidence. Record fresh
+two-account, retained-key, entitlement and cross-process acceptance separately
+before claiming the new source is verified in production.

@@ -21,8 +21,9 @@ final class ComponentShareViewController: SLComposeServiceViewController {
             let component = try ComponentExampleConfiguration.share()
             let feature = try ComponentExampleConfiguration.feature(for: component)
             let client = try LatchwayExtensionClient(
-                configuration: configuration,
-                component: component
+                baseURL: configuration.baseURL, applicationID: configuration.applicationID,
+                environment: configuration.environment, component: component,
+                account: try ComponentExampleConfiguration.account(for: component)
             )
             let transport = client.transport(feature: feature)
             var request = URLRequest(url: try transport.endpoint(path: "v1/responses"))

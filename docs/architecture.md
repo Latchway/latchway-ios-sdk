@@ -3,11 +3,11 @@
 ## Status
 
 This document fixes the ownership and dependency boundaries for the Swift SDK.
-The implementation consumes draft contract 1.0.0/current wire protocol 2 at the
-exact core revision and bundle digest in `contract.lock`. Its root grant decoder
-retains the optional family/component fields needed to read legacy wire-1
-installation/session responses; all requests emitted by this source identify
-wire 2.
+Current source consumes released contract 1.1.0 at the exact core revision and
+bundle digest in `contract.lock`; all client traffic uses wire 3. Root clients
+come from a configured app and supplied-identity account, not public direct
+constructors. The compatibility cleanup is source-breaking and unreleased;
+previously published tags and their receipts remain unchanged.
 
 ## System boundary
 
@@ -81,21 +81,28 @@ directly to App Attest. Registration state changes to assertions only after a
 successful session exchange. Invalid-key recovery performs at most one key
 rotation per operation.
 
-Installation keys, refresh sessions, and App Attest accepted-key state are all
-namespaced by application, environment, and client runtime. This prevents a
-native iOS client and a React Native client in the same host application from
-sharing a platform-bound grant or refresh-token rotation state.
+Installation keys, refresh sessions and accepted App Attest state are scoped
+to the configured app and account. Equivalent native/RN configuration joins
+one registry/session; callers are attributed separately on each request.
+Conflicting gateway, identity or security boundaries do not share state.
+Identity tokens remain in native memory only after gateway verification;
+expiry suspends protected work until a valid same-account update.
 
 Every root Keychain read, update, add, and delete includes the caller's fully
 resolved private `rootKeychainAccessGroup`. Before identity, attestation, key,
 or session work, a random sentinel written through the signed default group is
-read only through that exact explicit group. Extension-shared groups are
-provided separately in `legacySharedKeychainAccessGroups` and scanned only at
-known Latchway root service/account coordinates, including when the private
-group correctly passes the sentinel. A stale shared-first record fails with
-`rootKeychainMigrationRequired`; v1 does not perform an implicit migration or
-destructive cleanup. The sentinel itself is the only group-less Keychain item,
-and its random coordinate is deleted immediately after the check.
+read only through that exact explicit group. Current component groups are
+explicitly approved in the immutable app configuration and never include the
+root-private group. The sentinel's random coordinate is deleted immediately
+after the check. There is no old-store scan or session adoption path.
+
+Account logout persists retirement and checks pending identity acquisition,
+authorization, refresh completion and buffered response bytes. The current
+root/component journals retain cleanup failures and bounded inactive-key
+eviction for retry. Revision-matched component writes prevent another process
+from overwriting retirement with stale session state. These guarantees remain
+part of fresh account storage. The extension requires an explicit non-secret
+`LatchwayComponentAccount` handoff and cannot open unbound root storage.
 
 ## Transport boundary
 
@@ -133,9 +140,9 @@ problem validation, request-identifier preservation, bounded replay, and URL
 session cancellation without exporting stored credentials. Lower-level
 caller-owned transports may still use public nonce-aware authorization and
 forced-refresh operations after independently validating a same-origin
-problem. A typed runtime configuration pairs the React Native iOS installation
-platform with its protocol SDK identifier so the two cannot drift
-independently.
+problem. Current wire-3 requests preserve native account/session sharing while
+the runtime controls the actual iOS/RN caller and SDK attribution; application
+headers cannot override those values.
 
 Cancellation and streaming flow end to end. Errors expose stable safe fields
 and request identifiers, never tokens or raw attestation evidence.

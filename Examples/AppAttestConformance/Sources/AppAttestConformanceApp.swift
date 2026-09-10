@@ -62,6 +62,7 @@ private struct StatusRow: View {
 
 @MainActor
 private final class ConformanceModel: ObservableObject {
+    private var account: LatchwayAccount?
     @Published var identityStatus = "not checked"
     @Published var secureEnclaveStatus = "not checked"
     @Published var appAttestSupport = "not checked"
@@ -89,8 +90,12 @@ private final class ConformanceModel: ObservableObject {
         let assertionIdentityToken = environment.removeValue(
             forKey: "LATCHWAY_ASSERTION_IDENTITY_TOKEN"
         )
+        let resumeIdentityToken = environment.removeValue(
+            forKey: "LATCHWAY_RESUME_IDENTITY_TOKEN"
+        )
         unsetenv("LATCHWAY_REGISTRATION_IDENTITY_TOKEN")
         unsetenv("LATCHWAY_ASSERTION_IDENTITY_TOKEN")
+        unsetenv("LATCHWAY_RESUME_IDENTITY_TOKEN")
         guard var values = Values(
             environment: environment,
             registrationIdentityToken: registrationIdentityToken,
@@ -109,7 +114,8 @@ private final class ConformanceModel: ObservableObject {
                     evidenceResult = "awaiting independent component observer"
                     return
                 }
-                await resumeAfterComponentObservation(values: values, checkpoint: checkpoint)
+                await resumeAfterComponentObservation(values: values, checkpoint: checkpoint,
+                    identityToken: resumeIdentityToken)
                 return
             }
         } catch {
@@ -137,47 +143,13 @@ private final class ConformanceModel: ObservableObject {
             return
         }
 
-        let appAttest = LatchwayAppAttestProvider(
-            applicationID: values.applicationID,
-            environment: values.environment,
-            rootKeychainAccessGroup: values.rootKeychainAccessGroup,
-            legacySharedKeychainAccessGroups: values.legacySharedKeychainAccessGroups,
-            clientRuntime: .iOS
-        )
-        do {
-            guard environment["LATCHWAY_RESET_INSTALLATION"] == "1" else {
-                throw SuiteError.configuration
-            }
-            try await LatchwayKeychainSessionStorage(
-                applicationID: values.applicationID,
-                environment: values.environment,
-                rootKeychainAccessGroup: values.rootKeychainAccessGroup,
-                legacySharedKeychainAccessGroups: values.legacySharedKeychainAccessGroups,
-                clientRuntime: .iOS
-            ).clear()
-            try await appAttest.reset()
-            try await LatchwayInstallationKeyManager(
-                applicationID: values.applicationID,
-                environment: values.environment,
-                rootKeychainAccessGroup: values.rootKeychainAccessGroup,
-                legacySharedKeychainAccessGroups: values.legacySharedKeychainAccessGroups,
-                clientRuntime: .iOS,
-                softwareFallbackPolicy: .disallow
-            ).reset()
-        } catch {
-            tests.append(.failed(id: "app_attest_registration"))
-            attestationResult = "fresh-key reset failed"
-            await writeObservation(values: values, startedAt: startedAt, tests: tests, diagnostics: nil)
-            return
-        }
-
-        let registrationClient = makeClient(
-            values: values,
-            appAttest: appAttest,
-            identityTokenProvider: registrationIdentityProvider
-        )
         var diagnostics: LatchwayDiagnostics?
         do {
+            // Use a newly allocated disposable identity/app scope for a fresh
+            // registration proof. Never scan, adopt or erase older root stores.
+            let registrationClient = try await makeClient(
+                values: values, identityTokenProvider: registrationIdentityProvider
+            )
             let probe = try await authorizedQuotaProbe(client: registrationClient, values: values)
             let first = try await sendBounded(probe, maximumBytes: 65_536)
             tests.append(.http(
@@ -214,23 +186,12 @@ private final class ConformanceModel: ObservableObject {
             else {
                 throw SuiteError.protocolFailure
             }
-            try await LatchwayKeychainSessionStorage(
-                applicationID: values.applicationID,
-                environment: values.environment,
-                rootKeychainAccessGroup: values.rootKeychainAccessGroup,
-                legacySharedKeychainAccessGroups: values.legacySharedKeychainAccessGroups,
-                clientRuntime: .iOS
-            ).clear()
-            let assertionProvider = LatchwayAppAttestProvider(
-                applicationID: values.applicationID,
-                environment: values.environment,
-                rootKeychainAccessGroup: values.rootKeychainAccessGroup,
-                legacySharedKeychainAccessGroups: values.legacySharedKeychainAccessGroups,
-                clientRuntime: .iOS
-            )
-            let assertionClient = makeClient(
+            // Current logout retires the generation but retains this account's
+            // device/App Attest keys. Explicit sign-in creates a new session.
+            try await account?.logout()
+            await registrationClient.close()
+            let assertionClient = try await makeClient(
                 values: values,
-                appAttest: assertionProvider,
                 identityTokenProvider: assertionIdentityProvider
             )
             _ = try await assertionClient.quota(feature: values.feature)
@@ -337,44 +298,49 @@ private final class ConformanceModel: ObservableObject {
 
     private func makeClient(
         values: Values,
-        appAttest: LatchwayAppAttestProvider,
-        identityTokenProvider: any LatchwayIdentityTokenProvider
-    ) -> LatchwayClient {
-        LatchwayClient(
-            configuration: LatchwayConfiguration(
+        identityTokenProvider: any LatchwayIdentityTokenProvider,
+        restoring: Bool = false
+    ) async throws -> LatchwayClient {
+        guard let issuer = Bundle.main.object(forInfoDictionaryKey: "LatchwayIdentityIssuer") as? String,
+              let audience = Bundle.main.object(forInfoDictionaryKey: "LatchwayIdentityAudience") as? String,
+              !issuer.isEmpty, !audience.isEmpty else { throw SuiteError.configuration }
+        let app = try await LatchwayApp.configure(.init(
                 baseURL: values.gateway,
                 applicationID: values.applicationID,
                 environment: values.environment,
                 rootKeychainAccessGroup: values.rootKeychainAccessGroup,
-                legacySharedKeychainAccessGroups: values.legacySharedKeychainAccessGroups,
-                identityProvider: values.identityProvider,
-                appVersion: values.appVersion,
+                suppliedIdentity: .init(providerID: values.identityProvider, issuer: issuer, audience: audience),
                 softwareKeyFallbackPolicy: .disallow,
-                attestationProvider: appAttest
-            ),
-            identityTokenProvider: identityTokenProvider
-        )
+                componentKeychainAccessGroups: values.componentKeychainAccessGroups
+        ))
+        let signedIn: LatchwayAccount
+        if restoring {
+            signedIn = try await app.restore { try await identityTokenProvider.identityToken() }
+        } else {
+            signedIn = try await app.signIn { try await identityTokenProvider.identityToken() }
+        }
+        account = signedIn
+        return try await signedIn.makeClient()
     }
 
     private func resumeAfterComponentObservation(
         values: Values,
-        checkpoint: PhysicalComponentCheckpoint
+        checkpoint: PhysicalComponentCheckpoint,
+        identityToken: String?
     ) async {
         var tests = checkpoint.tests
-        let appAttest = LatchwayAppAttestProvider(
-            applicationID: values.applicationID,
-            environment: values.environment,
-            rootKeychainAccessGroup: values.rootKeychainAccessGroup,
-            legacySharedKeychainAccessGroups: values.legacySharedKeychainAccessGroups,
-            clientRuntime: .iOS
-        )
-        let client = makeClient(
-            values: values,
-            appAttest: appAttest,
-            identityTokenProvider: UnavailableConformanceIdentityProvider()
-        )
         var diagnostics: LatchwayDiagnostics?
         do {
+            // Identity is memory-only. A relaunched collector must supply a
+            // fresh same-account token; persisted grants are not an auth source.
+            guard let token = identityToken,
+                  (16...65_536).contains(token.utf8.count),
+                  token.unicodeScalars.allSatisfy({ $0.value >= 0x21 && $0.value != 0x7F }) else {
+                throw SuiteError.identityUnavailable
+            }
+            let client = try await makeClient(values: values,
+                identityTokenProvider: SingleUseConformanceIdentityProvider(token: token),
+                restoring: true)
             let postRevocationProbe = try await authorizedQuotaProbe(client: client, values: values)
             let loadedDiagnostics = await client.diagnostics()
             guard loadedDiagnostics.sessionState == .active else {
@@ -520,7 +486,7 @@ private struct Values {
     let environment: String
     let identityProvider: String
     let rootKeychainAccessGroup: String
-    let legacySharedKeychainAccessGroups: [String]
+    let componentKeychainAccessGroups: [String]
     private var registrationIdentityToken: String?
     private var assertionIdentityToken: String?
     let feature: String
@@ -610,7 +576,7 @@ private struct Values {
               identityProvider == signedIdentityProvider,
               let identifier = Bundle.main.bundleIdentifier
         else { return nil }
-        let legacySharedKeychainAccessGroups = [
+        let componentKeychainAccessGroups = [
             widgetKeychainAccessGroup,
             shareKeychainAccessGroup,
             actionKeychainAccessGroup,
@@ -620,21 +586,21 @@ private struct Values {
             options: .regularExpression
         ) != nil,
         !rootKeychainAccessGroup.contains("$("),
-        legacySharedKeychainAccessGroups.allSatisfy({
+        componentKeychainAccessGroups.allSatisfy({
             !$0.contains("$(") && $0.range(
                 of: "^[A-Za-z0-9][A-Za-z0-9.-]{2,254}$",
                 options: .regularExpression
             ) != nil
         }),
-        !legacySharedKeychainAccessGroups.contains(rootKeychainAccessGroup),
-        Set(legacySharedKeychainAccessGroups).count == legacySharedKeychainAccessGroups.count
+        !componentKeychainAccessGroups.contains(rootKeychainAccessGroup),
+        Set(componentKeychainAccessGroups).count == componentKeychainAccessGroups.count
         else { return nil }
         self.gateway = gateway
         self.applicationID = signedApplicationID
         self.environment = signedEnvironment
         self.identityProvider = signedIdentityProvider
         self.rootKeychainAccessGroup = rootKeychainAccessGroup
-        self.legacySharedKeychainAccessGroups = legacySharedKeychainAccessGroups
+        self.componentKeychainAccessGroups = componentKeychainAccessGroups
         let grantsAbsent = registrationIdentityToken == nil && assertionIdentityToken == nil
         let grantsValid = registrationIdentityToken.map { (16 ... 65_536).contains($0.utf8.count) } == true
             && assertionIdentityToken.map { (16 ... 65_536).contains($0.utf8.count) } == true
@@ -1085,10 +1051,6 @@ private actor SingleUseConformanceIdentityProvider: LatchwayIdentityTokenProvide
         self.token = nil
         return token
     }
-}
-
-private struct UnavailableConformanceIdentityProvider: LatchwayIdentityTokenProvider {
-    func identityToken() async throws -> String { throw SuiteError.identityUnavailable }
 }
 
 private extension Dictionary where Key == String, Value == String {

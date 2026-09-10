@@ -1,5 +1,12 @@
 # Physical App Attest release evidence
 
+Current source's fresh-account cleanup is unreleased. The candidate/collector
+must be updated and revalidated together; earlier receipts do not prove the
+new lifecycle. In particular, a relaunched host requires a separate fresh
+resume identity token for `app.restore` rather than loading a session without
+identity. Preserve every signing, redaction, lease and attestation check below;
+do not treat this runbook as evidence that the adapted runner has already passed.
+
 The v1 Apple gate is a production App Attest registration and assertion in the
 signed containing application, plus independently keyed delegated Widget,
 Share, and Action sessions on a supported physical Apple device. iOS App
@@ -16,7 +23,8 @@ checksums. Any missing or mismatched field fails the job.
 
 ## What the device suite proves
 
-One run resets the conformance app's isolated SDK state, then records:
+One run uses explicit supplied-identity account transitions in the isolated
+conformance app, then records:
 
 - physical-device, Release-build, bundle, version, build, Team ID, certificate,
   source/core commit, contract, gateway image, and gateway configuration pins;
@@ -291,7 +299,7 @@ does not import or create Apple assets and never uses
 groups are the private app-ID group first followed by all three component
 groups, while each extension has only its own group. The resolved private and
 shared values are embedded in the signed Info.plist for the SDK's default-group
-sentinel and exact legacy-coordinate scan;
+sentinel and explicit current component-group isolation;
 it rejects App Attest on Widget/Share/Action and requires production App Attest
 only on the host. The staged canonical JSON and checksum are the source for the
 protected candidate variables. Its `latchway.ios-app-bundle-tree.v1` digest

@@ -3,10 +3,10 @@ import Foundation
 import XCTest
 
 final class InstallationFamilyContractTests: XCTestCase {
-    func testCanonicalWireTwoFamilyVectorMatchesSwiftWireModels() throws {
+    func testCanonicalFamilyMetadataRemainsCurrentInProtocolThree() throws {
         let root = try fixture()
         XCTAssertEqual(root["contract_version"] as? String, "1.0.0", "The normative wire-2 fixture retains its original edition")
-        XCTAssertEqual(root["wire_protocol_version"] as? Int, LatchwayVersion.protocolVersion)
+        XCTAssertEqual(root["wire_protocol_version"] as? Int, 2, "Frozen provenance fixture edition; the same metadata remains mandatory in protocol 3")
 
         let familyObject = try object(root, "family")
         let family = try decode(LatchwayInstallationFamilySummary.self, from: familyObject)

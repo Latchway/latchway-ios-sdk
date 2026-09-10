@@ -58,15 +58,17 @@ import Testing
     #expect(throws: LatchwayComponentError.self) {
         _ = try LatchwayExtensionClient(
             configuration: configuration,
-            component: component
+            component: component,
+            account: JSONDecoder().decode(LatchwayComponentAccount.self, from: Data("{\"generationID\":\"00000000-0000-0000-0000-000000000001\",\"appScope\":\"unused\",\"accountScope\":\"unused\"}".utf8))
         )
     }
 }
 
-@Test func directComponentAttestationSurfaceIsPublic() {
-    let operation: (LatchwayExtensionClient) async throws -> Void = { client in
-        try await client.establishDirectAttestation()
-    }
-    _ = operation
-    #expect(LatchwayComponentTrustSource.delegatedDirectAttested.rawValue == "delegated_direct_attested")
+@Test func componentAccountHandoffIsCodableAndContainsNoCredentials() throws {
+    let json = Data("{\"generationID\":\"00000000-0000-0000-0000-000000000001\",\"appScope\":\"app-hash\",\"accountScope\":\"account-hash\"}".utf8)
+    let account = try JSONDecoder().decode(LatchwayComponentAccount.self, from: json)
+    let encoded = try JSONEncoder().encode(account)
+    let fields = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+    #expect(Set(fields.keys) == ["generationID", "appScope", "accountScope"])
+    #expect(try JSONDecoder().decode(LatchwayComponentAccount.self, from: encoded) == account)
 }

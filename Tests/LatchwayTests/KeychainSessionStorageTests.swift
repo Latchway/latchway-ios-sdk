@@ -24,14 +24,14 @@ final class KeychainSessionStorageTests: XCTestCase {
         let store = SessionCountingStore()
         let storage = LatchwayKeychainSessionStorage(
             store: store,
-            rootKeychainPreflight: { throw LatchwayError.rootKeychainMigrationRequired }
+            rootKeychainPreflight: { throw LatchwayError.invalidConfiguration("not the signed default group") }
         )
 
         do {
             _ = try await storage.load()
-            XCTFail("Expected migration failure")
+            XCTFail("Expected root Keychain preflight failure")
         } catch let error as LatchwayError {
-            XCTAssertEqual(error, .rootKeychainMigrationRequired)
+            XCTAssertEqual(error, .invalidConfiguration("not the signed default group"))
         } catch {
             XCTFail("Unexpected error: \(error)")
         }

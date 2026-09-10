@@ -1,7 +1,6 @@
 @preconcurrency import Foundation
 import Latchway
 import LatchwayAppAttest
-import LatchwayFirebaseAuth
 
 /// Deployment values supplied by the Latchway setup wizard and the signed app.
 public struct LatchwayGoldenJourneyConfiguration: Sendable {
@@ -9,7 +8,7 @@ public struct LatchwayGoldenJourneyConfiguration: Sendable {
     public let applicationID: String
     public let environment: String
     public let rootKeychainAccessGroup: String
-    public let legacySharedKeychainAccessGroups: [String]
+    public let firebaseProjectID: String
     public let feature: String
     public let model: String
     public let appVersion: String
@@ -19,7 +18,7 @@ public struct LatchwayGoldenJourneyConfiguration: Sendable {
         applicationID: String,
         environment: String,
         rootKeychainAccessGroup: String,
-        legacySharedKeychainAccessGroups: [String] = [],
+        firebaseProjectID: String,
         feature: String,
         model: String,
         appVersion: String
@@ -28,7 +27,7 @@ public struct LatchwayGoldenJourneyConfiguration: Sendable {
         self.applicationID = applicationID
         self.environment = environment
         self.rootKeychainAccessGroup = rootKeychainAccessGroup
-        self.legacySharedKeychainAccessGroups = legacySharedKeychainAccessGroups
+        self.firebaseProjectID = firebaseProjectID
         self.feature = feature
         self.model = model
         self.appVersion = appVersion
@@ -65,34 +64,25 @@ public struct LatchwayGoldenJourneyFailure: Error, Sendable, LocalizedError {
 ///
 /// `firebaseIDToken` should call `Auth.auth().currentUser?.getIDToken()` and
 /// `firebaseSignOut` should call the application's ordinary Firebase sign-out.
-/// The token is fetched on demand and is never stored or rendered by this code.
+/// This application fetches one token for explicit sign-in. Latchway keeps it
+/// in native memory; the app supplies later token refreshes if the session lives
+/// beyond this bounded journey. Tokens are never rendered by this code.
 public func runLatchwayGoldenJourney(
     configuration: LatchwayGoldenJourneyConfiguration,
     firebaseIDToken: @escaping @Sendable () async throws -> String,
     firebaseSignOut: @escaping @Sendable () async -> Void,
     receiveResponseByte: @escaping @Sendable (UInt8) async throws -> Void
 ) async throws -> LatchwayGoldenJourneyResult {
-    let identity = FirebaseLatchwayIdentityTokenProvider(identityToken: firebaseIDToken)
-    let appAttest = LatchwayAppAttestProvider(
+    let app = try await LatchwayApp.configure(.init(
+        baseURL: configuration.baseURL,
         applicationID: configuration.applicationID,
         environment: configuration.environment,
         rootKeychainAccessGroup: configuration.rootKeychainAccessGroup,
-        legacySharedKeychainAccessGroups: configuration.legacySharedKeychainAccessGroups
-    )
-    let client = LatchwayClient(
-        configuration: LatchwayConfiguration(
-            baseURL: configuration.baseURL,
-            applicationID: configuration.applicationID,
-            environment: configuration.environment,
-            rootKeychainAccessGroup: configuration.rootKeychainAccessGroup,
-            legacySharedKeychainAccessGroups: configuration.legacySharedKeychainAccessGroups,
-            identityProvider: "firebase",
-            appVersion: configuration.appVersion,
-            softwareKeyFallbackPolicy: .disallow,
-            attestationProvider: appAttest
-        ),
-        identityTokenProvider: identity
-    )
+        suppliedIdentity: try .firebaseProject(projectID: configuration.firebaseProjectID),
+        softwareKeyFallbackPolicy: .disallow
+    ))
+    let account = try await app.signIn(getIdToken: firebaseIDToken)
+    let client = try await account.makeClient()
 
     var revocationAttempted = false
     do {

@@ -36,9 +36,6 @@ public struct LatchwaySuppliedIdentityConfiguration: Sendable, Equatable {
         }
     }
 
-    var reference: LatchwayIdentityAuthorityReference {
-        .init(name: "supplied:\(providerID):\(audience)", issuer: issuer, tenant: tenantID)
-    }
 }
 
 struct LatchwaySuppliedToken: Sendable {
@@ -70,7 +67,7 @@ struct LatchwaySuppliedToken: Sendable {
 
 /// Memory-only verified token store. Staged/unverified input is never visible
 /// to ordinary clients, even if an older Latchway session is cached.
-final class LatchwaySuppliedIdentityAuthority: LatchwayIdentityAuthority, @unchecked Sendable {
+final class LatchwaySuppliedIdentityState: LatchwayIdentityState, @unchecked Sendable {
     // Every mutable field is protected by this one lock. App actor mutations
     // are synchronous: no stale cancellation may reopen a newer ticket during
     // an actor hop between reserving the ticket and suspending identity.

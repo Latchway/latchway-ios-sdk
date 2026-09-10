@@ -50,7 +50,7 @@ public struct LatchwayURLSessionTransport: LatchwayHTTPTransport {
 }
 
 /// Immutable Foundation delegate. The unchecked conformance bridges NSObject's
-/// legacy declaration; the instance has no mutable state to isolate.
+/// Foundation declaration; the instance has no mutable state to isolate.
 final class LatchwayRedirectRejectingDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
     func urlSession(
         _: URLSession,

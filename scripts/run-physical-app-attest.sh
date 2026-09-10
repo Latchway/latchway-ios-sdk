@@ -2,15 +2,19 @@
 set +x
 set -euo pipefail
 
-# GitHub injects the two one-use grants as exported variables. Move them into
+# The collector injects two one-use grants and a separate resume ID token.
+# The resume token is runtime authentication, not a third lease evidence grant.
+# Move all three into
 # shell-only slots and remove the exported names before even command
 # substitution, tool discovery, candidate inspection, or gateway capture can
 # start a child process.
 latchway_registration_grant="${LATCHWAY_REGISTRATION_IDENTITY_TOKEN:-}"
 latchway_assertion_grant="${LATCHWAY_ASSERTION_IDENTITY_TOKEN:-}"
+latchway_resume_identity_token="${LATCHWAY_RESUME_IDENTITY_TOKEN:-}"
 unset LATCHWAY_REGISTRATION_IDENTITY_TOKEN
 unset LATCHWAY_ASSERTION_IDENTITY_TOKEN
-export -n latchway_registration_grant latchway_assertion_grant
+unset LATCHWAY_RESUME_IDENTITY_TOKEN
+export -n latchway_registration_grant latchway_assertion_grant latchway_resume_identity_token
 
 for environment_name in "${!DEVICECTL_CHILD_@}"; do
   echo "pre-existing CoreDevice child environment is forbidden" >&2
@@ -83,6 +87,8 @@ required_variables=(
   LATCHWAY_APPLICATION_ID
   LATCHWAY_ENVIRONMENT
   LATCHWAY_IDENTITY_PROVIDER
+  LATCHWAY_IDENTITY_ISSUER
+  LATCHWAY_IDENTITY_AUDIENCE
   LATCHWAY_FEATURE
   LATCHWAY_ERROR_MAPPING_FEATURE
   LATCHWAY_MODEL
@@ -129,6 +135,15 @@ if [[ "$latchway_registration_grant" == "$latchway_assertion_grant" \
    || ${#latchway_assertion_grant} -lt 16 \
    || ${#latchway_assertion_grant} -gt 65536 ]]; then
   echo "registration and assertion grants must be distinct bounded values" >&2
+  exit 2
+fi
+if [[ ${#latchway_resume_identity_token} -lt 16 \
+   || ${#latchway_resume_identity_token} -gt 65536 \
+   || "$latchway_resume_identity_token" == "$latchway_registration_grant" \
+   || "$latchway_resume_identity_token" == "$latchway_assertion_grant" \
+   || "$latchway_resume_identity_token" == *$'\n'* \
+   || "$latchway_resume_identity_token" == *$'\r'* ]]; then
+  echo "a separate bounded resume identity token is required for same-account restore" >&2
   exit 2
 fi
 for identifier in \
@@ -242,10 +257,13 @@ cleanup() {
   fi
   unset DEVICECTL_CHILD_LATCHWAY_REGISTRATION_IDENTITY_TOKEN
   unset DEVICECTL_CHILD_LATCHWAY_ASSERTION_IDENTITY_TOKEN
+  unset DEVICECTL_CHILD_LATCHWAY_RESUME_IDENTITY_TOKEN
   latchway_registration_grant=""
   latchway_assertion_grant=""
+  latchway_resume_identity_token=""
   unset latchway_registration_grant
   unset latchway_assertion_grant
+  unset latchway_resume_identity_token
 }
 trap cleanup EXIT
 
@@ -315,6 +333,8 @@ actual_executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$in
 actual_latchway_application_id="$(/usr/libexec/PlistBuddy -c 'Print :LatchwayApplicationID' "$info_plist")"
 actual_latchway_environment="$(/usr/libexec/PlistBuddy -c 'Print :LatchwayEnvironment' "$info_plist")"
 actual_identity_provider="$(/usr/libexec/PlistBuddy -c 'Print :LatchwayIdentityProvider' "$info_plist")"
+actual_identity_issuer="$(/usr/libexec/PlistBuddy -c 'Print :LatchwayIdentityIssuer' "$info_plist")"
+actual_identity_audience="$(/usr/libexec/PlistBuddy -c 'Print :LatchwayIdentityAudience' "$info_plist")"
 actual_root_keychain_access_group="$(/usr/libexec/PlistBuddy -c 'Print :LatchwayRootKeychainAccessGroup' "$info_plist")"
 if [[ "$actual_bundle_id" != "$LATCHWAY_BUNDLE_ID" || "$actual_version" != "$LATCHWAY_APP_VERSION" || "$actual_build" != "$LATCHWAY_BUILD_NUMBER" ]]; then
   echo "signed application identity does not match protected pins" >&2
@@ -323,6 +343,8 @@ fi
 if [[ "$actual_latchway_application_id" != "$LATCHWAY_APPLICATION_ID" \
    || "$actual_latchway_environment" != "$LATCHWAY_ENVIRONMENT" \
    || "$actual_identity_provider" != "$LATCHWAY_IDENTITY_PROVIDER" \
+   || "$actual_identity_issuer" != "$LATCHWAY_IDENTITY_ISSUER" \
+   || "$actual_identity_audience" != "$LATCHWAY_IDENTITY_AUDIENCE" \
    || "$actual_root_keychain_access_group" != "$LATCHWAY_APP_ID_PREFIX.$LATCHWAY_BUNDLE_ID" ]]; then
   echo "signed Latchway tenant/auth configuration does not match protected pins" >&2
   exit 1
@@ -425,6 +447,7 @@ verify_component_extension() {
   local plist="$matched/Info.plist"
   local executable extension_point extension_version extension_build binary_hash extension_entitlements extension_team extension_application_id
   local extension_latchway_application_id extension_latchway_environment extension_identity_provider extension_root_keychain_access_group
+  local extension_identity_issuer extension_identity_audience
   executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$plist")"
   extension_point="$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$plist")"
   extension_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist")"
@@ -432,6 +455,8 @@ verify_component_extension() {
   extension_latchway_application_id="$(/usr/libexec/PlistBuddy -c 'Print :LatchwayApplicationID' "$plist")"
   extension_latchway_environment="$(/usr/libexec/PlistBuddy -c 'Print :LatchwayEnvironment' "$plist")"
   extension_identity_provider="$(/usr/libexec/PlistBuddy -c 'Print :LatchwayIdentityProvider' "$plist")"
+  extension_identity_issuer="$(/usr/libexec/PlistBuddy -c 'Print :LatchwayIdentityIssuer' "$plist")"
+  extension_identity_audience="$(/usr/libexec/PlistBuddy -c 'Print :LatchwayIdentityAudience' "$plist")"
   extension_root_keychain_access_group="$(/usr/libexec/PlistBuddy -c 'Print :LatchwayRootKeychainAccessGroup' "$plist")"
   if [[ "$extension_point" != "$expected_extension_point" || "$extension_version" != "$LATCHWAY_APP_VERSION" || "$extension_build" != "$LATCHWAY_BUILD_NUMBER" || ! -f "$matched/$executable" || -L "$matched/$executable" ]]; then
     echo "$label extension identity or executable is invalid" >&2
@@ -440,6 +465,8 @@ verify_component_extension() {
   if [[ "$extension_latchway_application_id" != "$LATCHWAY_APPLICATION_ID" \
      || "$extension_latchway_environment" != "$LATCHWAY_ENVIRONMENT" \
      || "$extension_identity_provider" != "$LATCHWAY_IDENTITY_PROVIDER" \
+     || "$extension_identity_issuer" != "$LATCHWAY_IDENTITY_ISSUER" \
+     || "$extension_identity_audience" != "$LATCHWAY_IDENTITY_AUDIENCE" \
      || "$extension_root_keychain_access_group" != "$LATCHWAY_APP_ID_PREFIX.$LATCHWAY_BUNDLE_ID" ]]; then
     echo "$label signed Latchway tenant/auth configuration does not match protected pins" >&2
     exit 1
@@ -783,12 +810,19 @@ fi
 # while the host is still stopped. Relaunching here lets the host finish the
 # pre-authorized root revocation test without overlapping the Action process.
 validate_signed_lease_before_launch resume
+# Restore verifies fresh, same-account identity at the gateway. Never expose
+# this token to the first launch, extensions, observer, or evidence artifacts.
+export DEVICECTL_CHILD_LATCHWAY_RESUME_IDENTITY_TOKEN="$latchway_resume_identity_token"
 xcrun devicectl device process launch \
   --device "$LATCHWAY_IOS_DEVICE_ID" \
   --terminate-existing \
   --timeout 30 \
   --launch-persistent-identifier "$launch_persistent_identifier" \
   "$LATCHWAY_BUNDLE_ID" >/dev/null
+
+unset DEVICECTL_CHILD_LATCHWAY_RESUME_IDENTITY_TOKEN
+latchway_resume_identity_token=""
+unset latchway_resume_identity_token
 
 observation_path="$output_dir/app-attest-observation.json"
 observation_ready=false

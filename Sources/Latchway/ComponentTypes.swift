@@ -313,10 +313,8 @@ enum LatchwayComponentCredentialKind: String, Sendable, Codable {
 struct LatchwayStoredComponentCredential: Sendable, Codable, Equatable {
     let family: LatchwayInstallationFamilySummary
     let component: LatchwayClientComponentSummary
-    /// The containing application's requested maximum scope. Older stored
-    /// credentials decode this as nil and are provisioned again, which avoids
-    /// silently retaining a feature removed from configuration.
-    let requestedFeatures: [String]?
+    /// The containing application's exact requested maximum scope.
+    let requestedFeatures: [String]
     let trustSource: LatchwayComponentTrustSource
     let trustExpiresAt: Date
     let keyThumbprint: String
@@ -327,7 +325,7 @@ struct LatchwayStoredComponentCredential: Sendable, Codable, Equatable {
     init(
         family: LatchwayInstallationFamilySummary,
         component: LatchwayClientComponentSummary,
-        requestedFeatures: [String]? = nil,
+        requestedFeatures: [String],
         trustSource: LatchwayComponentTrustSource,
         trustExpiresAt: Date,
         keyThumbprint: String,
@@ -375,7 +373,7 @@ struct LatchwayStoredComponentCredential: Sendable, Codable, Equatable {
                 of: "^[A-Za-z0-9_-]{43}$",
                 options: .regularExpression
             ) != nil
-            && requestedFeatures.map(Set.init) == configuredFeatures
+            && Set(requestedFeatures) == configuredFeatures
             && !features.isEmpty
             && features.count <= 256
             && Set(features).count == features.count

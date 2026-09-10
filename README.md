@@ -1,284 +1,178 @@
 # Latchway iOS SDK
 
-SDK **1.3.0** adds `try await app.signOut()` for simple shared native/RN account
-cleanup, including an interrupted sign-in. See [developer-supplied identity and shared accounts](Documentation/SuppliedIdentity.md).
-Configure from either native or React Native first, supply an ID token, and use
-the shared account. No Firebase dependency, native auth bootstrap or permanent
-JavaScript token provider is required. This path requires a gateway advertising
-`supplied_identity_v1`, server 1.1.1 or later, and an enabled shared-native application policy.
+SDK **2.0.0** uses the fresh supplied-identity shared-account API. Configure
+from either native or React Native first, provide your application's ID token,
+and reuse the same native account/session. No Firebase dependency or native auth
+bootstrap is required. App-level `try await app.signOut()` keeps the published
+sign-out safeguards, including interrupted sign-in and cleanup retry.
 
-Latchway lets an untrusted iOS application call AI infrastructure through a
-self-hosted gateway without embedding an upstream provider key. This package
-provides the Swift transport and platform-security integration for that client
-boundary.
+This is a source-breaking release: old constructors, callback authorities and
+automatic credential-adoption/migration APIs are removed. Older storage is not
+imported or silently erased. Current account/session boundaries, signed private
+Keychain validation and delegated-only extension restrictions remain.
 
-> The compatible legacy constructor keeps wire protocol 2; this SDK ships contract 1.1.0. Core transport supports
-> server 1.0.0 or newer; the expanded Foundation Models adapter requires server
-> **1.0.2**. Compatible legacy wire-1 root grants remain readable. See the
-> [release notes](docs/release/v1.1.0.md) for additions and known backend limits.
+Requires server 1.1.1+ with `supplied_identity_v1` and shared-native policy;
+App Attest `any` acceptance requires server 1.1.3. See
+[release notes](docs/release/v2.0.0.md) and
+[identity setup](Documentation/SuppliedIdentity.md).
 
-The historical SDK 1.1.0 is available through GitHub/SwiftPM and CocoaPods. Server
-1.0.3 additionally permits native iOS and React Native iOS main-app roots to
-share a bundle identifier when both require direct App Attest. Configure each
-platform explicitly; this does not merge their installations or duplicate a
-shared per-user quota. No iOS SDK update beyond 1.1.0 is needed for that server fix.
+The SDK lets an iOS application call a self-hosted AI gateway without embedding
+an upstream provider key. It owns native transport, Secure Enclave/Keychain,
+App Attest, DPoP and account-scoped sessions. The application owns authentication
+and the gateway owns identity verification, policy, routing and quota.
 
-## Requirements
-
-The package uses Swift 6 strict concurrency and supports iOS 15 or newer. A
-production App Attest session requires a supported physical device, the App
-Attest entitlement, a configured Latchway server, and an existing application
-identity token. Simulator tests use explicit test doubles; they never claim
-hardware attestation.
-
-## Package products
-
-- `Latchway`: handwritten public client API, Secure Enclave/Keychain DPoP,
-  sessions, authorization, quota, revocation, and diagnostics
-- `LatchwayAppAttest`: `DCAppAttestService` registration/assertion lifecycle
-- `LatchwayAppExtensions`: extension-safe exports for independently keyed Client
-  Components provisioned by their containing application. iOS application
-  extensions are delegated-only because Apple does not support App Attest key
-  generation there; the host never attests on an extension's behalf.
-- `LatchwayFirebaseAuth`: optional closure adapter; the core target has no
-  Firebase dependency
-- `LatchwaySwiftOpenAI`: audited SwiftOpenAI 4.6.0 async HTTP/streaming adapter
-- `LatchwayFoundationModels`: OS 27 custom-executor adapter for streaming,
-  multi-turn local tools, guided JSON generation, and reasoning through a
-  server-configured Responses route; see [the integration guide](Documentation/FoundationModels.md)
-- `LatchwayTesting`: deterministic signers, clocks, storage, transports,
-  identity providers, and attestation doubles
-
-Add the repository as a Swift Package dependency, pin a released semantic
-version, then link `Latchway` and `LatchwayAppAttest` to the application target:
-
-```swift
-.package(
-    url: "https://github.com/Latchway/latchway-ios-sdk.git",
-    from: "1.3.0"
-)
-```
-
-Swift Package Manager is the canonical distribution. The production
-`Latchway.podspec` publishes the `Latchway/Core`, `Latchway/AppAttest`,
-`Latchway/AppExtensions`, `Latchway/FirebaseAuth`, and optional iOS 27
-`Latchway/FoundationModels` subspecs, including the
-extension-safe surface used by Widget, Share, and Action targets:
-
-```ruby
-pod 'Latchway/AppAttest', '1.3.0'
-pod 'Latchway/AppExtensions', '1.3.0'
-# Optional; requires iOS 27 and Xcode 27:
-# pod 'Latchway/FoundationModels', '1.3.0'
-```
-
-CocoaPods compiles selected subspecs into the `Latchway` module; SwiftPM keeps
-`LatchwayAppAttest`, `LatchwayAppExtensions`, and `LatchwayFirebaseAuth` as
-separate modules.
-
-## Legacy constructor usage
-
-For new integrations use the minimal, order-independent
-[supplied identity setup](Documentation/SuppliedIdentity.md).
+## Configure, sign in, use
 
 ```swift
 import Latchway
 import LatchwayAppAttest
 
-// Use the fully resolved first keychain-access-groups entitlement. Do not pass
-// "$(AppIdentifierPrefix)" at runtime.
-let rootKeychainAccessGroup = "ABCDE12345.com.example.app"
-let appAttest = LatchwayAppAttestProvider(
-    // Generated by the Latchway Admin API; names/slugs are not accepted.
-    applicationID: "app_01J00000000000000000000000",
-    environment: "production",
-    rootKeychainAccessGroup: rootKeychainAccessGroup
-)
-let configuration = LatchwayConfiguration(
+let app = try await LatchwayApp.configure(.init(
     baseURL: URL(string: "https://gateway.example.com")!,
     applicationID: "app_01J00000000000000000000000",
     environment: "production",
-    rootKeychainAccessGroup: rootKeychainAccessGroup,
-    identityProvider: "firebase",
-    appVersion: "1.2.3",
-    softwareKeyFallbackPolicy: .disallow,
-    attestationProvider: appAttest
-)
-let client = LatchwayClient(
-    configuration: configuration,
-    identityTokenProvider: ApplicationIdentityProvider()
-)
+    rootKeychainAccessGroup: "YOURPREFIX.com.example.app",
+    suppliedIdentity: try .firebaseProject(projectID: "your-project-id")
+))
 
-var request = URLRequest(
-    url: URL(string: "https://gateway.example.com/v1/responses")!
-)
+// The application owns its auth SDK and obtains a current token.
+let account = try await app.signIn { try await yourAuth.currentIDToken() }
+let client = try await account.makeClient()
+let transport = client.transport(feature: "assistant")
+
+var request = URLRequest(url: try transport.endpoint(path: "v1/responses"))
 request.httpMethod = "POST"
 request.httpBody = requestBody
 request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-let stream = try await client
-    .transport(feature: "habit-assistant")
-    .bytes(for: request)
+let response = try await transport.bytes(for: request)
 do {
-    for try await byte in stream.bytes {
+    for try await byte in response.bytes {
         consume(byte)
     }
-    stream.finish()
+    response.finish()
 } catch {
-    stream.cancel()
+    response.cancel()
     throw error
 }
 ```
 
-`rootKeychainAccessGroup` is required and must be the fully resolved private
-app-ID group that is first in the application's signed
-`keychain-access-groups` entitlement. If the app also carries extension-shared
-groups, pass all of them as `legacySharedKeychainAccessGroups` to both the
-configuration and App Attest provider. Latchway proves the signed default with
-a disposable sentinel and checks those explicit groups only at known root
-record coordinates. A stale shared-first root record throws
-`rootKeychainMigrationRequired`; the SDK never silently reads, migrates, or
-deletes it.
+Use the actual resolved first Keychain group in the signed root application.
+App ID prefixes can differ from Team IDs. Do not pass a build-setting expression
+such as `$(AppIdentifierPrefix)` at runtime.
 
-`client.send(_:feature:)` and `LatchwayFeatureTransport.bytes(for:)` perform at
-most one automatic retry and only after the stable `session_expired` or
-`dpop_nonce_required` pre-dispatch rejection. Before replay, the SDK requires
-the canonical seven-key problem document, registry
-type/title/status/detail/retryability, a response request ID matching the
-original request, and either no nonce for `session_expired` or exactly one
-printable-ASCII nonce for `dpop_nonce_required`. Duplicate JSON members, extra
-metadata, folded nonce headers, commas, whitespace, and non-ASCII nonce values
-all fail closed. It never replays an input stream or an ambiguous upstream
-failure. The built-in buffered transport rejects responses larger than 1 MiB.
-The streaming transport buffers only a first retry-candidate 401 problem body,
-with a 64 KiB limit; successful and post-retry response bytes remain native,
-incremental `URLSession.AsyncBytes`. Call `finish()` after EOF or `cancel()`
-when stopping early to release the request's private URL session.
+`firebaseProject` formats public issuer/audience metadata; it imports no Firebase
+SDK and fetches no token. Generic issuers use
+`LatchwaySuppliedIdentityConfiguration(providerID:issuer:audience:tenantID:)`.
+The gateway must be configured to verify that provider.
 
-The compiled [`Examples/BasicURLSession`](Examples/BasicURLSession) source is
-the complete Firebase + App Attest golden journey, including streamed
-Responses, diagnostic and response request IDs, quota, terminal revocation,
-and Firebase sign-out. For a server failure, use
-`problem.documentationURL` (or `problem.code.documentationURL`) to open the
-stable `https://docs.latchway.dev/errors/<hyphenated-code>` remediation page.
-The SDK accepts a server Problem only when both `type` and
-`documentation_url` match that canonical URL, without
-rendering problem detail.
-
-For apps with delegated extensions, no-argument
-`revokeCurrentInstallationFamily()` also retires every component prepared on a
-current or earlier launch. The SDK persists only validated public component
-coordinates in the root-private Keychain group; failed component erasures stay
-registered for retry, while credentials and keys remain in their isolated
-component groups.
-
-Lower-level caller-owned transports that validate a same-origin rejection may
-use `authorize(_:feature:nonce:)` for `dpop_nonce_required` and `refresh()` for
-`session_expired`, then replay at most once while preserving the request ID.
-The v1 refresh request contains only `refresh_token`. If the gateway requires
-identity reauthentication or attestation step-up, the SDK clears the old
-session and performs a new identity challenge and attested exchange.
-
-Independent `LatchwayClient` instances that use the same root Keychain
-namespace coordinate installation-key creation, establishment, refresh, and
-retirement across the current process. They re-read Keychain state while
-holding the shared mutation permit and reuse only the in-memory access session
-accepted by that exact configuration. Cancellation, failed establishment, and
-sign-out release the permit; retirement revisions invalidate sibling clients'
-cached sessions before another request can use them. Component clients apply
-the same rule per component service and access group.
-
-The React Native bridge configures `clientRuntime: .reactNativeIOS` and its own
-`clientSDKVersion`. The runtime atomically selects installation platform
-`react_native_ios` and SDK header `react-native`; ordinary Swift clients keep
-the `.iOS` and native package-version defaults.
-
-## Security behavior
-
-The SDK:
-
-- Uses a P-256 installation key backed by Secure Enclave when available and a
-  policy-approved Keychain fallback otherwise
-- Produces RFC 9449 DPoP proofs
-- Integrates Apple App Attest registration and assertions
-- Exchanges an existing application identity token for short-lived,
-  device-bound Latchway sessions
-- Authorizes arbitrary gateway `URLRequest` values and provides a hardened
-  ephemeral `URLSession`
-- Stores refresh state in a non-synchronizable, this-device-only Keychain item
-  and coordinates refresh through a Swift actor single flight
-- Exposes quota, installation-revocation, and redacted diagnostic APIs
-- Preserves the canonical `operationID` on `operation_indeterminate` failures
-  for audit reconciliation without rendering server detail in error descriptions
-- Rejects known upstream credential header and decoded query aliases—including
-  authorization, AI API-key, access-token, AWS signing, Google signing, and
-  cookie fields—before session establishment or request signing
-- Keeps Firebase support optional and outside the core target
-
-The package identity is **Latchway** and its audited minimum deployment target
-is iOS 15. Public APIs use current Swift strict-concurrency conventions. These
-source coordinates remain pre-release until the signed package and CocoaPods
-artifacts are published and verified by clean consumers.
-
-## Protocol ownership
-
-The Latchway core repository owns the client OpenAPI description, error
-registry, protocol manifest, canonical attestation binding, DPoP vectors, and
-compatibility rules. This SDK consumes a signed and checksummed contract bundle;
-it does not define an independent wire protocol.
-
-The exact core revision and bundle SHA-256 are recorded in `contract.lock`.
-The normative protocol manifest and shared DPoP and attestation-binding
-fixtures are copied into the conformance target and checked byte-for-byte by
-`scripts/check-contract.sh`. See
-[Architecture](docs/architecture.md) for dependency and trust boundaries.
-
-## Security model
-
-The SDK holds an installation private key and short-lived Latchway session
-state. It never receives an upstream AI-provider credential and does not replace
-the application's identity provider. Native hardware capabilities are reported
-accurately rather than silently upgraded or overstated.
-
-Review [Security Policy](SECURITY.md) before reporting a vulnerability.
-
-## Development and verification
-
-```bash
-scripts/verify-package.sh
-scripts/check-contract.sh ../latchway/api
-tuist generate --path Examples/AppAttestConformance --no-open
+```swift
+try await account.updateIdToken { try await yourAuth.currentIDToken() }
+try await account.logout() // Offline retirement shared by native and RN.
+await client.close()      // Releases this client only.
 ```
 
-`verify-package.sh` parses the manifest, builds every library in release mode,
-runs the suite in parallel, compiles a separate consumer package importing all
-public products, requires the exact five-subspec CocoaPods surface, and
-strictly lints every published subspec individually when CocoaPods is
-installed.
-The Foundation Models runtime suite and subspec require Xcode 27. These are
-local verification commands; automatic verification CI is currently disabled.
+Another surface can use `app.makeClient()` without signing in again.
+Application-auth restoration uses `app.restore`; it cannot reverse recorded
+logout. A new accepted login calls `signIn`. Expiry suspends protected work with
+`identityRefreshRequired` until a valid same-account update. Tokens stay in
+native memory only; the application must report external account/token changes.
 
-Maintainers dispatch `single-maintainer-release.yml` on `main` with a release
-version matching the SDK and podspec. It creates an annotated tag, source
-archive, portable SHA-256 checksum, CocoaPods publication, and GitHub release.
-The existing `single-maintainer-v1` environment supplies the CocoaPods token.
-The simple publication workflow does not add verification CI gates. Maintainers can run
-`scripts/release-preflight.sh vMAJOR.MINOR.PATCH`
-locally against an existing tag before pushing it.
+Read [supplied identity](Documentation/SuppliedIdentity.md) and
+[shared apps and extensions](Documentation/SharedNativeApps.md) for cancellation,
+opaque account handles, current component handoff and restart behavior.
 
-Pass the reproducible contract archive as the optional second argument to
-`check-contract.sh` to verify its SHA-256 against `contract.lock` as well as the
-extracted manifest and shared fixtures.
+For local device builds and TestFlight against the same gateway environment,
+see [App Attest development and distribution](docs/app-attest-environments.md).
 
-The physical-device runbook is in
-[`docs/real-device-conformance.md`](docs/real-device-conformance.md). Missing
-Apple signing credentials or a supported device blocks only that final gate;
-it never permits a simulated success claim.
+## Requirements and package boundaries
 
-Repository-local agent skill installations are developer tooling only. They are
-ignored, are not package inputs, and are not distributed.
+- Swift 6 strict concurrency and iOS 15 or newer.
+- Server 1.1.1 or later, contract 1.1.0 / wire 3, discovery
+  `supplied_identity_v1` and explicit required-attestation shared-caller policy.
+- Real App Attest requires a supported physical device and correctly signed
+  application capability/profile. Simulators are not attestation evidence.
 
-See [Contributing](CONTRIBUTING.md) and [Agent Instructions](AGENTS.md).
+Products are `Latchway`, `LatchwayAppAttest`, `LatchwayAppExtensions`,
+`LatchwaySwiftOpenAI`, `LatchwayFoundationModels` and `LatchwayTesting`.
+The optional `LatchwayFirebaseAuth` token-reader helper remains independent of
+Firebase's package graph; it is not a registered auth authority.
 
-## License
+SwiftPM is the canonical distribution; CocoaPods exposes corresponding
+`Latchway/Core`, `Latchway/AppAttest`, `Latchway/AppExtensions`,
+`Latchway/FirebaseAuth` and optional `Latchway/FoundationModels` subspecs.
+CocoaPods compiles them into module `Latchway`;
+SwiftPM keeps separate modules. The Foundation Models executor requires OS 27
+and its matching Xcode toolchain.
 
-Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+Use SwiftPM version 2.0.0 or CocoaPods `pod 'Latchway/AppAttest', '2.0.0'`.
+Pair embedded integrations with React Native 2.0.0. Keep one native implementation in
+an embedded RN app; adding an independent SPM copy beside the RN pod creates
+separate registries and is not supported shared-session setup.
+
+## Storage, logout and extensions
+
+Current source starts in account-scoped storage. It does not adopt previous SDK
+sessions or invoke custom migration callbacks. Deny-only extension safety markers
+remain checked; they never adopt old credentials. Existing
+published tags are not rewritten. This is a fresh model, not an automatic
+upgrade/reset of an application's existing Keychain.
+
+Root keys, refresh state and App Attest state remain in the explicitly signed
+root-private Keychain group. Current component groups form an immutable,
+explicit allowlist. Each extension receives its own key/grant/session and a
+non-secret account handoff; it never receives root credentials.
+
+Account logout persists retirement and fences native/RN requests, asynchronous
+identity acquisition and response bytes. Cleanup failure remains blocked and
+retryable. Component revision checks also prevent a delayed extension process
+from reviving retired state. Closing one client releases that client only.
+Logout does not call Firebase sign-out, reset per-user quota or revoke another
+device. Previously dispatched requests may still be billed.
+
+iOS app extensions remain delegated-only: they cannot generate App Attest keys,
+and the containing app must not attest on their behalf. See
+[components and app extensions](docs/components-and-app-extensions.md).
+
+## Transport and security
+
+The SDK signs ordinary gateway `URLRequest` values. Feature-bound transport
+rejects foreign origins, redirects, provider-secret headers/query parameters
+and mismatched feature routes. Access/refresh tokens, evidence and private keys
+are never exported as application diagnostics.
+
+Buffered responses are limited to 1 MiB. Streaming remains incremental and
+cancellable; call `finish()` after EOF or `cancel()` when stopping. Native
+transport retries at most once only for a canonical rejection proving the
+request was rejected before upstream dispatch. Duplicate/malformed problems,
+ambiguous nonce metadata, partial responses and streamed request bodies are
+not replayed. Classification of a retry-candidate problem is capped at 64 KiB.
+
+Keep safe request IDs and canonical error documentation links for diagnostics.
+An `operation_indeterminate` operation ID requires reconciliation, not blind
+retry. See [architecture](docs/architecture.md) and [SECURITY.md](SECURITY.md).
+
+## Examples and verification
+
+- [Basic URLSession](Examples/BasicURLSession/README.md): supplied identity,
+  App Attest and streamed Responses using application-owned auth.
+- [LatchwayChat](Examples/LatchwayChat/README.md): temporary chat with native
+  URLSession or Foundation Models, Firebase login and weather tools.
+- [Foundation Models](Documentation/FoundationModels.md): executor requests,
+  schema/tool translation and backend-dependent capabilities.
+- [App extensions](Examples/AppExtensionComponents/README.md): current
+  account-scoped delegated component scaffold.
+
+```sh
+scripts/verify-package.sh
+scripts/check-contract.sh ../latchway/api
+```
+
+Run matching package, native consumer and contract checks for source changes.
+Physical App Attest and extension checks retain their separate
+[device runbook](docs/real-device-conformance.md). Historical release/device
+receipts do not automatically validate this cleanup. Release procedures are in
+[releasing](docs/releasing.md); automatic verification CI remains a separate
+repository policy.
+
+Apache License 2.0. See [LICENSE](LICENSE), [NOTICE](NOTICE) and
+[CONTRIBUTING.md](CONTRIBUTING.md).

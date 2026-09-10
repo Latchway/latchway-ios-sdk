@@ -2,7 +2,7 @@ import Foundation
 
 /// Keeps at most eight inactive/current account key scopes. An eviction intent
 /// is committed before keys are erased and retried after interruption. It never
-/// contains user IDs or credentials and never adopts a legacy key namespace.
+/// contains user IDs or credentials; every entry is an account-scoped namespace.
 actor LatchwayAccountKeyRetention {
     private struct Index: Codable {
         var version = 1

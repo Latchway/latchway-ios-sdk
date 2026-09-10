@@ -113,14 +113,14 @@ final class ComponentRegistryTests: XCTestCase {
         let store = ComponentRegistryMemoryStore()
         let registry = LatchwayKeychainComponentRegistry(
             store: store,
-            rootKeychainPreflight: { throw LatchwayError.rootKeychainMigrationRequired }
+            rootKeychainPreflight: { throw LatchwayError.invalidConfiguration("not the signed default group") }
         )
 
         do {
             try await registry.register(component())
-            XCTFail("Expected migration rejection")
+            XCTFail("Expected root Keychain preflight rejection")
         } catch let error as LatchwayError {
-            XCTAssertEqual(error, .rootKeychainMigrationRequired)
+            XCTAssertEqual(error, .invalidConfiguration("not the signed default group"))
         }
         let operationCount = await store.operationCount()
         XCTAssertEqual(operationCount, 0)
@@ -136,20 +136,20 @@ final class ComponentRegistryTests: XCTestCase {
             accessGroup: "TEAM123456.com.example.share",
             features: ["habit_summary"]
         )
-        let legacy = component(
-            definitionID: "legacy_intent",
+        let intent = component(
+            definitionID: "current_intent",
             kind: "app_intent_extension",
-            accessGroup: "TEAM123456.com.example.legacy-intent",
+            accessGroup: "TEAM123456.com.example.current-intent",
             features: ["habit_assistant"]
         )
         try await registry.register(widget)
         try await registry.register(share)
+        try await registry.register(intent)
         let recorder = ComponentRetirementRecorder(failingDefinitionIDs: [share.definitionID])
 
         do {
             try await LatchwayComponentFamilyRetirement.retireAll(
                 registry: registry,
-                including: [widget, legacy],
                 retire: { component in try await recorder.retire(component) }
             )
             XCTFail("Expected one cleanup failure")
@@ -160,7 +160,7 @@ final class ComponentRegistryTests: XCTestCase {
         let attempts = await recorder.attempts()
         XCTAssertEqual(
             Set(attempts),
-            Set([widget.definitionID, share.definitionID, legacy.definitionID])
+            Set([widget.definitionID, share.definitionID, intent.definitionID])
         )
         let remaining = try await registry.components()
         XCTAssertEqual(remaining, [share])
@@ -168,7 +168,6 @@ final class ComponentRegistryTests: XCTestCase {
         await recorder.allowAll()
         try await LatchwayComponentFamilyRetirement.retireAll(
             registry: registry,
-            including: [],
             retire: { component in try await recorder.retire(component) }
         )
         let finalComponents = try await registry.components()

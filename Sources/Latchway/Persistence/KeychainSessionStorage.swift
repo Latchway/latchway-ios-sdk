@@ -7,32 +7,6 @@ public actor LatchwayKeychainSessionStorage: LatchwaySessionStorage {
     private let decoder = JSONDecoder()
     private var rootKeychainPreflightComplete = false
 
-    public init(
-        applicationID: String,
-        environment: String,
-        rootKeychainAccessGroup: String,
-        legacySharedKeychainAccessGroups: [String] = [],
-        clientRuntime: LatchwayClientRuntime = .iOS
-    ) {
-        let service = LatchwayKeychainNamespace.service(
-            applicationID: applicationID,
-            environment: environment,
-            clientRuntime: clientRuntime
-        )
-        self.store = LatchwayKeychainStore(
-            service: service,
-            accessGroup: rootKeychainAccessGroup
-        )
-        self.rootKeychainPreflight = LatchwayRootKeychainPreflight.verifier(
-            rootKeychainAccessGroup: rootKeychainAccessGroup,
-            legacySharedKeychainAccessGroups: legacySharedKeychainAccessGroups,
-            service: service,
-            accounts: ["session"]
-        )
-        encoder.dateEncodingStrategy = .iso8601
-        decoder.dateDecodingStrategy = .iso8601
-    }
-
     init(
         store: any LatchwaySecureDataStoring,
         rootKeychainPreflight: @escaping @Sendable () throws -> Void

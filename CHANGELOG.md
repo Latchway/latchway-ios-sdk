@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format follows Keep a Changelog, and releases will follow Semantic
 Versioning once package publication begins.
 
+## [2.0.0] — 2026-09-10
+
+### Attestation development
+
+- Document server-owned App Attest `development` / `production` / `any`
+  acceptance without a new client environment flag or bypass. Add regression
+  coverage for accepted-key replacement on Apple's `invalidKey`, persistence
+  after acceptance, and retaining valid keys after an unacknowledged assertion.
+  These are fixture tests, not physical local-build/TestFlight evidence.
+
+### Breaking changes
+
+- Make supplied-identity shared apps/accounts the only root client API. Remove
+  old constructors, identity authorities, activation/transfer APIs, legacy
+  Keychain inventories and adoption callbacks. Retain deny-only safety guards.
+- Shared native accounts continue using wire protocol 3. Keep current account-generation isolation,
+  offline logout, root-private storage, App Attest and component CAS retirement.
+- Open delegated extensions using an explicit current-account handoff, not a
+  root credential configuration. Retain unavailable direct-attestation guards; remove
+  explicit legacy-inventory family-revocation APIs.
+- Update current examples and documentation. The major version marks this source-breaking cleanup;
+  prior published versions and historical release records are unchanged.
+  No existing credentials are adopted or migrated. Deny-only extension markers
+  remain checked as an intentional safety guard.
+
 ## [1.3.0] — 2026-09-09
 
 ### Added

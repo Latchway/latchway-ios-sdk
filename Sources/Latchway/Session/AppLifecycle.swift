@@ -5,7 +5,6 @@ import Foundation
 public enum LatchwayLifecycleError: Error, Sendable, Equatable {
     case appNotConfigured
     case configurationConflict
-    case identityAuthorityRequired
     case identityUnavailable
     case identityRefreshRequired
     case identityVerificationUnsupported
@@ -17,7 +16,7 @@ public enum LatchwayLifecycleError: Error, Sendable, Equatable {
 
 /// An atomic snapshot supplied by the application's authentication owner.
 /// The binding is an isolation hint; only the gateway authenticates the token.
-public struct LatchwayIdentitySnapshot: Sendable, CustomStringConvertible, CustomDebugStringConvertible {
+struct LatchwayIdentitySnapshot: Sendable, CustomStringConvertible, CustomDebugStringConvertible {
     public let issuer: String
     public let tenant: String?
     public let subject: String
@@ -41,25 +40,15 @@ public struct LatchwayIdentitySnapshot: Sendable, CustomStringConvertible, Custo
     }
 }
 
-public protocol LatchwayIdentityAuthority: Sendable {
-    /// Return nil when signed out. Read the user before and after token fetching;
-    /// never combine the UID of one user with another user's token.
+protocol LatchwayIdentityState: Sendable {
     func identitySnapshot() async throws -> LatchwayIdentitySnapshot?
-}
-
-public struct LatchwayClosureIdentityAuthority: LatchwayIdentityAuthority {
-    private let operation: @Sendable () async throws -> LatchwayIdentitySnapshot?
-    public init(_ operation: @escaping @Sendable () async throws -> LatchwayIdentitySnapshot?) {
-        self.operation = operation
-    }
-    public func identitySnapshot() async throws -> LatchwayIdentitySnapshot? { try await operation() }
+    var freshness: LatchwayIdentityFreshnessFence { get }
 }
 
 /// Public, non-secret lifecycle state suitable for a React Native bridge.
 public struct LatchwayAppSnapshot: Sendable, Equatable, Codable {
     public enum State: String, Sendable, Codable { case inactive, active, refreshRequired, retiring, loggedOut }
     public let appInstanceID: UUID
-    public let authorityInstanceID: UUID
     public let generationID: UUID?
     public let revision: UInt64
     public let state: State
@@ -311,13 +300,13 @@ actor LatchwayAccountGeneration: LatchwayIdentityTokenProvider {
     private let account: String
     private let issuer: String
     private let tenant: String?
-    private let authority: any LatchwayIdentityAuthority
+    private let identityState: any LatchwayIdentityState
     private let journal: LatchwayAppSessionJournal
     private let cleanup: @Sendable () async throws -> Void
     private let onIdentityLoss: (@Sendable () async -> Void)?
     private var retired = false
     private nonisolated let readFence = LatchwayLifecycleReadFence()
-    private nonisolated let freshnessFence: LatchwayIdentityFreshnessFence?
+    private nonisolated let freshnessFence: LatchwayIdentityFreshnessFence
     private var completed = false
     private var logoutTask: Task<Void, Never>?
     private struct LogoutWaiter {
@@ -334,7 +323,7 @@ actor LatchwayAccountGeneration: LatchwayIdentityTokenProvider {
     private var clientCleanups: [ClientCleanup] = []
 
     init(entry: LatchwayAppSessionJournal.Entry, scope: String, issuer: String, tenant: String?,
-         authority: any LatchwayIdentityAuthority, journal: LatchwayAppSessionJournal,
+         identityState: any LatchwayIdentityState, journal: LatchwayAppSessionJournal,
          accountBinding: String? = nil,
          cleanupTimeoutNanoseconds: UInt64 = 30_000_000_000,
          onIdentityLoss: (@Sendable () async -> Void)? = nil,
@@ -344,8 +333,8 @@ actor LatchwayAccountGeneration: LatchwayIdentityTokenProvider {
         account = accountBinding ?? entry.account
         self.issuer = issuer
         self.tenant = tenant
-        self.authority = authority
-        freshnessFence = (authority as? LatchwaySuppliedIdentityAuthority)?.freshness
+        self.identityState = identityState
+        freshnessFence = identityState.freshness
         self.journal = journal
         self.cleanup = cleanup
         self.onIdentityLoss = onIdentityLoss
@@ -360,7 +349,7 @@ actor LatchwayAccountGeneration: LatchwayIdentityTokenProvider {
         guard !retired else { throw LatchwayLifecycleError.loggedOut }
     }
 
-    nonisolated func checkLive() throws { try readFence.check(); try freshnessFence?.check() }
+    nonisolated func checkLive() throws { try readFence.check(); try freshnessFence.check() }
     /// App-level intent must fence buffered reads before its first actor hop.
     nonisolated func fenceSignOut() { readFence.retire(.loggedOut) }
 
@@ -377,7 +366,7 @@ actor LatchwayAccountGeneration: LatchwayIdentityTokenProvider {
     func identityToken() async throws -> String {
         try await check()
         let current: LatchwayIdentitySnapshot?
-        do { current = try await authority.identitySnapshot() }
+        do { current = try await identityState.identitySnapshot() }
         catch let error as LatchwayLifecycleError where error == .accountChanged || error == .identityUnavailable {
             try await identityWasLost()
             throw error

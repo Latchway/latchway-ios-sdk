@@ -4,6 +4,24 @@ import LatchwayTesting
 import XCTest
 
 final class ClientSessionTests: XCTestCase {
+    func testCurrentProtocolRejectsMissingFamilyComponentAndTrustProvenance() async throws {
+        for omitted in ["installation_family", "component", "trust.source"] {
+            let fixture = try await makeFixture()
+            await fixture.server.omitRootMetadata(omitted)
+            var request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
+            request.httpMethod = "POST"
+            do {
+                try await fixture.client.authorize(&request, feature: "habit-assistant")
+                XCTFail("Current protocol accepted incomplete root provenance")
+            } catch let error as LatchwayError {
+                XCTAssertEqual(error, .invalidServerResponse)
+            }
+            XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+            let persisted = try await fixture.storage.load()
+            XCTAssertNil(persisted)
+        }
+    }
+
     func testSuppliedIdentityReestablishesExpiredPossessionDespiteCachedUsableAccess() async throws {
         let fixture = try await makeSharedFixture(sharedApp: true)
         var request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
@@ -249,16 +267,16 @@ final class ClientSessionTests: XCTestCase {
 
     func testRootKeychainPreflightFailsBeforeIdentityAttestationOrTransport() async throws {
         let fixture = try await makeFixture(rootKeychainPreflight: {
-            throw LatchwayError.rootKeychainMigrationRequired
+            throw LatchwayError.invalidConfiguration("not the signed default group")
         })
         var request = URLRequest(url: URL(string: "https://gateway.example.test/v1/responses")!)
         request.httpMethod = "POST"
 
         do {
             try await fixture.client.authorize(&request, feature: "habit-assistant")
-            XCTFail("Expected root Keychain migration failure")
+            XCTFail("Expected private root Keychain preflight failure")
         } catch let error as LatchwayError {
-            XCTAssertEqual(error, .rootKeychainMigrationRequired)
+            XCTAssertEqual(error, .invalidConfiguration("not the signed default group"))
         }
 
         let diagnostics = await fixture.client.diagnostics()
@@ -269,7 +287,7 @@ final class ClientSessionTests: XCTestCase {
         XCTAssertEqual(counts.exchange, 0)
         XCTAssertEqual(identityCount, 0)
         XCTAssertEqual(attestationCount, 0)
-        XCTAssertEqual(diagnostics.lastErrorCode, "root_keychain_migration_required")
+        XCTAssertEqual(diagnostics.lastErrorCode, "configuration_invalid")
         XCTAssertEqual(diagnostics.keyStorage, .unavailable)
         XCTAssertEqual(diagnostics.attestation.support, .unknown)
         XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
@@ -1331,7 +1349,7 @@ final class ClientSessionTests: XCTestCase {
         XCTAssertEqual(StreamingRetryURLProtocol.snapshot().stopCount, 1)
     }
 
-    func testReactNativeRuntimeUsesPairedSDKAndPlatformIdentifiers() async throws {
+    func testIsolatedReactNativeFixtureRetainsPairedRuntimeAttribution() async throws {
         let fixture = try await makeFixture(
             clientRuntime: .reactNativeIOS,
             clientSDKVersion: "0.1.0-dev.0"
@@ -1346,6 +1364,7 @@ final class ClientSessionTests: XCTestCase {
         let challengeSDKVersions = await fixture.server.challengeSDKVersions()
         let diagnostics = await fixture.client.diagnostics()
         XCTAssertEqual(request.value(forHTTPHeaderField: "X-Latchway-SDK"), "react-native")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "X-Latchway-Caller"), "react-native")
         XCTAssertEqual(request.value(forHTTPHeaderField: "X-Latchway-SDK-Version"), "0.1.0-dev.0")
         XCTAssertEqual(challengeSDKIdentifiers, ["react-native"])
         XCTAssertEqual(challengePlatforms, ["react_native_ios"])
@@ -1521,7 +1540,7 @@ final class ClientSessionTests: XCTestCase {
         let entry = try await journal.activate(account: account)
         let generation = LatchwayAccountGeneration(entry: entry, scope: UUID().uuidString,
             issuer: "fixture", tenant: nil,
-            authority: LatchwayClosureIdentityAuthority {
+            identityState: TestIdentityState {
                 .init(issuer: "fixture", subject: "A", token: try await identity.identityToken())
             }, journal: journal, cleanup: {})
         let namespace = "shared-root-\(UUID().uuidString)"
@@ -1717,6 +1736,8 @@ private actor CountingIdentityProvider: LatchwayIdentityTokenProvider {
 }
 
 private actor SessionServerTransport: LatchwayHTTPTransport {
+    private var omittedRootMetadata: String?
+    func omitRootMetadata(_ field: String) { omittedRootMetadata = field }
     private let thumbprint: String
     private let now: Date
     private let requireNonce: Bool
@@ -1866,9 +1887,11 @@ private actor SessionServerTransport: LatchwayHTTPTransport {
             return json(status: 200, object: [
                 "request_id": "request-12345678",
                 "server_version": "1.0.0",
-                "contract_version": "1.0.0",
-                "protocol_version": 2,
+                "contract_version": "1.1.0",
+                "protocol_version": 3,
                 "installation": installation,
+            "installation_family": family,
+            "component": rootComponent,
                 "session": ["expires_at": iso(now.addingTimeInterval(600)), "refresh_available": true],
                 // Deliberately stronger than the accepted grant. Diagnostics
                 // must report the trust bound to the active session instead.
@@ -1957,23 +1980,46 @@ private actor SessionServerTransport: LatchwayHTTPTransport {
     func revokedComponentIDs() -> [String] { revokedComponents }
 
     private func grant(status: Int, sequence: Int) -> LatchwayHTTPResponse {
-        json(status: status, object: [
+        var object: [String: Any] = [
             "access_token": String(repeating: "a", count: 80) + String(sequence),
             "token_type": "DPoP",
             "expires_in": 600,
             "refresh_token": String(repeating: "r", count: 48) + String(sequence),
             "refresh_expires_in": 86_400,
             "installation": installation,
+            "installation_family": family,
+            "component": rootComponent,
             "trust": trust,
-        ])
+        ]
+        if omittedRootMetadata == "trust.source" {
+            var incompleteTrust = trust
+            incompleteTrust.removeValue(forKey: "source")
+            object["trust"] = incompleteTrust
+        } else if let omittedRootMetadata {
+            object.removeValue(forKey: omittedRootMetadata)
+        }
+        return json(status: status, object: object)
     }
 
     private var installation: [String: Any] {
         ["id": "ins_01J00000000000000000000000", "platform": platform, "dpop_jkt": thumbprint, "status": "active"]
     }
 
+    private var family: [String: Any] { ["id": "fam_01J00000000000000000000000", "status": "active"] }
+    private var rootComponent: [String: Any] {
+        [
+            "id": "cmp_01J00000000000000000000000", "definition_id": "main", "kind": "main_app",
+            "platform": platform, "is_root": true, "dpop_jkt": thumbprint, "status": "active",
+            "granted_features": ["habit-assistant"],
+        ]
+    }
+
     private var trust: [String: Any] {
-        ["provider": "app_attest", "level": "app_verified", "verified_at": iso(now), "expires_at": iso(now.addingTimeInterval(86_400))]
+
+        [
+            "provider": "app_attest", "level": "app_verified", "source": "direct_attested", "verified_at": iso(now),
+            "expires_at": iso(now.addingTimeInterval(86_400)),
+        ]
     }
 
     private func problem(

@@ -1,76 +1,37 @@
 import Foundation
 
-public struct LatchwayIdentityAuthorityReference: Sendable, Equatable {
-    public let name: String
-    public let issuer: String
-    public let tenant: String?
-    public init(name: String, issuer: String, tenant: String? = nil) {
-        self.name = name
-        self.issuer = issuer
-        self.tenant = tenant
-    }
-}
-
-/// Native-only cleanup for legacy custom persistence that the SDK cannot
-/// inventory. Use a stable ID and an idempotent, offline operation. Throw on
-/// incomplete cleanup; the migration journal remains pending and activation is
-/// blocked. Do not call Latchway authorization from this operation.
-public struct LatchwayLegacyMigration: Sendable {
-    public let id: String
-    let cleanup: @Sendable () async throws -> Void
-    public init(id: String, cleanup: @escaping @Sendable () async throws -> Void) {
-        self.id = id
-        self.cleanup = cleanup
-    }
-}
-
 /// Omitted settings inherit an existing registration. On first registration,
-/// rootKeychainAccessGroup, identity and an authority implementation are required.
+/// rootKeychainAccessGroup and suppliedIdentity are required.
 public struct LatchwayAppOptions: Sendable {
     public let baseURL: URL
     public let applicationID: String
     public let environment: String
     public var rootKeychainAccessGroup: String?
-    public var identity: LatchwayIdentityAuthorityReference?
     public var suppliedIdentity: LatchwaySuppliedIdentityConfiguration?
     public var identityProvider: String?
     public var attestationPolicyID: String?
     public var softwareKeyFallbackPolicy: LatchwaySoftwareKeyFallbackPolicy?
     public var exposeToReactNative: Bool?
     public var componentKeychainAccessGroups: [String]?
-    public var legacySharedKeychainAccessGroups: [String]?
-    public var legacyComponents: [LatchwayComponentConfiguration]?
-    public var legacyAttestationNamespaces: [String]?
-    public var legacyMigration: LatchwayLegacyMigration?
 
     public init(baseURL: URL, applicationID: String, environment: String,
                 rootKeychainAccessGroup: String? = nil,
-                identity: LatchwayIdentityAuthorityReference? = nil,
                 suppliedIdentity: LatchwaySuppliedIdentityConfiguration? = nil,
                 identityProvider: String? = nil,
                 attestationPolicyID: String? = nil,
                 softwareKeyFallbackPolicy: LatchwaySoftwareKeyFallbackPolicy? = nil,
                 exposeToReactNative: Bool? = nil,
-                componentKeychainAccessGroups: [String]? = nil,
-                legacySharedKeychainAccessGroups: [String]? = nil,
-                legacyComponents: [LatchwayComponentConfiguration]? = nil,
-                legacyAttestationNamespaces: [String]? = nil,
-                legacyMigration: LatchwayLegacyMigration? = nil) {
+                componentKeychainAccessGroups: [String]? = nil) {
         self.baseURL = baseURL
         self.applicationID = applicationID
         self.environment = environment
         self.rootKeychainAccessGroup = rootKeychainAccessGroup
-        self.identity = identity
         self.suppliedIdentity = suppliedIdentity
         self.identityProvider = identityProvider
         self.attestationPolicyID = attestationPolicyID
         self.softwareKeyFallbackPolicy = softwareKeyFallbackPolicy
         self.exposeToReactNative = exposeToReactNative
         self.componentKeychainAccessGroups = componentKeychainAccessGroups
-        self.legacySharedKeychainAccessGroups = legacySharedKeychainAccessGroups
-        self.legacyComponents = legacyComponents
-        self.legacyAttestationNamespaces = legacyAttestationNamespaces
-        self.legacyMigration = legacyMigration
     }
 }
 
@@ -89,41 +50,30 @@ public actor LatchwayAppRegistry {
     public func configure(
         _ options: LatchwayAppOptions,
         name: String = defaultName,
-        authority: (any LatchwayIdentityAuthority)? = nil,
         attestationFactory: LatchwayAccountAttestationFactory? = nil,
-        authorityInstanceID: UUID? = nil,
         fromReactNative: Bool = false
     ) throws -> LatchwayApp {
         let resolved = try LatchwayAppRegistration(options)
         guard !name.isEmpty, name.utf8.count <= 128 else { throw LatchwayLifecycleError.configurationConflict }
         if let existing = names[name] {
-            try existing.registration.compare(resolved, hasAuthority: authority != nil, fromReactNative: fromReactNative)
+            try existing.registration.compare(resolved, fromReactNative: fromReactNative)
             return existing
         }
         if let existing = scopes[resolved.scope] {
-            try existing.registration.compare(resolved, hasAuthority: authority != nil, fromReactNative: fromReactNative)
+            try existing.registration.compare(resolved, fromReactNative: fromReactNative)
             names[name] = existing
             return existing
         }
-        guard let identity = resolved.identity, !identity.name.isEmpty, !identity.issuer.isEmpty,
-              let attestationFactory, let root = resolved.rootGroup else {
-            throw LatchwayLifecycleError.identityAuthorityRequired
-        }
-        let supplied = resolved.suppliedIdentity.map { _ in LatchwaySuppliedIdentityAuthority() }
-        let owner: (any LatchwayIdentityAuthority)?
-        if let supplied { owner = supplied }
-        else { owner = authority }
-        guard !(supplied != nil && authority != nil), let owner else {
-            throw LatchwayLifecycleError.identityAuthorityRequired
+        guard resolved.suppliedIdentity != nil, let attestationFactory, let root = resolved.rootGroup else {
+            throw LatchwayLifecycleError.configurationConflict
         }
         if fromReactNative, resolved.expose == false { throw LatchwayLifecycleError.configurationConflict }
-        try LatchwayRootKeychainPreflight.verifySignedDefaultAccessGroup(root,
-            legacySharedKeychainAccessGroups: resolved.legacyGroups ?? [])
+        try LatchwayRootKeychainPreflight.verifySignedDefaultAccessGroup(root)
         try LatchwayRootKeychainPreflight.validateAccessGroups(rootKeychainAccessGroup: root,
-            legacySharedKeychainAccessGroups: resolved.componentGroups ?? [])
+            componentKeychainAccessGroups: resolved.componentGroups ?? [])
         let registration = resolved.effective()
-        let app = try LatchwayApp(registration: registration, authority: owner,
-                              attestationFactory: attestationFactory, authorityInstanceID: authorityInstanceID ?? UUID())
+        let app = try LatchwayApp(registration: registration,
+                              attestationFactory: attestationFactory)
         scopes[registration.scope] = app
         names[name] = app
         return app
@@ -136,24 +86,6 @@ public actor LatchwayAppRegistry {
         }
         return app
     }
-
-    func requireLegacyScopeUnregistered(_ configuration: LatchwayConfiguration) throws {
-        let url = try LatchwayAppIdentity.canonicalURL(configuration.baseURL)
-        let scope = LatchwayAppIdentity.digest([url.absoluteString, configuration.applicationID, configuration.environment])
-        guard scopes[scope] == nil else { throw LatchwayLifecycleError.configurationConflict }
-        guard configuration.checksPersistentLegacyFence else { return }
-        let records = LatchwayKeychainRecords(service: "dev.latchway.shared.v3.\(scope)",
-            accessGroup: configuration.rootKeychainAccessGroup)
-        if try records.read(account: "legacy-retirement-v3") != nil {
-            throw LatchwayLifecycleError.configurationConflict
-        }
-        let legacy = LatchwayKeychainRecords(service: LatchwayKeychainNamespace.service(
-            applicationID: configuration.applicationID, environment: configuration.environment,
-            clientRuntime: configuration.clientRuntime), accessGroup: configuration.rootKeychainAccessGroup)
-        if try legacy.read(account: "shared-native-retirement-v3") != nil {
-            throw LatchwayLifecycleError.configurationConflict
-        }
-    }
 }
 
 struct LatchwayAppRegistration: Sendable {
@@ -161,18 +93,12 @@ struct LatchwayAppRegistration: Sendable {
     let applicationID: String
     let environment: String
     var rootGroup: String?
-    let identity: LatchwayIdentityAuthorityReference?
     let suppliedIdentity: LatchwaySuppliedIdentityConfiguration?
     var identityProvider: String?
     var attestationPolicyID: String?
     var fallback: LatchwaySoftwareKeyFallbackPolicy?
     var expose: Bool?
     var componentGroups: [String]?
-    var legacyGroups: [String]?
-    var legacyComponents: [LatchwayComponentConfiguration]?
-    var legacyAttestationNamespaces: [String]?
-    var legacyMigration: LatchwayLegacyMigration?
-    var legacyInventoryDeclared = false
     var scope: String { LatchwayAppIdentity.digest([baseURL.absoluteString, applicationID, environment]) }
 
     init(_ options: LatchwayAppOptions) throws {
@@ -185,32 +111,16 @@ struct LatchwayAppRegistration: Sendable {
         rootGroup = options.rootKeychainAccessGroup
         suppliedIdentity = options.suppliedIdentity
         try suppliedIdentity?.validate()
-        guard options.identity == nil || suppliedIdentity == nil,
-              options.identityProvider == nil || suppliedIdentity == nil || options.identityProvider == suppliedIdentity?.providerID else {
+        guard options.identityProvider == nil || suppliedIdentity == nil || options.identityProvider == suppliedIdentity?.providerID else {
             throw LatchwayLifecycleError.configurationConflict
         }
-        identity = suppliedIdentity?.reference ?? options.identity
         identityProvider = options.identityProvider ?? suppliedIdentity?.providerID
         attestationPolicyID = options.attestationPolicyID
         fallback = options.softwareKeyFallbackPolicy
         expose = options.exposeToReactNative
         componentGroups = options.componentKeychainAccessGroups?.sorted()
-        legacyGroups = options.legacySharedKeychainAccessGroups?.sorted()
-        legacyComponents = options.legacyComponents
-        legacyInventoryDeclared = options.legacyComponents != nil || options.legacyMigration != nil
-        legacyAttestationNamespaces = options.legacyAttestationNamespaces?.sorted()
-        legacyMigration = options.legacyMigration
-        guard (legacyGroups?.count ?? 0) <= 32, (componentGroups?.count ?? 0) <= 256,
-              (legacyComponents?.count ?? 0) <= 256,
-              (legacyAttestationNamespaces?.count ?? 0) <= 128,
-              legacyAttestationNamespaces?.allSatisfy({ !$0.isEmpty && $0.utf8.count <= 255 &&
-                  $0.range(of: "^[A-Za-z0-9._-]+$", options: .regularExpression) != nil }) ?? true
-        else { throw LatchwayLifecycleError.configurationConflict }
-        try legacyComponents?.forEach { try $0.validateForContainingApplication() }
-        if let legacyMigration {
-            guard !legacyMigration.id.isEmpty, legacyMigration.id.utf8.count <= 128 else {
-                throw LatchwayLifecycleError.configurationConflict
-            }
+        guard (componentGroups?.count ?? 0) <= 256 else {
+            throw LatchwayLifecycleError.configurationConflict
         }
     }
 
@@ -221,62 +131,41 @@ struct LatchwayAppRegistration: Sendable {
         copy.fallback = fallback ?? .disallow
         copy.expose = expose ?? true
         copy.componentGroups = componentGroups ?? []
-        copy.legacyGroups = legacyGroups ?? []
-        copy.legacyComponents = legacyComponents ?? []
-        copy.legacyAttestationNamespaces = legacyAttestationNamespaces ?? []
         return copy
     }
 
-    func compare(_ supplied: Self, hasAuthority: Bool, fromReactNative: Bool) throws {
+    func compare(_ supplied: Self, fromReactNative: Bool) throws {
         guard scope == supplied.scope,
               supplied.rootGroup == nil || supplied.rootGroup == rootGroup,
-              supplied.identity == nil || supplied.identity == identity,
               supplied.suppliedIdentity == nil || supplied.suppliedIdentity == suppliedIdentity,
-              supplied.identity == nil || (supplied.suppliedIdentity != nil) == (suppliedIdentity != nil),
-              !hasAuthority || suppliedIdentity == nil,
-              !hasAuthority || supplied.identity == identity,
               supplied.identityProvider == nil || supplied.identityProvider == identityProvider,
               supplied.attestationPolicyID == nil || supplied.attestationPolicyID == attestationPolicyID,
               supplied.fallback == nil || supplied.fallback == fallback,
               supplied.expose == nil || supplied.expose == expose,
               supplied.componentGroups == nil || supplied.componentGroups == componentGroups,
-              supplied.legacyGroups == nil || supplied.legacyGroups == legacyGroups,
-              supplied.legacyComponents == nil || Set(supplied.legacyComponents!) == Set(legacyComponents ?? []),
-              supplied.legacyAttestationNamespaces == nil || supplied.legacyAttestationNamespaces == legacyAttestationNamespaces,
-              supplied.legacyMigration == nil || supplied.legacyMigration?.id == legacyMigration?.id,
-              !supplied.legacyInventoryDeclared || legacyInventoryDeclared,
               !fromReactNative || expose == true else {
             throw LatchwayLifecycleError.configurationConflict
         }
-        // A redundant implementation accompanying the same explicit authority
-        // reference is deliberately unused. Never replace the registered owner.
     }
 
-    func requireLegacyInventory(hasUnboundRoot: Bool, hasRegistry: Bool) throws {
-        guard !hasUnboundRoot || hasRegistry || legacyInventoryDeclared else {
-            throw LatchwayError.rootKeychainMigrationRequired
-        }
-    }
 }
 
 /// Process-wide app backend. Configuration never activates an account. Native
 /// and React Native clients are leases on its account-bound session generation.
 public actor LatchwayApp {
     public nonisolated let instanceID = UUID()
-    public private(set) var authorityInstanceID: UUID
     nonisolated let registration: LatchwayAppRegistration
     public nonisolated var baseURL: URL { registration.baseURL }
     public nonisolated var applicationID: String { registration.applicationID }
     public nonisolated var environment: String { registration.environment }
-    public nonisolated var identityMode: String { registration.suppliedIdentity == nil ? "authority" : "supplied" }
+    public nonisolated var identityMode: String { "supplied" }
     /// The native owner's approved component groups, not root credentials or
     /// inferred JS defaults. Actual entitlement access is enforced by Keychain.
     public nonisolated var componentKeychainAccessGroups: [String] { registration.componentGroups ?? [] }
-    private var authority: any LatchwayIdentityAuthority
-    private var transferringAuthority = false
+    private let identityState = LatchwaySuppliedIdentityState()
     private let attestationFactory: LatchwayAccountAttestationFactory
     private let journal: LatchwayAppSessionJournal
-    private let migrationRecords: LatchwayKeychainRecords
+    private let sharedRecords: LatchwayKeychainRecords
     private let keyRetention: LatchwayAccountKeyRetention
     private var generation: LatchwayAccountGeneration?
     private var persistedGenerationID: UUID?
@@ -284,7 +173,6 @@ public actor LatchwayApp {
     private var attestation: (any LatchwayAttestationProvider)?
     private var revision: UInt64 = 0
     private var state: LatchwayAppSnapshot.State = .inactive
-    private var activationTask: Task<UUID, Error>?
     private var activationEpoch: UUID?
     private var signOutTask: Task<Void, Error>?
     private var observers: [UUID: AsyncStream<LatchwayAppSnapshot>.Continuation] = [:]
@@ -300,7 +188,6 @@ public actor LatchwayApp {
     private var identityBindingID: UUID?
     private var identityIntentEpoch = UUID()
     private var verifiedGenerationID: UUID?
-    private let migrationOverride: (@Sendable () async throws -> Void)?
     private let accountPreparationOverride: (@Sendable (String) async throws -> Void)?
     private let identityVerificationOverride: (@Sendable (String) async throws -> LatchwayVerifiedIdentityWire)?
     private let cleanupTimeoutNanoseconds: UInt64
@@ -316,7 +203,7 @@ public actor LatchwayApp {
     /// Signs out this shared app locally, including native and React Native
     /// callers, without needing a current account handle. Concurrent calls join
     /// one cleanup. A secure-storage failure leaves the app fenced; call again
-    /// to retry. Explicit signIn (or authority-mode activate) can then establish
+    /// to retry. Explicit signIn can then establish
     /// a fresh generation. This does not sign out your authentication provider
     /// or revoke the remote installation. Account-scoped installation keys and
     /// non-secret logout/key-retention markers remain for safe reuse.
@@ -326,13 +213,11 @@ public actor LatchwayApp {
         identityIntentEpoch = UUID()
         identityOperation = nil
         activationEpoch = nil
-        activationTask?.cancel()
-        activationTask = nil
         verificationTask?.cancel()
         verificationTask = nil
         identityExpiryTask?.cancel()
         identityExpiryTask = nil
-        (authority as? LatchwaySuppliedIdentityAuthority)?.clear()
+        identityState.clear()
         let target = generation
         target?.fenceSignOut()
         state = .retiring
@@ -422,8 +307,8 @@ public actor LatchwayApp {
 
     public func beginIdentity(intent: LatchwayIdentityIntent, generationID: UUID? = nil,
                               bindingID: UUID? = nil) async throws -> UUID {
-        guard let supplied = authority as? LatchwaySuppliedIdentityAuthority,
-              registration.suppliedIdentity != nil else { throw LatchwayLifecycleError.configurationConflict }
+        let supplied = identityState
+        guard registration.suppliedIdentity != nil else { throw LatchwayLifecycleError.configurationConflict }
         guard state != .retiring, signOutTask == nil else { throw LatchwayLifecycleError.cleanupRequired }
         guard bindingID == nil || bindingID == identityBindingID else { throw LatchwayLifecycleError.configurationConflict }
         let intentEpoch = UUID()
@@ -455,11 +340,11 @@ public actor LatchwayApp {
     public func completeIdentity(ticketID: UUID, idToken: String,
                                  runtime: LatchwayClientRuntime = .iOS) async throws -> LatchwayAccount {
         guard let operation = identityOperation, operation.id == ticketID,
-              let configuration = registration.suppliedIdentity,
-              let supplied = authority as? LatchwaySuppliedIdentityAuthority else {
+              let configuration = registration.suppliedIdentity else {
             throw LatchwayLifecycleError.accountChanged
         }
         try Task.checkCancellation()
+        let supplied = identityState
         let candidate = try LatchwaySuppliedToken(idToken, configuration: configuration)
         let binding = try candidate.snapshot.binding(expectedIssuer: configuration.issuer, expectedTenant: configuration.tenantID)
         let accountScope = accountScope(binding: binding)
@@ -539,7 +424,8 @@ public actor LatchwayApp {
               state != .retiring, state != .loggedOut,
               generation?.id == operation.generationID else { return }
         if canResumePublishedAccount {
-            if let supplied = authority as? LatchwaySuppliedIdentityAuthority {
+            let supplied = identityState
+            do {
                 supplied.resume(operationID: ticketID)
                 let fresh = supplied.isFresh()
                 guard identityOperation == nil, generation?.id == operation.generationID else { return }
@@ -549,6 +435,7 @@ public actor LatchwayApp {
                 }
                 changed()
             }
+
         }
     }
 
@@ -564,7 +451,7 @@ public actor LatchwayApp {
 
     private func expireIdentity(generationID: UUID, deadline: Date) async {
         guard generation?.id == generationID, identityOperation == nil, deadline <= Date(),
-              let supplied = authority as? LatchwaySuppliedIdentityAuthority, !supplied.isFresh() else { return }
+              !identityState.isFresh() else { return }
         state = .refreshRequired
         changed()
     }
@@ -580,31 +467,27 @@ public actor LatchwayApp {
     }
 
     private func accountScope(binding: String) -> String {
-        let identity = registration.identity!
-        return LatchwayAppIdentity.digest([identity.name, identity.issuer, identity.tenant ?? "",
+        let identity = registration.suppliedIdentity!
+        return LatchwayAppIdentity.digest(["supplied:\(identity.providerID):\(identity.audience)", identity.issuer, identity.tenantID ?? "",
             registration.identityProvider!, registration.attestationPolicyID!,
             registration.fallback == .disallow ? "hardware-required" : "software-allowed", binding])
     }
 
-    init(registration: LatchwayAppRegistration, authority: any LatchwayIdentityAuthority,
-         attestationFactory: @escaping LatchwayAccountAttestationFactory, authorityInstanceID: UUID = UUID(),
+    init(registration: LatchwayAppRegistration,
+         attestationFactory: @escaping LatchwayAccountAttestationFactory,
          lifecycleRecords: (any LatchwayLifecycleRecords)? = nil,
-         migration: (@Sendable () async throws -> Void)? = nil,
          prepareAccount: (@Sendable (String) async throws -> Void)? = nil,
          verifyIdentity: (@Sendable (String) async throws -> LatchwayVerifiedIdentityWire)? = nil,
          cleanupTimeoutNanoseconds: UInt64 = 30_000_000_000) throws {
-        self.authorityInstanceID = authorityInstanceID
         self.registration = registration
-        self.authority = authority
         self.attestationFactory = attestationFactory
-        migrationOverride = migration
         accountPreparationOverride = prepareAccount
         identityVerificationOverride = verifyIdentity
         self.cleanupTimeoutNanoseconds = cleanupTimeoutNanoseconds
-        migrationRecords = LatchwayKeychainRecords(service: "dev.latchway.shared.v3.\(registration.scope)",
+        sharedRecords = LatchwayKeychainRecords(service: "dev.latchway.shared.v3.\(registration.scope)",
                                                    accessGroup: registration.rootGroup!)
-        let componentKeyIndex = LatchwaySharedComponentKeyIndex(records: migrationRecords)
-        keyRetention = LatchwayAccountKeyRetention(records: LatchwayKeyRetentionRecords(records: migrationRecords)) { scope in
+        let componentKeyIndex = LatchwaySharedComponentKeyIndex(records: sharedRecords)
+        keyRetention = LatchwayAccountKeyRetention(records: LatchwayKeyRetentionRecords(records: sharedRecords)) { scope in
             try componentKeyIndex.evict(accountScope: scope)
             let store = LatchwayKeychainStore(service: "dev.latchway.shared.v3.account.\(scope)",
                                               accessGroup: registration.rootGroup!)
@@ -626,9 +509,8 @@ public actor LatchwayApp {
     }
 
     public static func configure(_ options: LatchwayAppOptions, name: String = LatchwayAppRegistry.defaultName,
-                                 authority: (any LatchwayIdentityAuthority)? = nil,
                                  attestationFactory: LatchwayAccountAttestationFactory? = nil) async throws -> LatchwayApp {
-        try await LatchwayAppRegistry.shared.configure(options, name: name, authority: authority,
+        try await LatchwayAppRegistry.shared.configure(options, name: name,
                                                        attestationFactory: attestationFactory)
     }
 
@@ -637,9 +519,9 @@ public actor LatchwayApp {
     }
 
     public func snapshot() -> LatchwayAppSnapshot {
-        let publicGeneration = registration.suppliedIdentity != nil && state != .retiring
+        let publicGeneration = state != .retiring
             ? verifiedGenerationID : generation?.id ?? persistedGenerationID
-        return .init(appInstanceID: instanceID, authorityInstanceID: authorityInstanceID,
+        return .init(appInstanceID: instanceID,
               generationID: publicGeneration, revision: revision, state: state)
     }
 
@@ -654,39 +536,15 @@ public actor LatchwayApp {
         return stream
     }
 
-    /// Only the registered authentication owner should call this after login.
-    /// A new handle is required after logout, including for the same user.
-    @discardableResult
-    public func activate() async throws -> UUID {
-        guard registration.suppliedIdentity == nil else { throw LatchwayLifecycleError.identityAuthorityRequired }
-        guard !transferringAuthority, state != .retiring, signOutTask == nil else { throw LatchwayLifecycleError.cleanupRequired }
-        if let activationTask { return try await activationTask.value }
-        let epoch = UUID()
-        activationEpoch = epoch
-        let task = Task { try await self.performActivation(epoch) }
-        activationTask = task
-        defer { if activationEpoch == epoch { activationTask = nil; activationEpoch = nil } }
-        return try await task.value
-    }
-
-    private func performActivation(_ epoch: UUID, suppliedSnapshot: LatchwayIdentitySnapshot? = nil) async throws -> UUID {
+    private func performActivation(_ epoch: UUID, suppliedSnapshot: LatchwayIdentitySnapshot) async throws -> UUID {
         guard state != .retiring else { throw LatchwayLifecycleError.cleanupRequired }
-        if suppliedSnapshot == nil {
-            await journal.beginIdentityOperation(epoch)
-            guard activationEpoch == epoch else { throw LatchwayLifecycleError.loggedOut }
-        }
-        try await migrateLegacyRoots()
         guard activationEpoch == epoch else { throw LatchwayLifecycleError.loggedOut }
-        guard let identity = registration.identity else { throw LatchwayLifecycleError.identityUnavailable }
-        let currentValue: LatchwayIdentitySnapshot?
-        if let suppliedSnapshot { currentValue = suppliedSnapshot }
-        else { currentValue = try await authority.identitySnapshot() }
-        guard let current = currentValue else { throw LatchwayLifecycleError.identityUnavailable }
-        let binding = try current.binding(expectedIssuer: identity.issuer, expectedTenant: identity.tenant)
+        guard let identity = registration.suppliedIdentity else { throw LatchwayLifecycleError.identityUnavailable }
+        let current = suppliedSnapshot
+        let binding = try current.binding(expectedIssuer: identity.issuer, expectedTenant: identity.tenantID)
         guard activationEpoch == epoch else { throw LatchwayLifecycleError.loggedOut }
         if let generation {
             // This validates the current account even when a session is cached.
-            if suppliedSnapshot == nil { _ = try await generation.identityToken() }
             guard activationEpoch == epoch else { throw LatchwayLifecycleError.loggedOut }
             return generation.id
         }
@@ -710,7 +568,7 @@ public actor LatchwayApp {
         let provider = attestationFactory(scope)
         let journal = self.journal
         generation = LatchwayAccountGeneration(entry: entry, scope: scope, issuer: identity.issuer,
-                                               tenant: identity.tenant, authority: authority, journal: journal,
+                                               tenant: identity.tenantID, identityState: identityState, journal: journal,
                                                accountBinding: binding,
                                                cleanupTimeoutNanoseconds: cleanupTimeoutNanoseconds,
                                                onIdentityLoss: { [weak self] in
@@ -729,7 +587,7 @@ public actor LatchwayApp {
         installationKey = key
         attestation = provider
         persistedGenerationID = entry.generation
-        state = suppliedSnapshot == nil ? .active : .refreshRequired
+        state = .refreshRequired
         changed()
         return entry.generation
     }
@@ -738,7 +596,7 @@ public actor LatchwayApp {
                            sdkVersion: String = LatchwayVersion.sdk,
                            generationID: UUID? = nil) async throws -> LatchwayClient {
         if let generationID, generationID != generation?.id { throw LatchwayLifecycleError.loggedOut }
-        guard !transferringAuthority, let generation, let installationKey, let attestation, state == .active else {
+        guard let generation, let installationKey, let attestation, state == .active else {
             throw state == .refreshRequired ? LatchwayLifecycleError.identityRefreshRequired : LatchwayLifecycleError.loggedOut
         }
         _ = try await generation.identityToken()
@@ -795,14 +653,12 @@ public actor LatchwayApp {
             if !preservingIdentityOperation { identityOperation = nil }
             verificationTask?.cancel()
             verificationTask = nil
-            (authority as? LatchwaySuppliedIdentityAuthority)?.clear()
+            identityState.clear()
         }
         guard let generation, generation.id == generationID else {
             // Recover an interrupted retirement without asking the auth owner.
             if let entry = try await journal.entry(), entry.generation == generationID {
                 activationEpoch = nil
-                activationTask?.cancel()
-                activationTask = nil
                 state = .retiring
                 changed()
                 try await journal.retire(generationID)
@@ -816,8 +672,6 @@ public actor LatchwayApp {
             return
         }
         activationEpoch = nil
-        activationTask?.cancel()
-        activationTask = nil
         state = .retiring
         changed()
         try await generation.logout()
@@ -831,96 +685,7 @@ public actor LatchwayApp {
         changed()
     }
 
-    /// Explicit compare-and-swap ownership transfer, including JS reloads.
-    /// Retires the old account offline before replacing its identity provider.
-    /// This never activates the replacement. An activation already in progress
-    /// must finish (or be retired) before retrying; configure never transfers.
-    public func transferIdentityAuthority(
-        to replacement: any LatchwayIdentityAuthority,
-        reference: LatchwayIdentityAuthorityReference,
-        expectedAuthorityInstanceID: UUID,
-        replacementInstanceID: UUID = UUID()
-    ) async throws {
-        guard reference == registration.identity, expectedAuthorityInstanceID == authorityInstanceID,
-              registration.suppliedIdentity == nil,
-              replacementInstanceID != authorityInstanceID, !transferringAuthority,
-              activationTask == nil else { throw LatchwayLifecycleError.configurationConflict }
-        transferringAuthority = true
-        defer { transferringAuthority = false }
-        if let target = generation?.id ?? persistedGenerationID {
-            try await logout(generationID: target)
-        }
-        guard state != .retiring else { throw LatchwayLifecycleError.cleanupRequired }
-        authority = replacement
-        authorityInstanceID = replacementInstanceID
-        changed()
-    }
-
     private func removeObserver(_ id: UUID) { observers.removeValue(forKey: id) }
-
-    private func migrateLegacyRoots() async throws {
-        if let migrationOverride { try await migrationOverride(); return }
-        let componentCoordinates = (registration.legacyComponents ?? []).map {
-            LatchwayAppIdentity.digest([$0.definitionID, $0.kind, $0.keychainAccessGroup])
-        }.sorted()
-        let inventory = LatchwayAppIdentity.digest(["inventory-v1", registration.rootGroup!]
-            + (registration.legacyGroups ?? []) + componentCoordinates
-            + (registration.legacyAttestationNamespaces ?? []) + [registration.legacyMigration?.id ?? ""])
-        let completed = Data("complete:\(inventory)".utf8)
-        if try migrationRecords.read(account: "legacy-retirement-v3") == completed { return }
-        // A crash at any following step retries this exact scoped cleanup.
-        // Never import/relabel a legacy refresh chain or DPoP/App Attest key.
-        try migrationRecords.write(Data("pending:\(inventory)".utf8), account: "legacy-retirement-v3")
-        for runtime in LatchwayClientRuntime.allCases {
-            let configuration = LatchwayConfiguration(baseURL: registration.baseURL,
-                applicationID: registration.applicationID, environment: registration.environment,
-                rootKeychainAccessGroup: registration.rootGroup!, clientRuntime: runtime,
-                softwareKeyFallbackPolicy: registration.fallback!)
-            let fingerprint = LatchwayProcessScopeIdentity.rootFingerprint(configuration: configuration)
-            let coordinator = LatchwayProcessScopeCoordinatorPool.shared.root(
-                identity: LatchwayProcessScopeIdentity.root(configuration: configuration,
-                    namespace: LatchwayProcessScopeIdentity.productionNamespace), configurationFingerprint: fingerprint)
-            try await coordinator.retireForMigrationAndDrain()
-            let retirer = LatchwayKeychainComponentStateRetirer(configuration: configuration)
-            let service = LatchwayKeychainNamespace.service(applicationID: registration.applicationID,
-                environment: registration.environment, clientRuntime: runtime)
-            for group in [registration.rootGroup!] + (registration.legacyGroups ?? []) {
-                // The root was verified before registration. This inventory
-                // reads only exact legacy SDK coordinates, not arbitrary group
-                // contents, and never adopts their credentials.
-                let registry = LatchwayKeychainComponentRegistry(
-                    store: LatchwayKeychainStore(service: service, accessGroup: group),
-                    lockIdentity: "\(service)|\(group)")
-                let records = LatchwayKeychainRecords(service: service, accessGroup: group)
-                try records.write(Data("retired".utf8), account: "shared-native-retirement-v3")
-                var hasUnboundRoot = false
-                for account in ["session", "installation-key", "installation-key-kind"] {
-                    if try records.read(account: account) != nil { hasUnboundRoot = true }
-                }
-                let hasRegistry = try records.read(account: LatchwayKeychainComponentRegistry.account) != nil
-                // A pre-registry root may have unknown component stores. An
-                // explicit empty inventory means none; omission does not.
-                try registration.requireLegacyInventory(hasUnboundRoot: hasUnboundRoot, hasRegistry: hasRegistry)
-                try await LatchwayComponentFamilyRetirement.retireAll(registry: registry,
-                    including: registration.legacyComponents ?? [], retire: { component in
-                        try LatchwayLegacyComponentFence(configuration: configuration, component: component).retire()
-                        try await retirer.retire(component)
-                    })
-                for account in ["session", "installation-key", "installation-key-kind"] {
-                    try records.delete(account: account)
-                }
-                let namespaces = ["\(runtime.platformIdentifier).\(registration.applicationID).\(registration.environment)"]
-                    + (registration.legacyAttestationNamespaces ?? [])
-                for namespace in Set(namespaces) {
-                    try LatchwayKeychainRecords(service: "dev.latchway.sdk.app-attest.\(namespace)",
-                        accessGroup: group).delete(account: "app-attest-state")
-                }
-            }
-            try await attestationFactory("\(runtime.platformIdentifier).\(registration.applicationID).\(registration.environment)").reset()
-        }
-        try await registration.legacyMigration?.cleanup()
-        try migrationRecords.write(completed, account: "legacy-retirement-v3")
-    }
 
     private func changed() {
         revision &+= 1

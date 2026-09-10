@@ -4,48 +4,30 @@ import XCTest
 import LatchwayTesting
 
 final class AppLifecycleTests: XCTestCase {
-    func testUnknownPreRegistryComponentsRequireExplicitMigrationInventory() throws {
-        var options = LatchwayAppOptions(baseURL: URL(string: "https://example.test")!,
-            applicationID: "app", environment: "dev", rootKeychainAccessGroup: "TEAM.app",
-            identity: .init(name: "host", issuer: "issuer"))
-        let unspecified = try LatchwayAppRegistration(options).effective()
-        XCTAssertThrowsError(try unspecified.requireLegacyInventory(hasUnboundRoot: true, hasRegistry: false))
-        try unspecified.requireLegacyInventory(hasUnboundRoot: false, hasRegistry: false)
-        try unspecified.requireLegacyInventory(hasUnboundRoot: true, hasRegistry: true)
-        options.legacyComponents = []
-        let explicitlyNone = try LatchwayAppRegistration(options).effective()
-        try explicitlyNone.requireLegacyInventory(hasUnboundRoot: true, hasRegistry: false)
-        XCTAssertThrowsError(try unspecified.compare(explicitlyNone, hasAuthority: false, fromReactNative: false))
-        options.legacyComponents = nil
-        options.legacyMigration = .init(id: "custom-store-v1", cleanup: {})
-        try LatchwayAppRegistration(options).effective().requireLegacyInventory(hasUnboundRoot: true, hasRegistry: false)
-    }
-
     func testComponentGroupsAreImmutableAndOmissionInheritsNativeOwner() throws {
         let base = URL(string: "https://example.test")!
         let registered = try LatchwayAppRegistration(.init(baseURL: base,
             applicationID: "app", environment: "dev", rootKeychainAccessGroup: "TEAM.root",
-            identity: .init(name: "host", issuer: "issuer"), componentKeychainAccessGroups: ["TEAM.widget"])).effective()
+            suppliedIdentity: .init(providerID: "custom_jwt", issuer: "https://issuer.test", audience: "test"), componentKeychainAccessGroups: ["TEAM.widget"])).effective()
         let omitted = try LatchwayAppRegistration(.init(baseURL: base, applicationID: "app", environment: "dev"))
-        try registered.compare(omitted, hasAuthority: false, fromReactNative: true)
+        try registered.compare(omitted, fromReactNative: true)
         let different = try LatchwayAppRegistration(.init(baseURL: base,
             applicationID: "app", environment: "dev", componentKeychainAccessGroups: ["TEAM.other"]))
-        XCTAssertThrowsError(try registered.compare(different, hasAuthority: false, fromReactNative: true))
+        XCTAssertThrowsError(try registered.compare(different, fromReactNative: true))
         XCTAssertThrowsError(try LatchwayRootKeychainPreflight.validateAccessGroups(
-            rootKeychainAccessGroup: "TEAM.root", legacySharedKeychainAccessGroups: ["TEAM.root"]))
+            rootKeychainAccessGroup: "TEAM.root", componentKeychainAccessGroups: ["TEAM.root"]))
     }
     func testCanonicalRegistrationRetainsPathAndInheritsOmittedValues() throws {
         var options = LatchwayAppOptions(baseURL: URL(string: "https://EXAMPLE.test:443/gateway/")!,
             applicationID: "habitify", environment: "production", rootKeychainAccessGroup: "TEAM.app",
-            identity: .init(name: "host-firebase", issuer: "https://issuer.test"))
+            suppliedIdentity: .init(providerID: "custom_jwt", issuer: "https://issuer.test", audience: "test"))
         let registered = try LatchwayAppRegistration(options).effective()
         XCTAssertEqual(registered.baseURL.absoluteString, "https://example.test/gateway")
         let repeated = try LatchwayAppRegistration(.init(baseURL: URL(string: "https://example.test/gateway")!,
             applicationID: "habitify", environment: "production"))
-        try registered.compare(repeated, hasAuthority: false, fromReactNative: true)
-        XCTAssertThrowsError(try registered.compare(repeated, hasAuthority: true, fromReactNative: true))
-        options.identityProvider = "custom_jwt"
-        XCTAssertThrowsError(try registered.compare(LatchwayAppRegistration(options), hasAuthority: false, fromReactNative: false))
+        try registered.compare(repeated, fromReactNative: true)
+        options.identityProvider = "different_provider"
+        XCTAssertThrowsError(try registered.compare(LatchwayAppRegistration(options), fromReactNative: false))
         let otherPath = try LatchwayAppRegistration(.init(baseURL: URL(string: "https://example.test/other")!,
             applicationID: "habitify", environment: "production"))
         XCTAssertNotEqual(otherPath.scope, registered.scope)
@@ -106,46 +88,12 @@ final class AppLifecycleTests: XCTestCase {
         XCTAssertThrowsError(try a.binding(expectedIssuer: "other", expectedTenant: "one"))
     }
 
-    func testAuthorityTransferRetiresPersistedGenerationWithoutFetchingIdentity() async throws {
-        let records = LifecycleMemoryRecords()
-        let journal = LatchwayAppSessionJournal(records: records)
-        let previous = try await journal.activate(account: "A")
-        let identity = LatchwayIdentityAuthorityReference(name: "firebase", issuer: "issuer")
-        let registration = try LatchwayAppRegistration(.init(baseURL: URL(string: "https://example.test")!,
-            applicationID: "app", environment: "dev", rootKeychainAccessGroup: "TEAM.app", identity: identity)).effective()
-        let authority = LatchwayClosureIdentityAuthority { XCTFail("Transfer fetched identity"); return nil }
-        let app = try LatchwayApp(registration: registration, authority: authority,
-            attestationFactory: { _ in fatalError("Transfer created attestation") }, lifecycleRecords: records)
-        let first = await app.snapshot()
-        let replacement = UUID()
-        records.setFailure(true)
-        await expect(.cleanupRequired) {
-            try await app.transferIdentityAuthority(to: authority, reference: identity,
-                expectedAuthorityInstanceID: first.authorityInstanceID, replacementInstanceID: replacement)
-        }
-        let failed = await app.snapshot()
-        XCTAssertEqual(failed.authorityInstanceID, first.authorityInstanceID)
-        records.setFailure(false)
-        try await app.transferIdentityAuthority(to: authority, reference: identity,
-            expectedAuthorityInstanceID: first.authorityInstanceID, replacementInstanceID: replacement)
-        let transferred = await app.snapshot()
-        XCTAssertEqual(transferred.authorityInstanceID, replacement)
-        XCTAssertEqual(transferred.state, .loggedOut)
-        XCTAssertNil(transferred.generationID)
-        let restored = LatchwayAppSessionJournal(records: records)
-        await expect(.loggedOut) { try await restored.check(previous.generation) }
-        await expect(.configurationConflict) {
-            try await app.transferIdentityAuthority(to: authority, reference: identity,
-                expectedAuthorityInstanceID: first.authorityInstanceID)
-        }
-    }
-
     func testCleanupDeadlineRemainsFencedAndJoinsOneBackgroundCleanup() async throws {
         let journal = LatchwayAppSessionJournal(records: LifecycleMemoryRecords())
         let entry = try await journal.activate(account: "A")
         let gate = CleanupTestGate()
         let generation = LatchwayAccountGeneration(entry: entry, scope: "scope", issuer: "issuer", tenant: nil,
-            authority: LatchwayClosureIdentityAuthority { XCTFail("Logout fetched identity"); return nil },
+            identityState: TestIdentityState { XCTFail("Logout fetched identity"); return nil },
             journal: journal, cleanupTimeoutNanoseconds: 5_000_000, cleanup: { await gate.wait() })
         await expect(.cleanupRequired) { try await generation.logout() }
         await expect(.cleanupRequired) { _ = try await journal.activate(account: "B") }
@@ -161,10 +109,15 @@ final class AppLifecycleTests: XCTestCase {
         let journal = LatchwayAppSessionJournal(records: LifecycleMemoryRecords())
         let entry = try await journal.activate(account: "A")
         let generation = LatchwayAccountGeneration(entry: entry, scope: "scope", issuer: "issuer", tenant: nil,
-            authority: LatchwayClosureIdentityAuthority { nil }, journal: journal, cleanup: {})
+            identityState: TestIdentityState { nil }, journal: journal, cleanup: {})
         let token = LatchwayOneShotTokenProvider(token: "fixture-token")
         let client = LatchwayClient(configuration: .init(baseURL: URL(string: "https://example.test")!,
-            applicationID: "app", environment: "dev", rootKeychainAccessGroup: "TEAM.app"), identityTokenProvider: token)
+            applicationID: "app", environment: "dev", rootKeychainAccessGroup: "TEAM.app"), identityTokenProvider: token,
+            attestationProvider: LatchwayFixedAttestationProvider(evidence: .init(provider: "app_attest", evidence: [:])),
+            installationKey: try LatchwayDeterministicInstallationKey(rawPrivateKey: Data(repeating: 1, count: 32)),
+            sessionStorage: LatchwayInMemorySessionStorage(),
+            transport: LatchwayScriptedTransport { _, _ in throw LatchwayLifecycleError.loggedOut },
+            clock: LatchwaySystemClock())
         try await generation.registerClientCleanup(for: client) { [weak client] in
             let persisted = try? await journal.entry()
             XCTAssertEqual(persisted?.state, .retiring)
@@ -175,27 +128,6 @@ final class AppLifecycleTests: XCTestCase {
         XCTAssertThrowsError(try token.identityToken())
     }
 
-    func testAppSignOutFencesPendingAuthorityActivationAndAllowsFreshActivation() async throws {
-        let gate = CleanupTestGate()
-        let registration = try LatchwayAppRegistration(.init(baseURL: URL(string: "https://example.test")!,
-            applicationID: UUID().uuidString, environment: "dev", rootKeychainAccessGroup: "TEAM.app",
-            identity: .init(name: "host", issuer: "issuer"))).effective()
-        let authority = PendingAuthority(gate: gate)
-        let app = try LatchwayApp(registration: registration, authority: authority,
-            attestationFactory: { _ in LatchwayFixedAttestationProvider(evidence: .init(provider: "app_attest", evidence: [:])) },
-            lifecycleRecords: LifecycleMemoryRecords(),
-            migration: {}, prepareAccount: { _ in })
-        let old = Task { try await app.activate() }
-        while await gate.calls == 0 { await Task.yield() }
-        try await app.signOut()
-        let next = try await app.activate()
-        await gate.release()
-        do { _ = try await old.value; XCTFail("Old authority activation resumed after sign-out") } catch {}
-        let current = await app.snapshot()
-        XCTAssertEqual(current.generationID, next)
-        XCTAssertEqual(current.state, .active)
-    }
-
     func testIdentityLossIsDurablyFencedBeforeReturningAndCannotRestoreA() async throws {
         let records = LifecycleMemoryRecords()
         let journal = LatchwayAppSessionJournal(records: records)
@@ -203,7 +135,7 @@ final class AppLifecycleTests: XCTestCase {
             .binding(expectedIssuer: "issuer", expectedTenant: nil)
         let entry = try await journal.activate(account: binding)
         let generation = LatchwayAccountGeneration(entry: entry, scope: "scope", issuer: "issuer", tenant: nil,
-            authority: LatchwayClosureIdentityAuthority { .init(issuer: "issuer", subject: "B", token: "token") },
+            identityState: TestIdentityState { .init(issuer: "issuer", subject: "B", token: "token") },
             journal: journal, cleanup: {})
         await expect(.accountChanged) { _ = try await generation.identityToken() }
         await expect(.loggedOut) { try generation.checkLive() }
@@ -244,18 +176,6 @@ final class AppLifecycleTests: XCTestCase {
         XCTAssertEqual(removed, unchanged)
     }
 
-    func testLegacyMigrationTimesOutBeforeErasureAndRetriesAfterLateOwnerDrains() async throws {
-        let coordinator = LatchwayProcessScopeCoordinator<String>(configurationFingerprint: "legacy")
-        let old = try await coordinator.acquire(configurationFingerprint: "legacy")
-        await expect(.cleanupRequired) { try await coordinator.retireForMigrationAndDrain(timeoutNanoseconds: 1_000_000) }
-        await expect(.loggedOut) { _ = try await coordinator.acquire(configurationFingerprint: "legacy") }
-        await coordinator.publish("late credentials", for: old)
-        let snapshot = await coordinator.snapshot()
-        XCTAssertNil(snapshot.value)
-        await coordinator.release(old)
-        try await coordinator.retireForMigrationAndDrain(timeoutNanoseconds: 1_000_000)
-    }
-
     func testOversizedAndDuplicatePendingKeyIndexesFailWithoutErasure() async throws {
         let scope = String(repeating: "a", count: 64)
         for encoded in [String(repeating: " ", count: 16_385),
@@ -271,7 +191,7 @@ final class AppLifecycleTests: XCTestCase {
         let journal = LatchwayAppSessionJournal(records: LifecycleMemoryRecords())
         let entry = try await journal.activate(account: "A")
         let generation = LatchwayAccountGeneration(entry: entry, scope: "scope", issuer: "issuer", tenant: nil,
-            authority: LatchwayClosureIdentityAuthority { XCTFail("Stream check fetched identity"); return nil },
+            identityState: TestIdentityState { XCTFail("Stream check fetched identity"); return nil },
             journal: journal, cleanup: {})
         let first = LatchwayClientLease()
         let sibling = LatchwayClientLease()
@@ -317,20 +237,6 @@ private actor CleanupTestGate {
         await withCheckedContinuation { continuation = $0 }
     }
     func release() { released = true; continuation?.resume(); continuation = nil }
-}
-
-private actor PendingAuthority: LatchwayIdentityAuthority {
-    let gate: CleanupTestGate
-    private var calls = 0
-    init(gate: CleanupTestGate) { self.gate = gate }
-    func identitySnapshot() async -> LatchwayIdentitySnapshot? {
-        calls += 1
-        if calls == 1 {
-            await gate.wait()
-            return .init(issuer: "issuer", subject: "A", token: "fixture-A")
-        }
-        return .init(issuer: "issuer", subject: "B", token: "fixture-B")
-    }
 }
 
 /// All mutable state is protected by the same lock; synchronous methods model
